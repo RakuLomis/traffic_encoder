@@ -1,6 +1,7 @@
 import pyshark 
 from tqdm import tqdm 
 import os 
+import re
 
 def packet_count(file, display_filter=None):
     """
@@ -53,19 +54,47 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
     # layers_all = ['eth', 'ip', 'tcp', 'tls']
     res_list = []
     # for i in [250, 251]: # Test 
-    for i in tqdm(range(packet_count(pcap))): 
+    for i in tqdm(range(packet_count(pcap)), "get_fields_over_layers"): 
         all_fields = {} 
         for layer in pcap[i].layers: 
             if layer.layer_name in given_layers: 
                 for field in layer.field_names: 
-                    # print(f'${layer}: ${layer.filed_names}') 
-                    field_obj = layer.get_field(field) 
+                    # print(f'${layer}: ${layer.filed_names}')               
                     if field not in payload_field:  
+                        field_obj = layer.get_field(field) 
                         # Do not use .show, although it may describe the briefer and more readable information 
                         # .value will display the hexadcimal of ascii code 
                         hex_value = field_obj.raw_value
                         # value_size = field_obj.size 
                         if hex_value is not None: 
                             all_fields[field] = hex_value 
+                        if layer.layer_name == 'tcp' and field == 'stream': 
+                            all_fields[field] = field_obj.show # Take tcp.stream into
         res_list.append(all_fields) 
+    pcap.close() 
     return res_list 
+
+def match_segment_number(s: str): 
+    pattern = r'#(\d+)'
+    numbers = re.findall(pattern, s)
+    res = [int(num) for num in numbers]
+    return res
+
+def get_reasemmble_info(pcap: pyshark.FileCapture): 
+    res_dict = {} # {index: [reassemble packets]}
+    for i in tqdm(range(packet_count(pcap)), "get reassemble info"): 
+        res_dict[i+1] = [] # init i-th position as empty
+        segment_index = [] 
+        # print(f'${i}$: ${pcap[i].layers}')
+        for layer in pcap[i].layers: 
+            if layer.layer_name == 'DATA': # fake-field-wrapper is renamed to data in pyshark
+                for field in layer.field_names: 
+                    if field == 'tcp_segments': # reassemble will appearance in the last packet
+                        field_obj = layer.get_field(field) 
+                        content = field_obj.main_field.get_default_value() 
+                        segment_index.extend(match_segment_number(content)) 
+        for index in segment_index: # cover related values with its reassemble info
+            res_dict[index] = segment_index 
+    pcap.close()
+    return res_dict
+
