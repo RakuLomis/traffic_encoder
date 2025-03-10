@@ -6,7 +6,8 @@ from utils.pcap_tools import get_fields_over_layers
 from utils.pcap_tools import get_pcap_path 
 from utils.pcap_tools import get_reasemmble_info 
 
-"""
+""" 
+Get fields hexvalues into two dataframes (fields_values, reas)
 Pay attention to the index of packet in python and wireshark. 
 The index in pyshark starts with 0, and in wireshark (including exported .xml) starts from 1. 
 """
@@ -24,11 +25,10 @@ if pcap_path_list is not None:
             "index": list(dict_reassemble.keys()), 
             "reassembled_segments": list(dict_reassemble.values()) 
         }) 
-        df_reassemble.to_csv(os.path.join(directory_path, 'reassemble_' + file_name + '.csv'), index=False) 
-        # value_list_reassemble = list(dict_reassemble.values()) 
-        # print(value_list_reassemble) 
-        # df_reassemble = pd.DataFrame(value_list_reassemble) 
+        # df_reassemble.to_csv(os.path.join(directory_path, 'reassemble_' + file_name + '.csv'), index=False) 
         df_fields = pd.DataFrame(list_fields) 
         df_fields['index'] = range(1, len(df_reassemble) + 1) 
-        df_fields.to_csv(os.path.join(directory_path, file_name + '.csv'), index=False)
+        df_merge_tls = pd.merge(df_fields, df_reassemble, on=["index"], how="outer") 
+        # df_fields.to_csv(os.path.join(directory_path, file_name + '.csv'), index=False) 
+        df_merge_tls.to_csv(os.path.join(directory_path, 'merge_' + file_name + '.csv'), index=False)
         pcap_file.close() 
