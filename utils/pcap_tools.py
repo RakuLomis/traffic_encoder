@@ -34,7 +34,8 @@ def get_pcap_path(dir_path: str):
 
 def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip', 'tcp', 'tls']): 
     """
-    Extract fields over specific layers of the input pcap file and return a dictionary. 
+    Extract fields over specific layers of the input pcap file and return a dictionary, 
+    including tcp.stream, excluding payload. 
 
     Parameters
     ----------
@@ -67,9 +68,10 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                         hex_value = field_obj.raw_value
                         # value_size = field_obj.size 
                         if hex_value is not None: 
-                            all_fields[field] = hex_value 
+                            all_fields[layer.layer_name + '_' + field] = hex_value 
                         if layer.layer_name == 'tcp' and field == 'stream': 
-                            all_fields[field] = field_obj.show # Take tcp.stream into
+                            all_fields[layer.layer_name + field] = field_obj.show # Take tcp.stream into 
+                
         res_list.append(all_fields) 
     pcap.close() 
     return res_list 
@@ -100,7 +102,7 @@ def get_reasemmble_info(pcap: pyshark.FileCapture):
     """
     res_dict = {} # {index: [reassemble packets]}
     for i in tqdm(range(packet_count(pcap)), "get reassemble info"): 
-        res_dict[i+1] = [] # init i-th position as empty
+        res_dict[i + 1] = [] # init i-th position as empty
         segment_index = [] 
         # print(f'${i}$: ${pcap[i].layers}')
         for layer in pcap[i].layers: 
@@ -114,4 +116,3 @@ def get_reasemmble_info(pcap: pyshark.FileCapture):
             res_dict[index] = segment_index 
     pcap.close() 
     return res_dict
-
