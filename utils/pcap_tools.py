@@ -70,7 +70,7 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                         if hex_value is not None: 
                             all_fields[layer.layer_name + '_' + field] = hex_value 
                         if layer.layer_name == 'tcp' and field == 'stream': 
-                            all_fields[layer.layer_name + field] = field_obj.show # Take tcp.stream into 
+                            all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.stream into 
                 
         res_list.append(all_fields) 
     pcap.close() 
