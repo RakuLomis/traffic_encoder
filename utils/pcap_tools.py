@@ -46,8 +46,8 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
 
     Returns 
     ------- 
-    res_list: [{K: V}, ...] 
-        in which K is the name of fields in the specific layer, and V is 
+    res_list: list, [{K: V}, ...] 
+        K is the name of fields in the specific layer, and V is 
         its corresponding value. 
     """
     payload_field = ['payload', 'segment_data', 'tcp_reassembled_data', 'ech_enc', 'ech_payload'] 
@@ -75,12 +75,29 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
     return res_list 
 
 def match_segment_number(s: str): 
+    """
+    Extract numbers after symbol '#'.  
+    """
     pattern = r'#(\d+)'
     numbers = re.findall(pattern, s)
     res = [int(num) for num in numbers]
     return res
 
 def get_reasemmble_info(pcap: pyshark.FileCapture): 
+    """
+    Extract the reassemble information for each packet. 
+
+    Parameters 
+    ----------
+    pcap: pyshark.FileCapture
+
+    Returns 
+    ------- 
+    res_dict: dict, {K: [v1, ...], ...} 
+        K is the packet index in the same form of Wireshark, namely, starts from 1. 
+        [v1, ...] denotes the reassembled indices, whose values will be K in turn and have the same reassembled list. 
+        For example, {1: [1, 2], 2: [1, 2]}. 
+    """
     res_dict = {} # {index: [reassemble packets]}
     for i in tqdm(range(packet_count(pcap)), "get reassemble info"): 
         res_dict[i+1] = [] # init i-th position as empty
@@ -95,6 +112,6 @@ def get_reasemmble_info(pcap: pyshark.FileCapture):
                         segment_index.extend(match_segment_number(content)) 
         for index in segment_index: # cover related values with its reassemble info
             res_dict[index] = segment_index 
-    pcap.close()
+    pcap.close() 
     return res_dict
 
