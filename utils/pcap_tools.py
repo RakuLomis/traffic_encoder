@@ -10,7 +10,7 @@ def packet_count(file, display_filter=None):
     # cap = pyshark.FileCapture(input_file=file, display_filter=display_filter, only_summaries=True, keep_packets=False)
     cap = file 
     cnt = 0
-    for _ in cap:
+    for _ in cap: 
         cnt += 1
     cap.close()
     return cnt
@@ -25,9 +25,9 @@ def get_pcap_path(dir_path: str):
         if os.path.isdir(dir_path): 
             for root, _, file_paths in os.walk(dir_path): 
                 for file_path in file_paths: 
-                    if file_path.endswith(('pcap', 'pcapng')): 
+                    if file_path.endswith(('.pcap', '.pcapng')): 
                         pcap_paths.append(os.path.join(root, file_path)) 
-                        file_names.append(file_path)
+                        file_names.append(file_path[:-len('.pcap')] if file_path.endswith('.pcap') else file_path[:-len('.pcapng')]) 
     else: 
         print("Invalid directory path") 
     return pcap_paths, file_names 
