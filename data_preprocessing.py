@@ -15,4 +15,4 @@ if csv_path_list is not None:
         filter_out_nan(df) 
         to_integer_code(df) 
         df_fill_nan = df.fillna('ffff') 
-        output_csv_in_fold(df_fill_nan, os.path.join(directory_path, 'fill_nan'), 'fill_nan_' + csv_name + '.csv')
+        output_csv_in_fold(df_fill_nan, os.path.join(directory_path, 'fill_nan'), 'fill_nan_' + csv_name + '.csv') 

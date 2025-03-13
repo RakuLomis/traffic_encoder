@@ -23,11 +23,18 @@ def get_pcap_path(dir_path: str):
     file_names = []
     if os.path.exists(dir_path): 
         if os.path.isdir(dir_path): 
-            for root, _, file_paths in os.walk(dir_path): 
-                for file_path in file_paths: 
-                    if file_path.endswith(('.pcap', '.pcapng')): 
-                        pcap_paths.append(os.path.join(root, file_path)) 
-                        file_names.append(file_path[:-len('.pcap')] if file_path.endswith('.pcap') else file_path[:-len('.pcapng')]) 
+            # for root, _, file_paths in os.walk(dir_path): 
+            #     for file_path in file_paths: 
+            #         if file_path.endswith(('.pcap', '.pcapng')): 
+            #             pcap_paths.append(os.path.join(root, file_path)) 
+            #             file_names.append(file_path[:-len('.pcap')] if file_path.endswith('.pcap') else file_path[:-len('.pcapng')]) 
+            with os.scandir(dir_path) as entries: 
+                for entry in tqdm(entries, "get_pcap_path: "): 
+                    if entry.is_file(): 
+                        file_name = entry.name 
+                        if file_name.endswith(('.pcap', '.pcapng')): 
+                            pcap_paths.append(entry.path) 
+                            file_names.append(file_name[:-len('.pcap')] if file_name.endswith('.pcap') else file_name[:-len('.pcapng')]) 
     else: 
         print("Invalid directory path") 
     return pcap_paths, file_names 

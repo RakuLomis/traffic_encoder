@@ -22,27 +22,54 @@ def get_file_path(dir_path: str, prefix: Optional[str] = None, postfix: Optional
     file_names = [] 
     if os.path.exists(dir_path): 
         if os.path.isdir(dir_path): 
-            for root, _, files in tqdm(os.walk(dir_path), "get_file_path: "): 
-                for file_name in files: 
-                # Check prefix condition
-                    prefix_ok = (prefix is None) or file_name.startswith(prefix)
-                    # Check postfix condition
-                    postfix_ok = (postfix is None) or file_name.endswith(postfix)
+    #         for root, _, files in tqdm(os.walk(dir_path), "get_file_path: "): 
+    #             for file_name in files: 
+    #             # Check prefix condition
+    #                 prefix_ok = (prefix is None) or file_name.startswith(prefix)
+    #                 # Check postfix condition
+    #                 postfix_ok = (postfix is None) or file_name.endswith(postfix)
 
-                    if prefix_ok and postfix_ok:
-                        # Build full path
-                        full_path = os.path.join(root, file_name)
-                        target_paths.append(full_path)
+    #                 if prefix_ok and postfix_ok:
+    #                     # Build full path
+    #                     full_path = os.path.join(root, file_name)
+    #                     target_paths.append(full_path)
 
-                    # Process base name 
-                    if postfix and file_name.endswith(postfix):
-                        base_name = file_name[:-len(postfix)]
-                    else:
-                        base_name = file_name
-                    file_names.append(base_name)
+    #                 # Process base name 
+    #                 if postfix and file_name.endswith(postfix):
+    #                     base_name = file_name[:-len(postfix)] 
+    #                 if postfix and not file_name.endswith(postfix): 
+    #                     continue 
+    #                 else: # no postfix, record file name
+    #                     base_name = file_name
+    #                 file_names.append(base_name)
+    # else: 
+    #     print("Invalid directory path") 
+    # return target_paths, file_names 
+            with os.scandir(dir_path) as entries: 
+                for entry in tqdm(entries, "get_file_path: "):
+                    if entry.is_file():
+                        file_name = entry.name
+                        # Check prefix condition
+                        prefix_ok = (prefix is None) or file_name.startswith(prefix)
+                        # Check postfix condition
+                        postfix_ok = (postfix is None) or file_name.endswith(postfix)
+
+                        if prefix_ok and postfix_ok:
+                            # Build full path
+                            full_path = entry.path
+                            target_paths.append(full_path)
+
+                            # Process base name 
+                            if postfix and file_name.endswith(postfix):
+                                base_name = file_name[:-len(postfix)] 
+                            elif postfix and not file_name.endswith(postfix): 
+                                continue 
+                            else: # no postfix, record file name
+                                base_name = file_name
+                            file_names.append(base_name)
     else: 
         print("Invalid directory path") 
-    return target_paths, file_names 
+    return target_paths, file_names
 
 def filter_out_nan(df: pd.DataFrame): 
     """
@@ -75,8 +102,8 @@ def to_integer_code(df: pd.DataFrame, col_name = 'reassembled_segments'):
         print(f"No column named ${col_name}") 
     return df 
 
-def output_csv_in_fold(df: pd.DataFrame, fold_path: str, csv_name: str): 
+def output_csv_in_fold(df: pd.DataFrame, fold_path: str, csv_name: str, index: Optional[str] = False): 
     os.makedirs(fold_path, exist_ok=True) 
     file_path = os.path.join(fold_path, csv_name) 
-    df.to_csv(file_path) 
+    df.to_csv(file_path, index=index) 
     
