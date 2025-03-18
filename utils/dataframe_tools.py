@@ -107,6 +107,9 @@ def output_csv_in_fold(df: pd.DataFrame, fold_path: str, csv_name: str, index: O
     file_path = os.path.join(fold_path, csv_name) 
     df.to_csv(file_path, index=index) 
     
+def padding_features(df: pd.DataFrame, padding_value='ffff'): 
+    return df.fillna(padding_value) 
+
 def truncating_features(df: pd.DataFrame): 
     pass 
 
@@ -123,4 +126,6 @@ def padding_or_truncating(df: pd.DataFrame, pon: bool):
         False represents truncating the dataframe into different blocks. In each block, 
         feature values are clustered. 
     """
-    pass
+    if pon: 
+        return padding_features(df) 
+    pass 
