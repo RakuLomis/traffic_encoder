@@ -107,3 +107,20 @@ def output_csv_in_fold(df: pd.DataFrame, fold_path: str, csv_name: str, index: O
     file_path = os.path.join(fold_path, csv_name) 
     df.to_csv(file_path, index=index) 
     
+def truncating_features(df: pd.DataFrame): 
+    pass 
+
+def padding_or_truncating(df: pd.DataFrame, pon: bool): 
+    """
+    Padding the NaN values or truncating the dataframe into various blocks. 
+
+    Parameters 
+    ---------- 
+    df: pd.DataFrame
+        The input dataframe has many NaN values in different features. 
+    pon: bool
+        Padding or Not. True means using .fillna to padding the NaN values, while 
+        False represents truncating the dataframe into different blocks. In each block, 
+        feature values are clustered. 
+    """
+    pass
