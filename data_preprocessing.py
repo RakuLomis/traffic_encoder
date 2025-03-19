@@ -12,7 +12,8 @@ csv_path_list, csv_name_list = get_file_path(directory_path, postfix='.csv')
 if csv_path_list is not None: 
     for csv_path, csv_name in zip(csv_path_list, csv_name_list): 
         df = pd.read_csv(csv_path) 
-        filter_out_nan(df) 
-        to_integer_code(df) 
-        df_fill_nan = df.fillna('ffff') 
-        output_csv_in_fold(df_fill_nan, os.path.join(directory_path, 'fill_nan'), 'fill_nan_' + csv_name + '.csv') 
+        df = filter_out_nan(df) 
+        df = to_integer_code(df) 
+        output_csv_in_fold(df, os.path.join(directory_path, 'filter_nan'), 'filter_nan_' + csv_name + '.csv') 
+        # df_fill_nan = df.fillna('ffff') 
+        # output_csv_in_fold(df_fill_nan, os.path.join(directory_path, 'fill_nan'), 'fill_nan_' + csv_name + '.csv') 
