@@ -111,6 +111,8 @@ def padding_features(df: pd.DataFrame, padding_value='ffff'):
     return df.fillna(padding_value) 
 
 def truncating_features(df: pd.DataFrame): 
+    mask_df = df.notnull() 
+    
     pass 
 
 def padding_or_truncating(df: pd.DataFrame, pon: bool): 

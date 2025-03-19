@@ -24,13 +24,13 @@ if pcap_path_list is not None:
         list_fields = get_fields_over_layers(pcap_file) 
         dict_reassemble = get_reasemmble_info(pcap_file) 
         df_reassemble = pd.DataFrame({
-            "index": list(dict_reassemble.keys()), 
+            "frame_num": list(dict_reassemble.keys()), 
             "reassembled_segments": list(dict_reassemble.values()) 
         }) 
         # df_reassemble.to_csv(os.path.join(directory_path, 'reassemble_' + file_name + '.csv'), index=False) 
-        df_fields = pd.DataFrame(list_fields) 
-        df_fields['index'] = range(1, len(df_reassemble) + 1) 
-        df_merge_tls = pd.merge(df_fields, df_reassemble, on=["index"], how="outer") 
+        df_fields = pd.DataFrame(list_fields) # frame_num
+        # df_fields['index'] = range(1, len(df_reassemble) + 1) 
+        df_merge_tls = pd.merge(df_fields, df_reassemble, on=["frame_num"], how="outer") 
         # df_fields.to_csv(os.path.join(directory_path, file_name + '.csv'), index=False) 
         df_merge_tls.to_csv(os.path.join(directory_path, 'merge_' + file_name + '.csv'), index=False)
         pcap_file.close() 

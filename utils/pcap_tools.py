@@ -64,34 +64,37 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
     long_field = [] 
     # for i in [250, 251]: # Test 
     for i in tqdm(range(packet_count(pcap)), "get_fields_over_layers"): 
-        all_fields = {} 
-        special_fields = ['stream', 'len'] # fields use 'show' and not hex
-        for layer in pcap[i].layers: 
-            if layer.layer_name in given_layers: 
-                for field in layer.field_names: 
-                    # print(f'${layer}: ${layer.filed_names}')               
-                    # if field not in payload_field:  
-                    field_obj = layer.get_field(field) 
-                    # Do not use .show, although it may describe the briefer and more readable information 
-                    # .value will display the hexadcimal of ascii code 
-                    hex_value = field_obj.raw_value
-                    # value_size = field_obj.size 
-                    # if hex_value is not None and len(hex_value) <= 64: 
-                    if hex_value is not None: 
-                        if len(hex_value) >= 64: # skip the too long features, such as payload. 
-                            long_field.append(field) 
-                        if field not in long_field: 
-                            all_fields[layer.layer_name + '_' + field] = hex_value 
-                    # if layer.layer_name == 'tcp' and field == 'stream': 
-                    #     all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.stream info  
-                    # if layer.layer_name == 'tcp' and field == 'len': 
-                    #     all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.len info, which displays the length of tcp payload 
-                    if layer.layer_name == 'tcp' and field in special_fields: 
-                        # the attribute 'show' does not display the hex value, instead, dec value 
-                        # stream: tcp stream id 
-                        # len: payload length 
-                        all_fields[layer.layer_name + '_' + field] = field_obj.show 
-        res_list.append(all_fields) 
+        if pcap[i].transport_layer == 'TCP': # ignore the UDP based protocols
+            all_fields = {} 
+            special_fields = ['stream', 'len'] # fields use 'show' and not hex 
+            frame_num = int(pcap[i].frame_info.get_field('number')) 
+            all_fields['frame_num'] = frame_num # Add frame number
+            for layer in pcap[i].layers: 
+                if layer.layer_name in given_layers: 
+                    for field in layer.field_names: 
+                        # print(f'${layer}: ${layer.filed_names}')               
+                        # if field not in payload_field:  
+                        field_obj = layer.get_field(field) 
+                        # Do not use .show, although it may describe the briefer and more readable information 
+                        # .value will display the hexadcimal of ascii code 
+                        hex_value = field_obj.raw_value
+                        # value_size = field_obj.size 
+                        # if hex_value is not None and len(hex_value) <= 64: 
+                        if hex_value is not None: 
+                            if len(hex_value) >= 64: # skip the too long features, such as payload. 
+                                long_field.append(field) 
+                            if field not in long_field: 
+                                all_fields[layer.layer_name + '_' + field] = hex_value 
+                        # if layer.layer_name == 'tcp' and field == 'stream': 
+                        #     all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.stream info  
+                        # if layer.layer_name == 'tcp' and field == 'len': 
+                        #     all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.len info, which displays the length of tcp payload 
+                        if layer.layer_name == 'tcp' and field in special_fields: 
+                            # the attribute 'show' does not display the hex value, instead, dec value 
+                            # stream: tcp stream id 
+                            # len: payload length 
+                            all_fields[layer.layer_name + '_' + field] = field_obj.show 
+            res_list.append(all_fields) 
     pcap.close() 
     return res_list 
 
@@ -121,17 +124,19 @@ def get_reasemmble_info(pcap: pyshark.FileCapture):
     """
     res_dict = {} # {index: [reassemble packets]}
     for i in tqdm(range(packet_count(pcap)), "get reassemble info"): 
-        res_dict[i + 1] = [] # init i-th position as empty
-        segment_index = [] 
-        # print(f'${i}$: ${pcap[i].layers}')
-        for layer in pcap[i].layers: 
-            if layer.layer_name == 'DATA': # fake-field-wrapper is renamed to data in pyshark
-                for field in layer.field_names: 
-                    if field == 'tcp_segments': # reassemble will appearance in the last packet
-                        field_obj = layer.get_field(field) 
-                        content = field_obj.main_field.get_default_value() 
-                        segment_index.extend(match_segment_number(content)) 
-        for index in segment_index: # cover related values with its reassemble info
-            res_dict[index] = segment_index 
+        if pcap[i].transport_layer == 'TCP': # ignore the UDP based protocols 
+            frame_num = int(pcap[i].frame_info.get_field('number')) # get the number of frame
+            res_dict[frame_num] = [] # init i-th position as empty 
+            segment_index = [] 
+            # print(f'${i}$: ${pcap[i].layers}')
+            for layer in pcap[i].layers: 
+                if layer.layer_name == 'DATA': # fake-field-wrapper is renamed to data in pyshark
+                    for field in layer.field_names: 
+                        if field == 'tcp_segments': # reassemble will appearance in the last packet
+                            field_obj = layer.get_field(field) 
+                            content = field_obj.main_field.get_default_value() 
+                            segment_index.extend(match_segment_number(content)) 
+            for index in segment_index: # cover related values with its reassemble info
+                res_dict[index] = segment_index 
     pcap.close() 
     return res_dict
