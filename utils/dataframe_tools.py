@@ -63,8 +63,8 @@ def to_integer_code(df: pd.DataFrame, col_name = 'reassembled_segments'):
 
     Returns
     -------
-    value_to_code: dict
-        {'[]': -1, '[1, 2]': 0, '[3, 4, 5]': 1, ...}
+    df: dataframe
+        Transformed by the dict: {'[]': -1, '[1, 2]': 0, '[3, 4, 5]': 1, ...} 
     """
     dict_ori_integer = {} 
     code = 0 
@@ -98,6 +98,14 @@ def padding_features(df: pd.DataFrame, padding_value='ffff'):
 
 
 def get_not_nan_pos(mask_df: pd.DataFrame): 
+    """
+    Get the positions of values which are not NaN. 
+    For Columns, their positions start from '0'. 
+    But for Rows, their positions start from '1' in order to align with packets' number in Wireshark. 
+    
+    Attention: The '1' is not handled in our functions, but is extracted from the feature 
+    'tcp.frame_num' and used to be the index. 
+    """
     dict_true = {} 
     for col_num in range(mask_df.shape[1]): 
         list_true_indices = list(mask_df[mask_df.iloc[:, col_num]].index) 
@@ -105,6 +113,28 @@ def get_not_nan_pos(mask_df: pd.DataFrame):
     return dict_true 
 
 def truncate_to_block(dict_true: dict, block_type: Literal['continuous', 'discrete'] = 'continuous'): 
+    """
+    Truncate the packets' fields into blocks for different experts. 
+    
+    Compared with filling NaN values with '-1', 'ffff', or other symbols, this method 
+    significantly reduces the number of parameters and has the potential to enhance the feasibility 
+    of models in Mixture of Experts (MoE) structures. 
+    
+    Parameters 
+    ---------- 
+    dict_true: dict
+        The dict which contains the positions of not NaN values. 
+    block_type: Literal['continuous', 'discrete'] 
+        Generating block with 'continuous' fields or 'discrete' fields. 
+
+    Returns 
+    ------- 
+    dict_block: dict 
+        {'block': [], 'columns': [], 'rows': [] }. 
+        Specifically, columns use index and were not changed (add, delete, etc.), which can be located by .iloc. 
+        However, for rows, due to .iloc works by the position not index, and the non-TCP packets were filtered out in previous 
+        work, .loc should be used to handle this situation. 
+    """
     if block_type not in ['continuous', 'discrete']: 
         raise ValueError("block_type must be either 'continuous' or 'discrete'") 
     
@@ -188,6 +218,21 @@ def truncate_to_block(dict_true: dict, block_type: Literal['continuous', 'discre
     return dict_block 
 
 def truncating_features(df: pd.DataFrame, block_type: Literal['continuous', 'discrete'] = 'continuous'): 
+    """
+    Filter out the NaN columns and truncate the entries into different blocks. 
+    
+    Parameters 
+    ---------- 
+    df: pd.DataFrame 
+        The dataframe has deleted the NaN columns already. 
+    block_type: Literal['continuous', 'discrete'] 
+        Generating block with 'continuous' fields or 'discrete' fields. 
+
+    Returns 
+    ------- 
+    dict_block: dict 
+        {'block': [], 'columns': [], 'rows': [] }. 
+    """
     if block_type not in ['continuous', 'discrete']: 
         raise ValueError("block_type must be either 'continuous' or 'discrete'") 
     mask_df = df.notnull() 
@@ -195,14 +240,27 @@ def truncating_features(df: pd.DataFrame, block_type: Literal['continuous', 'dis
     dict_block = truncate_to_block(dict_true, block_type) 
     return dict_block 
 
-def block_to_dataframe(dict_block: dict, df_ori: pd.DataFrame, output_path: str): 
+def block_to_dataframe(dict_block: dict, df_ori: pd.DataFrame): # delete output_path: str
+    """
+    Turn the dict concluding block truncating information into a dataframe. 
+
+    Returns 
+    ------- 
+    list_block: list
+        [block0: pd.DataFrame, block1: pd.DataFrame, ...] 
+    """ 
+    list_block = []
     block_values = dict_block['block'] 
     columns_values = dict_block['columns'] 
     rows_values = dict_block['rows'] 
     for block_name, columns, rows in tqdm(zip(block_values, columns_values, rows_values)): 
+        if 0 not in columns: # frame_num must be added as index
+            columns.append(0) 
         subset_rows = df_ori.loc[rows] 
         sub_df = subset_rows.iloc[:, columns] 
-        output_csv_in_fold(sub_df, output_path, 'block_' + block_name + '.csv')
+        # output_csv_in_fold(sub_df, output_path, 'block_' + block_name + '.csv') 
+        list_block.append(sub_df) 
+    return list_block 
 
 # def truncating_features(dict_true: dict): 
     dict_block = {
@@ -230,7 +288,7 @@ def block_to_dataframe(dict_block: dict, df_ori: pd.DataFrame, output_path: str)
             block_flag += 1 
     return dict_block 
 
-def padding_or_truncating(df: pd.DataFrame, pon: bool, continuous_truncating=True): 
+def padding_or_truncating(df: pd.DataFrame, pon: bool, block_type: Literal['continuous', 'discrete'] = 'continuous'): 
     """
     Padding the NaN values or truncating the dataframe into various blocks. 
 
@@ -242,9 +300,17 @@ def padding_or_truncating(df: pd.DataFrame, pon: bool, continuous_truncating=Tru
         Padding or Not. True means using .fillna to padding the NaN values, while 
         False represents truncating the dataframe into different blocks. In each block, 
         feature values are clustered. 
-    """
+    block_type: Literal['continuous', 'discrete'] 
+        Generating block with 'continuous' fields or 'discrete' fields. 
+    """ 
+    if block_type not in ['continuous', 'discrete']: 
+        raise ValueError("block_type must be either 'continuous' or 'discrete'") 
+    res_list = [] 
+    df = to_integer_code(filter_out_nan(df)) 
     if pon: 
-        return padding_features(df) 
+        df = padding_features(df) 
+        res_list.append(df)
     else: 
-        pass
-    pass 
+        dict_block = truncating_features(df, block_type) 
+        res_list = block_to_dataframe(dict_block, df) 
+    return res_list 
