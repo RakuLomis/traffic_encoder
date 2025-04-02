@@ -1,0 +1,39 @@
+# The distinct value type that fields need to be transformed for better input to models. 
+# If the field name contains the specific string, it will be transformed into the corresponding type. 
+
+# Floating point
+Number: 
+- 
+  layer: ETH
+  fields: 
+    - ''
+- 
+  layer: IP
+  fields: 
+    - ''
+- 
+  layer: TCP 
+  fields: 
+    - '' 
+- 
+  layer: TLS
+  fields: 
+    - ''
+
+Category: 
+- 
+  layer: ETH
+  fields: 
+    - ''
+- 
+  layer: IP
+  fields: 
+    - ''
+- 
+  layer: TCP 
+  fields: 
+    - '' 
+- 
+  layer: TLS
+  fields: 
+    - ''
