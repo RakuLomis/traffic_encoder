@@ -1,0 +1,98 @@
+protocols: 
+  ETH: 
+    fields: 
+      - name: Destination_MAC
+        offset: 0
+        length: 6
+        type: hex
+      - name: Source_MAC
+        offset: 6
+        length: 6
+        type: hex
+      - name: EtherType
+        offset: 12
+        length: 2
+        type: hex
+    next_layer: "IP" # assign the next layer protocol 
+  IP:
+    fields:
+      - name: Version
+        offset: 0
+        length: 1
+        type: binary
+        bitmask: 0xf0
+        shift: 4
+      - name: IHL
+        offset: 0
+        length: 1
+        type: hex
+        bitmask: 0x0f
+      - name: Service_Type 
+        offset: 1  
+        length: 1
+        type: hex 
+      - name: Total_Length
+        offset: 2
+        length: 2
+        type: hex
+      - name: Identification 
+        offset: 4 
+        length: 2 
+        type: hex 
+      - name: Flags 
+        offset: 6 
+        length: 1 
+        type: binary 
+        bitmask: 0xe0
+      - name: Fragment_Offset 
+        offset: 6 
+        length: 2 
+        type: hex 
+        bitmask: 0x1fff
+      - name: Protocol
+        offset: 9
+        length: 1
+        type: hex
+    next_layer_map:   # find protocol of next layer by value of 'Protocol' 
+      "06": "TCP"     # '06' in hex represents TCP 
+  TCP:
+    fields:
+      - name: Source_Port
+        offset: 0
+        length: 2
+        type: hex
+      - name: Destination_Port
+        offset: 2
+        length: 2
+        type: hex
+      - name: Flags
+        offset: 13
+        length: 1
+        type: binary
+    next_layer: "TLS"  # 假设下一层是TLS
+
+  TLS:
+    fields:
+      - name: Content_Type
+        offset: 0
+        length: 1
+        type: hex
+      - name: Version
+        offset: 1
+        length: 2
+        type: hex
+      - name: Length
+        offset: 3
+        length: 2
+        type: hex
+
+  # Custom_Protocol: 
+  #   fields:
+  #     - name: Custom_ID
+  #       offset: 0
+  #       length: 4
+  #       type: hex
+  #     - name: Payload
+  #       offset: 4
+  #       length: dynamic  
+  #       type: hex

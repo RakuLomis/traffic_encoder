@@ -1,0 +1,85 @@
+protocols:
+  ETH:
+    fields:
+      - name: Destination_MAC # 6 bytes, 48 bits
+        bit_offset: 0
+        bit_length: 48
+      - name: Source_MAC # 6 bytes, 48 bits
+        bit_offset: 48
+        bit_length: 48
+      - name: EtherType # 2 bytes, 16 bits
+        bit_offset: 96
+        bit_length: 16
+    bit_length: 112  # total_length without 'options' and payload
+    next_layer: "IP" 
+
+  IP:
+    fields:
+      - name: Version # 4 bits
+        bit_offset: 0
+        bit_length: 4
+      - name: IHL # 4 bits
+        bit_offset: 4
+        bit_length: 4
+      - name: Type_of_Service # 1 byte, 8 bits
+        bit_offset: 8
+        bit_length: 8 
+      - name: Total_Length # 2 bytes, 16 bits
+        bit_offset: 16
+        bit_length: 16
+      - name: Identification # 4 bytes, 32 bits
+        bit_offset: 32 
+        bit_length: 16 
+      - name: Flags 
+        bit_offset: 48 
+        bit_length: 3 
+      - name: Fragment_Offset 
+        bit_offset: 51 
+        bit_length: 13 
+      - name: TTL
+        bit_offset: 64 
+        bit_length: 8 
+      - name: Protocol
+        bit_offset: 72
+        bit_length: 8   # 1字节 = 8位 
+      - name: Header_Checksum
+        bit_offset: 80 
+        bit_length: 16 
+      - name: Source_Address
+        bit_offset: 96 
+        bit_length: 32 
+      - name: Destination_Address 
+        bit_offset: 128 
+        bit_length: 32 
+      - name: Options
+        bit_offset: 160 
+        bit_length: dynamic
+    bit_length: dynamic  # IP头部默认20字节 = 160位
+    next_layer_map:
+      "00000110": "TCP"  # Protocol = 6（二进制）
+
+  TCP:
+    fields:
+      - name: Source_Port
+        bit_offset: 0
+        bit_length: 16  # 2字节 = 16位
+      - name: Destination_Port
+        bit_offset: 16
+        bit_length: 16  # 2字节 = 16位
+      - name: Sequence_Number
+        bit_offset: 32
+        bit_length: 32  # 4字节 = 32位
+      - name: Flags
+        bit_offset: 104
+        bit_length: 8   # 1字节 = 8位
+    bit_length: 160  # TCP头部默认20字节 = 160位
+    # next_layer: "Custom_Protocol"
+
+  # Custom_Protocol:
+  #   fields:
+  #     - name: Custom_ID
+  #       bit_offset: 0
+  #       bit_length: 32  # 4字节 = 32位
+  #     - name: Payload
+  #       bit_offset: 32
+  #       bit_length: dynamic  # 动态长度
