@@ -7,7 +7,9 @@ import yaml
 path_tls_pcap = 'E:\\Program\\VSCode\\MyGit\\TrafficEncoder\\Data\\Test\\tls_test_01.pcapng' 
 pcap_test = rdpcap(path_tls_pcap) 
 packet_0 = pcap_test[0] 
-print(packet_0)
+packet_253 = pcap_test[253] # the last packet of tls handshake procudure
+print(packet_0) 
+print(packet_253) 
  
 # pcap = pyshark.FileCapture(path_tls_pcap,use_json=True, include_raw=True) # raw data must keep use_json and include_raw be True
 # pcap = pyshark.FileCapture(path_tls_pcap)
@@ -178,5 +180,5 @@ def parse_packet_bit(packet, protocols):
 
 # protocol_rules =  load_from_yaml('E:\\Program\\VSCode\\MyGit\\TrafficEncoder\\utils\\fields.yaml') 
 protocol_rules_bit = load_from_yaml('E:\\Program\\VSCode\\MyGit\\TrafficEncoder\\utils\\fields_bits.yaml') 
-parsed_data = parse_packet_bit(packet_0, protocol_rules_bit) 
+parsed_data = parse_packet_bit(packet_253, protocol_rules_bit) 
 print(parsed_data)

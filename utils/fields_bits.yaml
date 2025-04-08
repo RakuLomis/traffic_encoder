@@ -121,6 +121,63 @@ protocols:
     bit_length: dynamic   # defalut length is 160 bits
     # next_layer: "Custom_Protocol"
 
+  TLS: # TLS record
+    fields: 
+      - name: Content_Type
+        bit_offset: 0 
+        bit_length: 8 
+      - name: Legacy_Version
+        bit_offset: 8 
+        bit_length: 16 
+      - name: Length # The length of "protocol message(s)", "MAC" and "padding" fields combined. 
+        bit_offset: 24 
+        bit_length: 16 
+      - name: Protocol_Messages
+        bit_offset: 40 
+        bit_length: dynamic 
+        details: 
+          # Handshake Protocol, Content_Type == 22 
+          - name: Message_Type 
+            type: Handshake
+            bit_offset: 40
+            bit_length: 8 
+          - name: Data_Length 
+            type: Handshake 
+            bit_offset: 48 
+            bit_length: 24 
+          - name: Message_Type_Multi
+            type: Handshake 
+            bit_offset: dynamic 
+            bit_length: 8 
+          - name: Data_Length_Multi 
+            type: Handshake 
+            bit_offset: dynamic 
+            bit_length: 24 
+          # Alert Protocol, Content_Type == 21 
+          - name: Level
+            type: Alert 
+            bit_offset: 40 
+            bit_length: 8 
+          - name: Description 
+            type: Alert 
+            bit_offset: 48 
+            bit_length: 8 
+          # ChangeCipherSpec Protocol, Content_Type == 20 
+          - name: CCS_Protocol_Type 
+            type: ChangeCipherSpec 
+            bit_offset: 40 
+            bit_length: 8 
+          # Application Protocol, Content_Type == 23 
+          - name: Application_Data 
+            type: Application 
+            bit_offset: 40
+            bit_length: dynamic 
+      - name: MAC # Message Authentication Code 
+        bit_offset: dynamic 
+        bit_length: dynamic # 32 bytes for the SHA-256-based HMAC, 20 bytes for the SHA-1-based HMAC, 16 bytes for the MD5-based HMAC  
+      - name: Padding 
+        bit_offset: dynamic 
+        bit_length: dynamic # Variable length; last byte contains the padding length 
   # Custom_Protocol:
   #   fields:
   #     - name: Custom_ID
