@@ -41,7 +41,7 @@ protocols:
         bit_length: 8 
       - name: Protocol
         bit_offset: 72
-        bit_length: 8   # 1字节 = 8位 
+        bit_length: 8 
       - name: Header_Checksum
         bit_offset: 80 
         bit_length: 16 
@@ -54,7 +54,7 @@ protocols:
       - name: Options
         bit_offset: 160 
         bit_length: dynamic
-    bit_length: dynamic  # IP头部默认20字节 = 160位
+    bit_length: dynamic  # the default length of IP is 160 bits
     next_layer_map:
       "00000110": "TCP"  # Protocol = 6（二进制）
 
@@ -62,17 +62,63 @@ protocols:
     fields:
       - name: Source_Port
         bit_offset: 0
-        bit_length: 16  # 2字节 = 16位
+        bit_length: 16 
       - name: Destination_Port
         bit_offset: 16
-        bit_length: 16  # 2字节 = 16位
+        bit_length: 16 
       - name: Sequence_Number
         bit_offset: 32
-        bit_length: 32  # 4字节 = 32位
-      - name: Flags
+        bit_length: 32 
+      - name: Acknowledgment_Number 
+        bit_offset: 64 
+        bit_length: 32 
+      - name: Data_Offset 
+        bit_offset: 96 
+        bit_length: 4 
+      - name: Reserved 
+        bit_offset: 100 
+        bit_length: 4
+      - name: Flags # Whether the flags need to be segmented into details like CWR, ECE, ACK, etc.?
         bit_offset: 104
-        bit_length: 8   # 1字节 = 8位
-    bit_length: 160  # TCP头部默认20字节 = 160位
+        bit_length: 8 
+        details: 
+          - name: CWR 
+            bit_offset: 104 
+            bit_length: 1 
+          - name: ECE 
+            bit_offset: 105 
+            bit_length: 1 
+          - name: URG 
+            bit_offset: 106 
+            bit_length: 1 
+          - name: ACK 
+            bit_offset: 107 
+            bit_length: 1 
+          - name: PSH 
+            bit_offset: 108 
+            bit_length: 1 
+          - name: RST 
+            bit_offset: 109 
+            bit_length: 1 
+          - name: SYN 
+            bit_offset: 110 
+            bit_length: 1 
+          - name: FIN 
+            bit_offset: 111 
+            bit_length: 1 
+      - name: Window
+        bit_offset: 112 
+        bit_length: 16 
+      - name: Checksum 
+        bit_offset: 128 
+        bit_length: 16 
+      - name: Urgent_Pointer 
+        bit_offset: 144 
+        bit_length: 16 
+      - name: Options 
+        bit_offset: 160 
+        bit_length: dynamic
+    bit_length: dynamic   # defalut length is 160 bits
     # next_layer: "Custom_Protocol"
 
   # Custom_Protocol:

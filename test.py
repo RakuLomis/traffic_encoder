@@ -111,8 +111,17 @@ def parse_packet(packet, protocols):
 
     return result 
 
+def get_field_value(info: dict, proto: str, field: str): 
+    """
+    Get the specific field value in the handled dictonary not raw data. 
+    """
+    value = info[proto][field]
+    if isinstance(value, str): 
+        value = int(value)
+    return value 
+
 def parse_packet_bit(packet, protocols): 
-    raw_data = bytes(packet)  # 获取数据包的原始字节
+    raw_data = bytes(packet)  # get original byte info of packet
     result = {}
     current_bit_offset = 0
     current_proto = 'ETH'  # 从以太网层开始
@@ -129,11 +138,19 @@ def parse_packet_bit(packet, protocols):
         for field in fields:
             bit_offset = current_bit_offset + field['bit_offset']
             bit_length = field['bit_length']
-            field_name = field['name']
+            field_name = field['name'] 
+
+            if 'details' in field: 
+                pass 
 
             # 处理动态长度
-            if bit_length == 'dynamic':
-                bit_length = len(raw_data) * 8 - bit_offset
+            if bit_length == 'dynamic': 
+                if current_proto == 'IP': 
+                    bit_length = get_field_value(result, current_proto, 'Total_Length') - bit_offset 
+                elif current_proto == 'TCP': 
+                    bit_length = get_field_value(result, current_proto, 'Data_Offset') - bit_offset 
+                else: 
+                    bit_length = len(raw_data) * 8 - bit_offset 
             else:
                 bit_length = int(bit_length)
 
@@ -144,7 +161,8 @@ def parse_packet_bit(packet, protocols):
 
         # 更新位偏移量
         # proto_bit_length = proto_def['bit_length']
-        proto_bit_length = proto_def['bit_length']
+        proto_bit_length = max(field['bit_offset'] + (int(field['bit_length']) if field['bit_length'] != 'dynamic' else 0) 
+                          for field in fields) 
         current_bit_offset += proto_bit_length
 
         # 确定下一层协议
