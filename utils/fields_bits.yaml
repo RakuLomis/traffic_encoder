@@ -145,7 +145,7 @@ protocols:
             type: Handshake 
             bit_offset: 48 
             bit_length: 24 
-          - name: Message_Type_Multi
+          - name: Message_Type_Multi # Maybe more than 1
             type: Handshake 
             bit_offset: dynamic 
             bit_length: 8 

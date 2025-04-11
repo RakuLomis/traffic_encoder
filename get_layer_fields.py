@@ -6,6 +6,7 @@ from utils.pcap_tools import get_fields_over_layers
 from utils.pcap_tools import get_pcap_path 
 from utils.pcap_tools import get_reasemmble_info 
 from utils.dataframe_tools import get_file_path 
+from utils.dataframe_tools import filter_out_nan
 
 """ 
 Get fields hexvalues into two dataframes (fields_values, reassemble information) and merge them into one. 
@@ -31,6 +32,11 @@ if pcap_path_list is not None:
         df_fields = pd.DataFrame(list_fields) # frame_num
         # df_fields['index'] = range(1, len(df_reassemble) + 1) 
         df_merge_tls = pd.merge(df_fields, df_reassemble, on=["frame_num"], how="outer") 
+        print(f'original shape: ${df_merge_tls.shape}')
         # df_fields.to_csv(os.path.join(directory_path, file_name + '.csv'), index=False) 
+        # df_merge_tls = filter_out_nan(df_merge_tls) 
+        all_nan_cols = df_merge_tls.columns[df_merge_tls.isna().all()] 
+        df_merge_tls = df_merge_tls.drop(columns=all_nan_cols)
+        print(f'fill out NaN shape: ${df_merge_tls.shape}')
         df_merge_tls.to_csv(os.path.join(directory_path, 'merge_' + file_name + '.csv'), index=False)
         pcap_file.close() 

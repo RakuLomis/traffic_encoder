@@ -72,23 +72,17 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
             for layer in pcap[i].layers: 
                 if layer.layer_name in given_layers: 
                     for field in layer.field_names: 
-                        # print(f'${layer}: ${layer.filed_names}')               
-                        # if field not in payload_field:  
                         field_obj = layer.get_field(field) 
+                        if getattr(field_obj.main_field, 'hide'): # skip the hidden attributes
+                            continue 
                         # Do not use .show, although it may describe the briefer and more readable information 
                         # .value will display the hexadcimal of ascii code 
                         hex_value = field_obj.raw_value
-                        # value_size = field_obj.size 
-                        # if hex_value is not None and len(hex_value) <= 64: 
                         if hex_value is not None: 
                             if len(hex_value) >= 64: # skip the too long features, such as payload. 
                                 long_field.append(field) 
                             if field not in long_field: 
                                 all_fields[layer.layer_name + '_' + field] = hex_value 
-                        # if layer.layer_name == 'tcp' and field == 'stream': 
-                        #     all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.stream info  
-                        # if layer.layer_name == 'tcp' and field == 'len': 
-                        #     all_fields[layer.layer_name + '_' + field] = field_obj.show # Take tcp.len info, which displays the length of tcp payload 
                         if layer.layer_name == 'tcp' and field in special_fields: 
                             # the attribute 'show' does not display the hex value, instead, dec value 
                             # stream: tcp stream id 
