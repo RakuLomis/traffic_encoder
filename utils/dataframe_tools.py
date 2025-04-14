@@ -53,6 +53,7 @@ def filter_out_nan(df: pd.DataFrame):
     """
     Filter out columns whose values are all NaN. 
     """
+    df = df.replace(['', 'nan', 'NaN', None], pd.NA)
     all_nan_cols = df.columns[df.isna().all()] 
     return df.drop(columns=all_nan_cols) 
 
