@@ -39,12 +39,13 @@ def get_pcap_path(dir_path: str):
         print("Invalid directory path") 
     return pcap_paths, file_names 
 
-def delete_prefix_for_list_item(l: list, prefix: str): 
+def delete_prefix_for_list_item(l: list, prefix: str, replace_dot=True): 
     res = []
     for item in l: 
         if item.startswith(prefix): 
             item = item.split(prefix, 1)[1] 
-        item = item.replace('.', '_').replace('-', '_').lower() 
+        if replace_dot: 
+            item = item.replace('.', '_').replace('-', '_').lower() 
         res.append(item) 
     return res
 
@@ -79,13 +80,14 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
             for layer in pcap[i].layers: 
                 if layer.layer_name in given_layers: 
                     list_field_ori = list(layer._all_fields.keys()) # eth.dst, eth.dst_resolved 
+                    list_field_no_layer_field = delete_prefix_for_list_item(list_field_ori, layer.layer_name + '.', False)
                     list_field_replaced = delete_prefix_for_list_item(list_field_ori, layer.layer_name + '.') 
                     for field in layer.field_names: 
                         try: 
                             field_index = list_field_replaced.index(field) 
                         except ValueError: 
                             print('No matched field. ') 
-                        field_dot_split = list_field_ori[field_index]
+                        field_dot_split = list_field_no_layer_field[field_index]
                         field_obj = layer.get_field(field) 
                         if getattr(field_obj.main_field, 'hide'): # skip the hidden attributes
                             continue 
@@ -96,7 +98,7 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                             if len(hex_value) >= 64: # skip the too long features, such as payload. 
                                 long_field.append(field) 
                             if field not in long_field: 
-                                all_fields[field_dot_split] = hex_value 
+                                all_fields[layer.layer_name + '.' + field_dot_split] = hex_value 
                                 # all_fields[layer.layer_name + '_' + field] = hex_value 
                                 # pyshark uses '_' to split fields in protocol tree, 
                                 # which is also used to represent a field name combined by several words. 
@@ -105,7 +107,7 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                             # the attribute 'show' does not display the hex value, instead, dec value 
                             # stream: tcp stream id 
                             # len: payload length 
-                            all_fields[field_dot_split] = field_obj.show 
+                            all_fields[layer.layer_name + '.' + field_dot_split] = field_obj.show 
                             # all_fields[layer.layer_name + '_' + field] = field_obj.show 
             res_list.append(all_fields) 
     pcap.close() 
