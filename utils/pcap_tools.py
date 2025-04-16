@@ -95,6 +95,8 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                         # .value will display the hexadcimal of ascii code 
                         hex_value = field_obj.raw_value
                         if hex_value is not None: 
+                            # if field == '': 
+                            #     continue
                             if len(hex_value) >= 64: # skip the too long features, such as payload. 
                                 long_field.append(field) 
                             if field not in long_field: 
@@ -103,6 +105,7 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                                 # pyshark uses '_' to split fields in protocol tree, 
                                 # which is also used to represent a field name combined by several words. 
                                 # So we need to distinguish these field names. 
+
                         if layer.layer_name == 'tcp' and field in special_fields: 
                             # the attribute 'show' does not display the hex value, instead, dec value 
                             # stream: tcp stream id 
