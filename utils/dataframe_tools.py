@@ -345,8 +345,7 @@ def find_fields_by_prefix_physically(layers: list, layer_prefixes: dict, fields:
                             if field.startswith(prefix) and len(field.split('.')) - extra_len_prefix == 1: 
                                 layer_prefixes[layer].append(field) 
                                 next_layers.append(field) 
-                    empty_layers.remove(layer) 
-                    
+                    empty_layers.remove(layer)                
         else: 
             for prefix in layers: 
                 len_prefix = len(prefix.split('.')) 
@@ -365,7 +364,31 @@ def find_fields_by_prefix_physically(layers: list, layer_prefixes: dict, fields:
     init = False
     return layer_prefixes, next_layers, init 
 
-def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls']): 
+def find_fields_by_prefix_logically(layers: list, layer_prefixes: dict, fields: list, len_prefix: int): 
+    next_layers = [] 
+    if len(layers) > 0: 
+        for field in fields: 
+            prefix = '.'.join(field.split('.')[:len_prefix]) 
+            if prefix not in layers and len(field.split('.')) - len_prefix == 0: 
+                layer_prefixes['statistics'].append(field) 
+            elif field.startswith(prefix) and len(field.split('.')) - len_prefix == 1: # 
+                if prefix not in layer_prefixes: 
+                    layer_prefixes[prefix] = [] 
+                layer_prefixes[prefix].append(field) 
+                next_layers.append(field) 
+            elif field.startswith(prefix) and len(field.split('.')) - len_prefix >= 2: 
+                current_layer = '.'.join(field.split('.')[:len_prefix + 1]) 
+                if prefix in layer_prefixes: 
+                    if current_layer not in layer_prefixes[prefix]: 
+                        layer_prefixes[prefix].append(current_layer) 
+                        next_layers.append(current_layer) 
+                else: # in order to handle the single structure fields like 'tls.ber.bitstring.padding'
+                    layer_prefixes[prefix] = [] 
+                    layer_prefixes[prefix].append(current_layer) 
+                    next_layers.append(current_layer) 
+    return layer_prefixes, next_layers 
+
+def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], logical_tree =True): 
     """
     Find the hierarchy structure of protocols by handling the csv columns. 
     """
@@ -373,9 +396,14 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls']):
     dict_protocol_tree['statistics'] = [] 
     lens = [len(item.split('.')) for item in list_fields]
     len_prefix = 1 # length of current prefix, i.e. eth 
-    max_field_len = max(lens)
-    init = True
-    while len_prefix < max_field_len: 
-        dict_protocol_tree, list_layers, init = find_fields_by_prefix_physically(list_layers, dict_protocol_tree, list_fields, init) 
-        len_prefix += 1
+    max_field_len = max(lens) 
+    if logical_tree: 
+        while len_prefix < max_field_len: 
+            dict_protocol_tree, list_layers = find_fields_by_prefix_logically(list_layers, dict_protocol_tree, list_fields, len_prefix) 
+            len_prefix += 1
+    else:  
+        init = True
+        while len_prefix < max_field_len: 
+            dict_protocol_tree, list_layers, init = find_fields_by_prefix_physically(list_layers, dict_protocol_tree, list_fields, init) 
+            len_prefix += 1
     return dict_protocol_tree 
