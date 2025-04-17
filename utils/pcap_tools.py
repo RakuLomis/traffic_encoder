@@ -95,8 +95,8 @@ def get_fields_over_layers(pcap: pyshark.FileCapture, given_layers = ['eth', 'ip
                         # .value will display the hexadcimal of ascii code 
                         hex_value = field_obj.raw_value
                         if hex_value is not None: 
-                            # if field == '': 
-                            #     continue
+                            if field == '': 
+                                continue
                             if len(hex_value) >= 64: # skip the too long features, such as payload. 
                                 long_field.append(field) 
                             if field not in long_field: 
