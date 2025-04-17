@@ -2,7 +2,8 @@ import pandas as pd
 import numpy as np
 import os 
 
-path = 'E:\\Program\\VSCode\\MyGit\\traffic_encoder\\Data\\Test\\merge_tls_test_01.csv' 
+# path = 'E:\\Program\\VSCode\\MyGit\\traffic_encoder\\Data\\Test\\merge_tls_test_01.csv' 
+path = 'E:\\Program\\VSCode\\MyGit\\traffic_encoder\\Data\\Test\\merge_tls_test_01\\discrete\\16.csv'
 df = pd.read_csv(path) 
 
 list_col = df.columns.tolist() 
@@ -141,4 +142,4 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls']):
     return dict_protocol_tree 
 
 dict_tree = protocol_tree(list_col) 
-print(dict_tree)
+print(dict_tree) 

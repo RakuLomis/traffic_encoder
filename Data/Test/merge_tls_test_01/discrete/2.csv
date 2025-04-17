@@ -1,4 +1,4 @@
-tcp_options,tcp_options_nop,tcp_option_kind,tcp_option_len,frame_num
+tcp.options,tcp.options.nop,tcp.option_kind,tcp.option_len,frame_num
 0101080a002b1d84016a5805,1.0,1.0,0a,1
 020405b4010303080402080a002b230200000000,1.0,2.0,04,2
 020405840402080afeef2372002b230201030308,1.0,2.0,04,3

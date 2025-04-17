@@ -1,4 +1,4 @@
-tls_handshake_client_point_len,frame_num
+tls.handshake.client_point_len,frame_num
 41.0,268
 41.0,269
 41.0,1315

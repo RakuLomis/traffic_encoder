@@ -1,4 +1,4 @@
-tcp_options_timestamp,tcp_options_timestamp_tsval,tcp_options_timestamp_tsecr,frame_num
+tcp.options.timestamp,tcp.options.timestamp.tsval,tcp.options.timestamp.tsecr,frame_num
 080a002b1d84016a5805,002b1d84,016a5805,1
 080a002b230200000000,002b2302,00000000,2
 080afeef2372002b2302,feef2372,002b2302,3

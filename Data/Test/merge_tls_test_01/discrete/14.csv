@@ -1,4 +1,4 @@
-tls_record_opaque_type,frame_num
+tls.record.opaque_type,frame_num
 17.0,11
 17.0,13
 17.0,14

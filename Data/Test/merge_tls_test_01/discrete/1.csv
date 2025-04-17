@@ -1,4 +1,4 @@
-tcp_window_size_scalefactor,frame_num
+tcp.window_size_scalefactor,frame_num
 03fe,1
 0202,4
 0202,5

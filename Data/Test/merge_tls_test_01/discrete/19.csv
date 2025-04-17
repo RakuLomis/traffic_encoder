@@ -1,4 +1,4 @@
-tls_handshake_session_ticket_lifetime_hint,tls_handshake_session_ticket_length,frame_num
+tls.handshake.session_ticket_lifetime_hint,tls.handshake.session_ticket_length,frame_num
 00000000,00a0,277
 00000000,00a0,279
 00000000,00a0,1379

@@ -1,4 +1,4 @@
-tcp_options_mss,tcp_options_mss_val,tcp_options_wscale,tcp_options_wscale_shift,tcp_options_wscale_multiplier,tcp_options_sack_perm,frame_num
+tcp.options.mss,tcp.options.mss_val,tcp.options.wscale,tcp.options.wscale.shift,tcp.options.wscale.multiplier,tcp.options.sack_perm,frame_num
 020405b4,05b4,30308.0,8.0,8.0,402.0,2
 02040584,0584,30308.0,8.0,8.0,402.0,3
 020405b4,05b4,30308.0,8.0,8.0,402.0,33

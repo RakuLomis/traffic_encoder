@@ -1,4 +1,4 @@
-tls_record_content_type,frame_num
+tls.record.content_type,frame_num
 16.0,6
 16.0,8
 14.0,13

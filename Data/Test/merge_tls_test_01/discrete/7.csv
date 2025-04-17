@@ -1,4 +1,4 @@
-tls_handshake_type,tls_handshake_length,frame_num
+tls.handshake.type,tls.handshake.length,frame_num
 01,0006c2,6
 02,0004b6,8
 01,0006b8,38

@@ -1,4 +1,4 @@
-tcp_options_sack,tcp_options_sack_le,tcp_options_sack_re,frame_num
+tcp.options.sack,tcp.options.sack_le,tcp.options.sack_re,frame_num
 050a2383fddf238401a8,2383fddf,238401a8,103
 050ad7e28aa2d7e28e15,d7e28aa2,d7e28e15,273
 050aa91da48ba91da7fe,a91da48b,a91da7fe,275

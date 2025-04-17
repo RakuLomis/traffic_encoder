@@ -1,4 +1,4 @@
-tls_record_version,tls_record_length,frame_num
+tls.record.version,tls.record.length,frame_num
 301.0,06c6,6
 303.0,04ba,8
 303.0,0ca0,11

@@ -1,4 +1,4 @@
-tls_handshake_version,tls_handshake_session_id_length,tls_handshake_ciphersuite,tls_handshake_comp_method,tls_handshake_extensions_length,tls_handshake_extension_type,tls_handshake_extension_len,frame_num
+tls.handshake.version,tls.handshake.session_id_length,tls.handshake.ciphersuite,tls.handshake.comp_method,tls.handshake.extensions_length,tls.handshake.extension.type,tls.handshake.extension.len,frame_num
 303.0,20.0,2a2a,0.0,0659,0a0a,0.0,6
 303.0,20.0,1301,0.0,046e,0033,464.0,8
 303.0,20.0,caca,0.0,064f,eaea,0.0,38
