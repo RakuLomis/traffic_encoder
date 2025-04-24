@@ -40,10 +40,27 @@ def get_pcap_path(dir_path: str):
     return pcap_paths, file_names 
 
 def delete_prefix_for_list_item(l: list, prefix: str, replace_dot=True): 
+    """
+    Delete the prefix for the specific list elements and exchange the '.' and '-' with '_'. 
+
+    Parameters 
+    ---------- 
+    l: list 
+        The list contains target strings. 
+    prefix: str
+        The prefix you want to delete. 
+    replace_dot: bool, default True 
+        Replace the '.' and '-' in strings or not. 
+
+    Returns 
+    ------- 
+    res: list 
+        The handled list. 
+    """
     res = []
     for item in l: 
         if item.startswith(prefix): 
-            item = item.split(prefix, 1)[1] 
+            item = item.split(prefix, 1)[1] # extract the content after prefix 
         if replace_dot: 
             item = item.replace('.', '_').replace('-', '_').lower() 
         res.append(item) 

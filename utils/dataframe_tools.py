@@ -106,6 +106,10 @@ def get_not_nan_pos(mask_df: pd.DataFrame):
     
     Attention: The '1' is not handled in our functions, but is extracted from the feature 
     'tcp.frame_num' and used to be the index. 
+
+    Returns 
+    ------- 
+    dict_true: dict, {col_num: [row_num (not NaN)]}
     """
     dict_true = {} 
     for col_num in range(mask_df.shape[1]): 
@@ -133,7 +137,7 @@ def truncate_to_block(dict_true: dict, block_type: Literal['continuous', 'discre
     dict_block: dict 
         {'block': [], 'columns': [], 'rows': [] }. 
         Specifically, columns use index and were not changed (add, delete, etc.), which can be located by .iloc. 
-        However, for rows, due to .iloc works by the position not index, and the non-TCP packets were filtered out in previous 
+        However, for rows, since .iloc works by the position not index, and the non-TCP packets were filtered out in previous 
         work, .loc should be used to handle this situation. 
     """
     if block_type not in ['continuous', 'discrete']: 
