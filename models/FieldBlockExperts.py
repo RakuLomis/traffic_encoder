@@ -1,0 +1,73 @@
+import torch 
+import torch.nn as nn 
+from torch.nn import MultiheadAttention, LayerNorm, Linear, ReLU 
+from typing import Dict, List
+
+class FFN(nn.Module): 
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None: 
+        super().__init__() 
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim), 
+            nn.ReLU(), 
+            nn.Linear(hidden_dim, output_dim) 
+        ) 
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor: 
+        return self.net(x) 
+
+class ResidualBlock(nn.Module): 
+    def __init__(self, dim: int, hidden_dim: int, subfields_num: int) -> None:
+        super().__init__() 
+        input_num = dim * subfields_num
+        self.ffn = FFN(input_num, hidden_dim, dim) 
+
+    def forward(self, parent: torch.Tensor, subfields: List[torch.Tensor]): 
+        if not subfields: 
+            return parent 
+        subfields_concat = torch.cat(subfields, dim=-1)
+        subfields_out = self.ffn(subfields) 
+        return parent + subfields_out 
+
+class FieldsEmbeddingModule(nn.Module): 
+    pass 
+
+class TreeAttentionModule(nn.Module): 
+    """
+    Field Tree (FT) module for a specific Field Block (FB). 
+
+    In a FB, the Tree Attention module subjects to the following rules. 
+        1. Only childs of root (main fields) node for each protocol use Attention to find the correlation between fields. 
+        2. Sub-fields are handled by FFN and will be added to their parent node by Residual Block. 
+
+    Example 
+    ------- 
+    FT = {'eth': ['eth.dst', 'eth.src'], 'ip': ['ip.dsfield', 'ip.flags'], 
+        'eth.dst': ['eth.dst.lg', 'eth.dst.ig'], 'eth.src': ['eth.src.lg', 'eth.src.ig'], 
+        'ip.dsfield': ['ip.dsfield.dscp', 'ip.dsfield.ecn'], 'ip.flags': ['ip.flags.rb', 'ip.flags.df', 'ip.flags.mf']} 
+
+    output = Attention(Attention('eth.dst', 'eth.src'), Attention('ip.dsfield', 'ip.flags')) 
+        = Attention(Attention(Residual('eth.dst', FFN('eth.dst.lg', 'eth.dst.ig')), 
+            Residual('eth.src', FFN('eth.src.lg', 'eth.src.ig'))), 
+            Attention(Residual('ip.dsfield', FFN('ip.dsfield.dscp', 'ip.dsfield.ecn')), 
+            Residual('ip.flags', FFN('ip.flags.rb', 'ip.flags.df', 'ip.flags.mf')))) 
+    """
+    def __init__(self, d_model, n_head, dim_forward) -> None:
+        super().__init__() 
+        self.attention = MultiheadAttention(d_model, n_head) 
+        self.norm = LayerNorm(d_model) 
+        self.ffn = nn.Sequential(
+            # TODO
+        ) 
+        self.shortcut = nn.Sequential() 
+
+    def forward(self, parent_fields, child_fields): 
+        pass 
+
+class MainExpertModule(nn.Module): 
+    pass 
+
+class ExtraExpertModule(nn.Module): 
+    pass 
+
+class FieldBlockExperts(nn.Module): 
+    pass 
