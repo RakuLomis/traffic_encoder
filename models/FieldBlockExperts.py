@@ -4,22 +4,37 @@ from torch.nn import MultiheadAttention, LayerNorm, Linear, ReLU
 from typing import Dict, List
 
 class FFN(nn.Module): 
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None: 
+    def __init__(self, dim_input: int, dim_hidden: int, dim_output: int) -> None: 
+        """
+        Two linear layer refers to Transformer. 
+        """
         super().__init__() 
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim), 
+            nn.Linear(dim_input, dim_hidden), 
             nn.ReLU(), 
-            nn.Linear(hidden_dim, output_dim) 
+            nn.Linear(dim_hidden, dim_output) 
         ) 
     
     def forward(self, x: torch.Tensor) -> torch.Tensor: 
         return self.net(x) 
 
-class ResidualBlock(nn.Module): 
-    def __init__(self, dim: int, hidden_dim: int, subfields_num: int) -> None:
+class SubfieldsBlock(nn.Module): 
+    def __init__(self, dim_subfields, dim_field, dim_hidden) -> None:
         super().__init__() 
-        input_num = dim * subfields_num
-        self.ffn = FFN(input_num, hidden_dim, dim) 
+        self.ffn_subfields = FFN(dim_subfields, dim_hidden, dim_field) 
+        # self.ffn_field = FFN(dim_field, dim_hidden, dim_field) 
+        self.norm = nn.LayerNorm(dim_field) 
+
+    def forward(self, subfields, field): 
+        output = self.ffn_subfields(subfields) 
+        output = field + output 
+        output = self.norm(output) 
+        return output 
+
+class ResidualBlock(nn.Module): 
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None:
+        super().__init__() 
+        self.ffn = FFN(input_dim, hidden_dim, output_dim) 
 
     def forward(self, parent: torch.Tensor, subfields: List[torch.Tensor]): 
         if not subfields: 
