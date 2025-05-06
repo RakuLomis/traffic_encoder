@@ -70,6 +70,20 @@ class AddNorm(nn.Module):
         x = before + after 
         output = self.norm(x) 
         return output  
+    
+class ProtocolTreeAttention(nn.Module): 
+    """
+    Protocol Tree Attention Module for one protocol in a Field Block. 
+
+    """
+    def __init__(self, dims_subfields: List, dim_fields: int) -> None:
+        super().__init__() 
+        self.subfields_block = nn.ModuleList([
+            SubfieldsBlock(dim_subfields, dim_fields) for dim_subfields in dim_fields 
+        ]) 
+    def forward(self, subfields: List[torch.Tensor], fields: List[torch.Tensor]):  
+        pass 
+
 
 
 class ResidualBlock(nn.Module): 
