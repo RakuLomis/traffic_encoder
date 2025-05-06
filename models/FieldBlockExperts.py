@@ -1,14 +1,16 @@
 import torch 
 import torch.nn as nn 
 from torch.nn import MultiheadAttention, LayerNorm, Linear, ReLU 
-from typing import Dict, List
+from typing import Dict, List 
+import torch.nn.functional as F 
 
 class FFN(nn.Module): 
-    def __init__(self, dim_input: int, dim_hidden: int, dim_output: int) -> None: 
+    def __init__(self, dim_input: int, dim_output: int) -> None: 
         """
         Two linear layer refers to Transformer. 
         """
         super().__init__() 
+        dim_hidden = 64 
         self.net = nn.Sequential(
             nn.Linear(dim_input, dim_hidden), 
             nn.ReLU(), 
@@ -19,17 +21,56 @@ class FFN(nn.Module):
         return self.net(x) 
 
 class SubfieldsBlock(nn.Module): 
-    def __init__(self, dim_subfields, dim_field, dim_hidden) -> None:
+    """
+    A protocol is composed by several fields, like p = [f1, f2, ..., fn]. 
+    For field fi, it can be dissected into subfields having specific meanings. 
+    For subfields of a same field, they are combined by a Feedforward layer and turned into a assigned dimension. 
+    Then, the result is added to field and normalized. 
+    """
+    def __init__(self, dim_subfields, dim_field) -> None:
         super().__init__() 
-        self.ffn_subfields = FFN(dim_subfields, dim_hidden, dim_field) 
+        self.ffn_subfields = FFN(dim_subfields, dim_field) 
         # self.ffn_field = FFN(dim_field, dim_hidden, dim_field) 
         self.norm = nn.LayerNorm(dim_field) 
 
     def forward(self, subfields, field): 
-        output = self.ffn_subfields(subfields) 
-        output = field + output 
-        output = self.norm(output) 
+        sub_scores = self.ffn_subfields(subfields) 
+        field_added = field + sub_scores 
+        output = self.norm(field_added) 
         return output 
+
+class SelfAttention(nn.Module): 
+    def __init__(self, dim_input, dk) -> None:
+        super().__init__() 
+        self.dk = dk 
+        self.query = nn.Linear(dim_input, dk) 
+        self.key = nn.Linear(dim_input, dk) 
+        self.value = nn.Linear(dim_input, dk) 
+
+    def forward(self, x): 
+        # x: (batch_size, num, dim_input) 
+        q = self.query(x) 
+        k = self.key(x) 
+        v = self.value(x) 
+        # q, k, v: (batch_size, num, dk) 
+        scores = torch.bmm(q, k.transpose(1, 2)) / torch.sqrt(torch.tensor(self.dk, dtype=torch.float32)) 
+        # scores: (batch_size, num, num) 
+        weights = F.softmax(scores, dim=-1) 
+        # weights: (batch_size, num, num) 
+        output = torch.bmm(weights, v) 
+        # output: (batch_size, num, dk) 
+        return output 
+    
+class AddNorm(nn.Module): 
+    def __init__(self, dim_input) -> None:
+        super().__init__() 
+        self.norm = nn.LayerNorm(dim_input) 
+
+    def forward(self, before, after): 
+        x = before + after 
+        output = self.norm(x) 
+        return output  
+
 
 class ResidualBlock(nn.Module): 
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None:
