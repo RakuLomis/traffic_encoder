@@ -10,16 +10,16 @@ class TrafficFeatureEmbedder:
     def __init__(self):
         self.scaler = StandardScaler()
         self.encoders = {
-            'ip': OneHotEncoder(sparse=False),
-            'port': OneHotEncoder(sparse=False),
-            'proto': OneHotEncoder(sparse=False),
-            'tls_content_type': OneHotEncoder(sparse=False),
-            'tls_version': OneHotEncoder(sparse=False),
-            'tls_handshake_type': OneHotEncoder(sparse=False),
-            'tls_cipher_suite': OneHotEncoder(sparse=False),
-            'tls_comp_method': OneHotEncoder(sparse=False),
-            'tls_extension_type': OneHotEncoder(sparse=False),
-            'tls_sig_hash_alg': OneHotEncoder(sparse=False)
+            'ip': OneHotEncoder(sparse_output=False),
+            'port': OneHotEncoder(sparse_output=False),
+            'proto': OneHotEncoder(sparse_output=False),
+            'tls_content_type': OneHotEncoder(sparse_output=False),
+            'tls_version': OneHotEncoder(sparse_output=False),
+            'tls_handshake_type': OneHotEncoder(sparse_output=False),
+            'tls_cipher_suite': OneHotEncoder(sparse_output=False),
+            'tls_comp_method': OneHotEncoder(sparse_output=False),
+            'tls_extension_type': OneHotEncoder(sparse_output=False),
+            'tls_sig_hash_alg': OneHotEncoder(sparse_output=False)
         }
         
     def _normalize_numerical(self, df: pd.DataFrame, columns: List[str]) -> np.ndarray:
