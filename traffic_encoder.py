@@ -6,7 +6,11 @@ import torch.nn as nn
 from typing import Dict, List, Union
 import re
 
-class TrafficFeatureEmbedder:
+class TrafficFeatureEmbedder: 
+    """
+    This class considers features of the whole original dataset before truncating into blocks. 
+    So it takes the NaN values into account. 
+    """
     def __init__(self):
         self.scaler = StandardScaler()
         self.encoders = {
@@ -23,17 +27,21 @@ class TrafficFeatureEmbedder:
         }
         
     def _normalize_numerical(self, df: pd.DataFrame, columns: List[str]) -> np.ndarray:
-        """标准化数值型特征"""
-        # 确保所有列都是数值型，处理十六进制字符串和浮点数
-        numeric_data = df[columns].apply(lambda x: x.apply(
+        """
+        Normalize numerical features. 
+        """
+        # Ensure all columns are numerical, handle hexadecimal strings and floating point numbers
+        numeric_data = df[columns].apply(lambda x: x.apply( # x means the series of a column 
             lambda val: int(str(val), 16) if pd.notna(val) and isinstance(val, str) and val.isalnum() else float(val) if pd.notna(val) else 0
         ))
-        # 填充缺失值
+        # Fill missing values
         numeric_data = numeric_data.fillna(numeric_data.mean())
         return self.scaler.fit_transform(numeric_data)
     
     def _encode_categorical(self, df: pd.DataFrame, columns: List[str], encoder_name: str) -> np.ndarray:
-        """对类别型特征进行one-hot编码"""
+        """
+        Encode categorical features by one-hot encoding. 
+        """
         def convert_value(val):
             if pd.isna(val):
                 return '0'
@@ -44,31 +52,37 @@ class TrafficFeatureEmbedder:
                     return val
             return str(float(val))
         
-        # 填充缺失值并转换
+        # Fill missing values and convert to string. 
         df_filled = df[columns].fillna('0').apply(
             lambda x: x.apply(convert_value)
         )
-        return self.encoders[encoder_name].fit_transform(df_filled.values.reshape(-1, 1))
+        return self.encoders[encoder_name].fit_transform(df_filled.values.reshape(-1, 1)) 
+        # reshape(-1, 1) satisfies the input format of one-hot encoder. 
+        # However, the original data may have several entries, like (2, 3). 
+        # The final output whose shape is (-1, 1) may need to be reshaped again to match the original entry number, 
+        # or the input need to be one feature per entry. 
     
     def _encode_ip(self, ip_series: pd.Series) -> np.ndarray:
-        """将IP地址转换为数值向量"""
-        # 处理缺失值
+        """
+        Transform the IP address into dot decimal format, and then turn it into a normalized 4-dimensional numpy array. 
+        """
+        # Fill missing values
         ip_series = ip_series.fillna('00000000')
-        # 将十六进制IP地址转换为点分十进制格式
+        # Convert hexadecimal IP address to dot decimal format
         def hex_to_dot_decimal(hex_ip):
             try:
                 if isinstance(hex_ip, str) and hex_ip.isalnum():
-                    # 将十六进制字符串转换为整数
+                    # Convert hexadecimal string to integer
                     ip_int = int(hex_ip, 16)
                 else:
-                    # 如果是浮点数，直接使用
+                    # If it is a floating point number, directly use it
                     ip_int = int(float(hex_ip))
-                # 转换为点分十进制格式
+                # Convert to dot decimal format
                 return f"{(ip_int >> 24) & 0xFF}.{(ip_int >> 16) & 0xFF}.{(ip_int >> 8) & 0xFF}.{ip_int & 0xFF}"
             except:
                 return "0.0.0.0"
         
-        # 转换IP地址格式
+        # Convert IP address format
         ip_series = ip_series.apply(hex_to_dot_decimal)
         ip_parts = ip_series.str.split('.')
         ip_matrix = np.array([list(map(int, parts)) for parts in ip_parts])
