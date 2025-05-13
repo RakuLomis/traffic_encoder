@@ -411,3 +411,55 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], 
             dict_protocol_tree, list_layers, init = find_fields_by_prefix_physically(list_layers, dict_protocol_tree, list_fields, init) 
             len_prefix += 1
     return dict_protocol_tree 
+
+def protocol_tree(protocol, dict_protocol_tree, physical_nodes): 
+    """
+    Return the list of field, subfields and field^{\prime} for Protocol Tree Attention. 
+    The field^{\prime} is the field which does not have subfields. 
+    
+    Parameters 
+    ---------- 
+    protocol: str 
+        The protocol name. 
+    dict_protocol_tree: dict 
+        The dict concluding protocol tree information. 
+    physical_nodes: list 
+        The physically existing fields in the dataframe. 
+
+    Returns 
+    ------- 
+    list_fields_subfields: list 
+        The list of fields and their subfields, which are consisted of 'field', 'subfields', and 'is_logical'.  
+    list_fields_no_subfields: list 
+        The list of the field^{\prime}s.  
+    """
+    list_fields_subfields = [
+        # {'field': str, 'subfields': list, 'is_logical': bool}, 
+    ] 
+    list_fields_no_subfields = [] 
+    for field in dict_protocol_tree[protocol]: 
+        if field in physical_nodes: 
+            # if dict_protocol_tree[field] does not exist, add to list_fields_no_subfields
+            if field not in dict_protocol_tree: # field does not have subfields
+                list_fields_no_subfields.append(field) 
+            else: 
+                temp_list = []
+                for subfield in dict_protocol_tree[field]: # exmaine subfields exist physically or not
+                    if subfield in physical_nodes: 
+                        temp_list.append(subfield) 
+                list_fields_subfields.append({
+                    'field': field, 
+                    'subfields': temp_list, 
+                    'is_logical': False
+                }) 
+        else: # tls.handshake and tls.record are all logical nodes 
+            temp_list = []
+            for subfield in dict_protocol_tree[field]: 
+                if subfield in physical_nodes: 
+                    temp_list.append(subfield) 
+            list_fields_subfields.append({
+                    'field': field, 
+                    'subfields': temp_list, 
+                    'is_logical': True
+                }) 
+    return list_fields_subfields, list_fields_no_subfields 
