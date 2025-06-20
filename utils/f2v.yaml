@@ -1,39 +1,250 @@
-# The distinct value type that fields need to be transformed for better input to models. 
-# If the field name contains the specific string, it will be transformed into the corresponding type. 
+# =================================================================================
+# F2V (Field to Vector) Embedding Configuration
+# ---------------------------------------------------------------------------------
+# This file serves as a blueprint for the FieldEmbedding module. It defines the
+# embedding strategy for each field and subfield based on their type.
+#
+# Embedding Types Explained:
+#
+#   type: categorical
+#     - For fields with discrete, unordered values.
+#     - params:
+#         - vocab_size: The number of unique values in the dictionary.
+#         - embedding_dim: The dimension of the output dense vector.
+#
+#   type: numerical
+#     - For fields with continuous or high-cardinality sequential values.
+#     - params:
+#         - embedding_dim: The final dimension to project the normalized value to.
+#
+#   type: address_mac / address_ipv4
+#     - For MAC and IPv4 address fields. The address is split into octets,
+#       each octet is embedded, and then the embeddings are aggregated.
+#     - params:
+#         - embedding_dim_per_octet: Embedding dimension for each octet.
+#         - aggregation: Method to combine octet embeddings ('cnn', 'rnn', 'sum', 'concat').
+#
+# =================================================================================
 
-# Floating point
-Number: 
-- 
-  layer: ETH
-  fields: 
-    - ''
-- 
-  layer: IP
-  fields: 
-    - ''
-- 
-  layer: TCP 
-  fields: 
-    - '' 
-- 
-  layer: TLS
-  fields: 
-    - ''
+field_embedding_config:
 
-Category: 
-- 
-  layer: ETH
-  fields: 
-    - ''
-- 
-  layer: IP
-  fields: 
-    - ''
-- 
-  layer: TCP 
-  fields: 
-    - '' 
-- 
-  layer: TLS
-  fields: 
-    - ''
+  # ==================== Layer 2: Ethernet ====================
+  
+  # --- Field: eth.dst (with subfields) ---
+  eth.dst:
+    type: address_mac
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+  eth.dst.lg: # Subfield of eth.dst
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  eth.dst.ig: # Subfield of eth.dst
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  
+  # --- Field: eth.src (with subfields) ---
+  eth.src:
+    type: address_mac
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+  eth.src.lg: # Subfield of eth.src
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  eth.src.ig: # Subfield of eth.src
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+    
+  # --- Field: eth.type ---
+  eth.type: # It shows the version of IP protocol, in our work, it only covers IPv4, whose value is 0800
+    type: categorical
+    vocab_size: 2 # We set 2 here, for the perspective extention for IPv6
+    embedding_dim: 2
+
+  # ==================== Layer 3: IP ====================
+
+  # --- Field: ip.version ---
+  ip.version: # There are 16 versions in IP history, however, we only take account for IPv4
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+
+  # --- Field: ip.hdr_len ---
+  ip.hdr_len:
+    type: numerical
+    embedding_dim: 8
+  
+  # --- Field: ip.dsfield (with subfields) ---
+  ip.dsfield:
+    type: categorical
+    vocab_size: 256
+    embedding_dim: 8
+  ip.dsfield.dscp: # Subfield of ip.dsfield
+    type: categorical
+    vocab_size: 64
+    embedding_dim: 8
+  ip.dsfield.ecn: # Subfield of ip.dsfield
+    type: categorical
+    vocab_size: 4
+    embedding_dim: 4
+    
+  # --- Field: ip.len & ip.id ---
+  ip.len:
+    type: numerical
+    embedding_dim: 16
+  ip.id:
+    type: numerical
+    embedding_dim: 16
+    
+  # --- Field: ip.flags (with subfields) ---
+  ip.flags:
+    type: categorical
+    vocab_size: 8 # 3 bits = 2^3 = 8 possible values
+    embedding_dim: 4
+  ip.flags.rb: # Subfield of ip.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  ip.flags.df: # Subfield of ip.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  ip.flags.mf: # Subfield of ip.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+    
+  # --- Fields: ip.frag_offset, ip.ttl, ip.proto, ip.checksum ---
+  ip.frag_offset:
+    type: numerical
+    embedding_dim: 8
+  ip.ttl:
+    type: numerical
+    embedding_dim: 8
+  ip.proto:
+    type: categorical
+    vocab_size: 256
+    embedding_dim: 8
+  ip.checksum:
+    type: numerical
+    embedding_dim: 8
+    
+  # --- Fields: ip.src & ip.dst (Addresses) ---
+  ip.src:
+    type: address_ipv4
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+  ip.dst:
+    type: address_ipv4
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+
+  # ==================== Layer 4: TCP ====================
+
+  # --- Fields: tcp.srcport & tcp.dstport ---
+  tcp.srcport:
+    type: categorical
+    vocab_size: 65536
+    embedding_dim: 32
+  tcp.dstport:
+    type: categorical
+    vocab_size: 65536
+    embedding_dim: 32
+    
+  # --- Fields: tcp.stream & tcp.len ---
+  tcp.stream:
+    type: categorical
+    vocab_size: 10000 # Example size, should be determined from data
+    embedding_dim: 32
+  tcp.len:
+    type: numerical
+    embedding_dim: 16
+
+  # --- Fields: tcp sequence & acknowledgement numbers ---
+  tcp.seq:
+    type: numerical
+    embedding_dim: 32
+  tcp.seq_raw:
+    type: numerical
+    embedding_dim: 32
+  tcp.ack:
+    type: numerical
+    embedding_dim: 32
+  tcp.ack_raw:
+    type: numerical
+    embedding_dim: 32
+
+  # --- Field: tcp.hdr_len ---
+  tcp.hdr_len:
+    type: categorical
+    vocab_size: 16 # 4 bits, from 5 to 15
+    embedding_dim: 8
+
+  # --- Field: tcp.flags (with subfields) ---
+  tcp.flags:
+    type: categorical
+    vocab_size: 512 # 9 bits for major flags = 2^9 = 512
+    embedding_dim: 16
+  tcp.flags.res: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.ae: # Subfield of tcp.flags (or NS)
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.cwr: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.ece: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.urg: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.ack: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.push: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.reset: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.syn: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.fin: # Subfield of tcp.flags
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  
+  # --- Fields: tcp.window_size, tcp.checksum, tcp.urgent_pointer ---
+  tcp.window_size_value:
+    type: numerical
+    embedding_dim: 16
+  tcp.window_size:
+    type: numerical
+    embedding_dim: 16
+  tcp.checksum:
+    type: numerical
+    embedding_dim: 8
+  tcp.urgent_pointer:
+    type: numerical
+    embedding_dim: 8
+    
+  # --- Field: reassembled_segments ---
+  reassembled_segments:
+    type: categorical
+    vocab_size: 1000 # Example size, should be determined from data
+    embedding_dim: 16
