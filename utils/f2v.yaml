@@ -9,7 +9,12 @@
 #   type: categorical
 #     - For fields with discrete, unordered values.
 #     - params:
-#         - vocab_size: The number of unique values in the dictionary.
+#         - vocab_size: The number of unique values in the dictionary. 
+#             We use a open world pcap-transformed csv as a template, and set the vocab size. 
+#             The ideal vocal_size = existed_categories + 1, the one means Out-of-Vocabulary (OOV). 
+#             We use the nearest 2^n + 1 as the final value, e.g., the actual value is 1, so the ideal vocab_size can 
+#             caculated as 2, and the final value is 2^1 + 1 = 3. 
+#             Besides, if the actual value is 2, the final value is also 3. 
 #         - embedding_dim: The dimension of the output dense vector.
 #
 #   type: numerical
@@ -37,11 +42,11 @@ field_embedding_config:
     aggregation: cnn
   eth.dst.lg: # Subfield of eth.dst
     type: categorical
-    vocab_size: 2
+    vocab_size: 3
     embedding_dim: 2
   eth.dst.ig: # Subfield of eth.dst
     type: categorical
-    vocab_size: 2
+    vocab_size: 3
     embedding_dim: 2
   
   # --- Field: eth.src (with subfields) ---
@@ -51,7 +56,7 @@ field_embedding_config:
     aggregation: cnn
   eth.src.lg: # Subfield of eth.src
     type: categorical
-    vocab_size: 2
+    vocab_size: 3
     embedding_dim: 2
   eth.src.ig: # Subfield of eth.src
     type: categorical
@@ -61,7 +66,7 @@ field_embedding_config:
   # --- Field: eth.type ---
   eth.type: # It shows the version of IP protocol, in our work, it only covers IPv4, whose value is 0800
     type: categorical
-    vocab_size: 2 # We set 2 here, for the perspective extention for IPv6
+    vocab_size: 3 # We set 2 here, for the perspective extention for IPv6
     embedding_dim: 2
 
   # ==================== Layer 3: IP ====================
@@ -69,27 +74,27 @@ field_embedding_config:
   # --- Field: ip.version ---
   ip.version: # There are 16 versions in IP history, however, we only take account for IPv4
     type: categorical
-    vocab_size: 2
+    vocab_size: 3
     embedding_dim: 2
 
   # --- Field: ip.hdr_len ---
-  ip.hdr_len:
+  ip.hdr_len: # header length, it always 20 bytes
     type: numerical
-    embedding_dim: 8
+    embedding_dim: 2
   
   # --- Field: ip.dsfield (with subfields) ---
-  ip.dsfield:
+  ip.dsfield: # Differentiated Services Field
     type: categorical
-    vocab_size: 256
+    vocab_size: 5
     embedding_dim: 8
   ip.dsfield.dscp: # Subfield of ip.dsfield
     type: categorical
-    vocab_size: 64
-    embedding_dim: 8
+    vocab_size: 16
+    embedding_dim: 4
   ip.dsfield.ecn: # Subfield of ip.dsfield
     type: categorical
-    vocab_size: 4
-    embedding_dim: 4
+    vocab_size: 8
+    embedding_dim: 2
     
   # --- Field: ip.len & ip.id ---
   ip.len:
