@@ -12,8 +12,8 @@
 #         - vocab_size: The number of unique values in the dictionary. 
 #             We use a open world pcap-transformed csv as a template, and set the vocab size. 
 #             The ideal vocal_size = existed_categories + 1, the one means Out-of-Vocabulary (OOV). 
-#             We use the nearest 2^n + 1 as the final value, e.g., the actual value is 1, so the ideal vocab_size can 
-#             caculated as 2, and the final value is 2^1 + 1 = 3. 
+#             We use the nearest 2^n + 2^(n-1) as the final value, e.g., the actual value is 1, so the ideal vocab_size can 
+#             caculated as 2, and the final value is 2^1 + 2^0 = 3. 
 #             Besides, if the actual value is 2, the final value is also 3. 
 #         - embedding_dim: The dimension of the output dense vector.
 #
@@ -85,15 +85,15 @@ field_embedding_config:
   # --- Field: ip.dsfield (with subfields) ---
   ip.dsfield: # Differentiated Services Field
     type: categorical
-    vocab_size: 5
+    vocab_size: 6
     embedding_dim: 8
   ip.dsfield.dscp: # Subfield of ip.dsfield
     type: categorical
-    vocab_size: 16
+    vocab_size: 6
     embedding_dim: 4
   ip.dsfield.ecn: # Subfield of ip.dsfield
     type: categorical
-    vocab_size: 8
+    vocab_size: 3
     embedding_dim: 2
     
   # --- Field: ip.len & ip.id ---
@@ -102,7 +102,7 @@ field_embedding_config:
     embedding_dim: 16
   ip.id:
     type: numerical
-    embedding_dim: 16
+    embedding_dim: 2
     
   # --- Field: ip.flags (with subfields) ---
   ip.flags:
@@ -131,8 +131,8 @@ field_embedding_config:
     embedding_dim: 8
   ip.proto:
     type: categorical
-    vocab_size: 256
-    embedding_dim: 8
+    vocab_size: 3
+    embedding_dim: 4
   ip.checksum:
     type: numerical
     embedding_dim: 8
@@ -150,7 +150,7 @@ field_embedding_config:
   # ==================== Layer 4: TCP ====================
 
   # --- Fields: tcp.srcport & tcp.dstport ---
-  tcp.srcport:
+  tcp.srcport: # Port may reflect the preference of applications or behavior, so we give the large value. 
     type: categorical
     vocab_size: 65536
     embedding_dim: 32
@@ -162,8 +162,8 @@ field_embedding_config:
   # --- Fields: tcp.stream & tcp.len ---
   tcp.stream:
     type: categorical
-    vocab_size: 10000 # Example size, should be determined from data
-    embedding_dim: 32
+    vocab_size: 2048 # Example size, should be determined from data
+    embedding_dim: 8
   tcp.len:
     type: numerical
     embedding_dim: 16
@@ -171,27 +171,26 @@ field_embedding_config:
   # --- Fields: tcp sequence & acknowledgement numbers ---
   tcp.seq:
     type: numerical
-    embedding_dim: 32
+    embedding_dim: 16
   tcp.seq_raw:
     type: numerical
-    embedding_dim: 32
+    embedding_dim: 16
   tcp.ack:
     type: numerical
-    embedding_dim: 32
+    embedding_dim: 16
   tcp.ack_raw:
     type: numerical
-    embedding_dim: 32
+    embedding_dim: 16
 
   # --- Field: tcp.hdr_len ---
   tcp.hdr_len:
-    type: categorical
-    vocab_size: 16 # 4 bits, from 5 to 15
+    type: numerical # the length of tcp header, it should be numerical instead of categorical
     embedding_dim: 8
 
   # --- Field: tcp.flags (with subfields) ---
   tcp.flags:
     type: categorical
-    vocab_size: 512 # 9 bits for major flags = 2^9 = 512
+    vocab_size: 96 # in reality, the kinds of flag combinations are not so big. We choose 2^6 + 2^5 = 96 as the vocab_size. 
     embedding_dim: 16
   tcp.flags.res: # Subfield of tcp.flags
     type: categorical
@@ -249,7 +248,7 @@ field_embedding_config:
     embedding_dim: 8
     
   # --- Field: reassembled_segments ---
-  reassembled_segments:
+  reassembled_segments: # this field only exist when the tls payload is too large, and it can be represent as a same mark. So it is always smaller than streams.  
     type: categorical
-    vocab_size: 1000 # Example size, should be determined from data
+    vocab_size: 1536 # we use 2^10 + 2^9 = 1024 + 512 = 1536
     embedding_dim: 16
