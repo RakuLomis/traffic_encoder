@@ -58,7 +58,7 @@ class TrafficDataset(Dataset):
         """
         processed_data_dict = {}
         for field_name in self.raw_df.columns:
-            if field_name not in self.config:
+            if field_name not in self.config: # use the config file as standard
                 if field_name != 'frame_num':
                     print(f"Warning: Field '{field_name}' not in config, skipping.")
                 continue
