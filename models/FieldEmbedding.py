@@ -76,40 +76,48 @@ class FieldEmbedding(nn.Module):
         
         # 1. 加载YAML配置文件
         with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)['field_embedding_config']
+            self.config = yaml.safe_load(f)['field_embedding_config']
             
         self.embedding_layers = nn.ModuleDict() # 使用ModuleDict来存储层，它能正确注册并允许使用字符串键
         self.total_embedding_dim = 0
 
-        self.field_to_key_map = {name: name.replace('.', '_') for name in self.config.keys()}
+        # Replace '.' by '__'
+        self.field_to_key_map = {name: name.replace('.', '__') for name in self.config.keys()}
 
         # 2. 遍历配置，动态创建嵌入层
-        for field_name, field_config in tqdm(config.items(), desc="Creating embedding layer. "):
+        for field_name, field_config in tqdm(self.config.items(), desc="Creating embedding layer. "):
+            layer_key = self.field_to_key_map[field_name]
             field_type = field_config['type']
             
+            layer = None
+            output_dim = 0
+
             if field_type == 'categorical':
                 vocab_size = field_config['vocab_size']
                 embedding_dim = field_config['embedding_dim']
-                self.embedding_layers[field_name] = nn.Embedding(vocab_size, embedding_dim)
-                self.total_embedding_dim += embedding_dim
+                layer = nn.Embedding(vocab_size, embedding_dim)
+                output_dim = embedding_dim
                 
             elif field_type == 'numerical':
                 embedding_dim = field_config['embedding_dim']
-                # 对于数值型，使用一个线性层将其投影到嵌入空间
-                self.embedding_layers[field_name] = nn.Linear(1, embedding_dim)
-                self.total_embedding_dim += embedding_dim
+                layer = nn.Linear(1, embedding_dim)
+                output_dim = embedding_dim
 
             elif field_type == 'address_ipv4':
                 embedding_dim = field_config['embedding_dim_per_octet']
                 aggregation = field_config['aggregation']
-                self.embedding_layers[field_name] = _AddressEmbedding(4, embedding_dim, aggregation)
-                self.total_embedding_dim += embedding_dim # 假设聚合后输出维度与embedding_dim_per_octet相同
+                layer = _AddressEmbedding(4, embedding_dim, aggregation)
+                output_dim = embedding_dim
 
             elif field_type == 'address_mac':
                 embedding_dim = field_config['embedding_dim_per_octet']
                 aggregation = field_config['aggregation']
-                self.embedding_layers[field_name] = _AddressEmbedding(6, embedding_dim, aggregation)
-                self.total_embedding_dim += embedding_dim
+                layer = _AddressEmbedding(6, embedding_dim, aggregation)
+                output_dim = embedding_dim
+            
+            if layer is not None:
+                self.embedding_layers[layer_key] = layer
+                self.total_embedding_dim += output_dim
     
     def forward(self, batch_data_dict):
         """
@@ -121,11 +129,33 @@ class FieldEmbedding(nn.Module):
         embedded_outputs = []
         
         # 按照ModuleDict中层的顺序进行迭代，保证每次拼接的顺序一致
-        for field_name, layer in tqdm(self.embedding_layers.items(), desc="Forwarding. "):
+        for field_name, layer_key in tqdm(self.field_to_key_map.items(), desc="Forwarding. "):
             # 检查批处理数据中是否存在该字段
-            if field_name in batch_data_dict:
+            if field_name in batch_data_dict and layer_key in self.embedding_layers:
                 # 获取对应的数据张量
                 input_tensor = batch_data_dict[field_name]
+                layer = self.embedding_layers[layer_key] 
+
+                # ==================== 调试代码块 开始 ====================
+                # 在执行嵌入前，检查索引是否在有效范围内
+                if isinstance(layer, nn.Embedding):
+                    # 获取输入张量中的最大值
+                    max_index_in_batch = input_tensor.max()
+                    # 获取该层的词典大小
+                    configured_vocab_size = layer.num_embeddings
+                    
+                    if max_index_in_batch >= configured_vocab_size:
+                        print("\n" + "="*60)
+                        print(f"!!! ERROR DETECTED: Index out of range for field: '{field_name}' !!!")
+                        print(f"    Max index value found in your data: {max_index_in_batch}")
+                        print(f"    Vocab size configured in your YAML: {configured_vocab_size}")
+                        print(f"    (Remember: valid indices are from 0 to vocab_size - 1)")
+                        print("    SOLUTION: Please increase the 'vocab_size' for this field in your f2v.yaml file.")
+                        print("="*60 + "\n")
+                        # 主动抛出错误，并附带清晰的说明
+                        raise IndexError(f"For field '{field_name}', input index {max_index_in_batch} "
+                                         f"is out of range for vocab_size {configured_vocab_size}.")
+                # ==================== 调试代码块 结束 ====================
 
                 # --- 新增的修正逻辑 ---
                 # 检查输入是否为地址类型且是一个列表（default_collate的特殊情况）
