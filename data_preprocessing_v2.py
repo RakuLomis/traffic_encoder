@@ -42,3 +42,5 @@ def main():
                 output_csv_in_fold(list_df_block[block_num], os.path.join(directory_path, csv_name, block_type), f'{block_num}' + '.csv') 
             # df_fill_nan = df.fillna('ffff') 
             # output_csv_in_fold(df_fill_nan, os.path.join(directory_path, 'fill_nan'), 'fill_nan_' + csv_name + '.csv') 
+if __name__ == '__main__': 
+    main()

@@ -4,6 +4,7 @@ import numpy as np
 from typing import Optional 
 from tqdm import tqdm 
 from typing import Literal 
+import yaml
 
 def get_file_path(dir_path: str, prefix: Optional[str] = None, postfix: Optional[str] = None): 
     """
@@ -463,3 +464,48 @@ def protocol_tree(protocol, dict_protocol_tree, physical_nodes):
                     'is_logical': True
                 }) 
     return list_fields_subfields, list_fields_no_subfields 
+
+def generate_vocabulary(csv_path, categorical_fields, output_path):
+    """
+    从CSV文件中为指定的分类字段生成词典映射，并保存为YAML文件。
+
+    :param csv_path: 输入的CSV文件路径。
+    :param categorical_fields: 需要为其创建词典的字段名称列表。
+    :param output_path: 保存生成的词典映射的YAML文件路径。
+    """
+    print(f"Reading data from: {csv_path}")
+    df = pd.read_csv(csv_path)
+    
+    master_vocab = {}
+    
+    for field in tqdm(categorical_fields):
+        if field not in df.columns:
+            print(f"Warning: Field '{field}' not found in CSV, skipping.")
+            continue
+            
+        print(f"Processing field: '{field}'")
+        
+        unique_values = df[field].dropna().unique()
+        
+        # 将所有值统一为小写的字符串，以便处理
+        unique_str_values = sorted([
+            f'{int(v):x}' if isinstance(v, (int, float)) else str(v).lower().replace('0x','')
+            for v in unique_values
+        ])
+        
+        vocab_map = {val: i for i, val in enumerate(unique_str_values)}
+        vocab_map['__OOV__'] = len(vocab_map)
+        
+        master_vocab[field] = vocab_map
+        
+        print(f"  - Found {len(unique_str_values)} unique values. Vocab size (incl. OOV): {len(vocab_map)}")
+
+    # 2. 将主词典写入YAML文件
+    print(f"\nSaving master vocabulary to: {output_path}")
+    with open(output_path, 'w') as f:
+        # 使用 yaml.dump 来写入文件
+        # default_flow_style=False 使其格式更易读（类似块状），而不是单行
+        yaml.dump(master_vocab, f, default_flow_style=False, sort_keys=False) 
+        
+    print("Vocabulary generation complete!")
+    return master_vocab

@@ -35,12 +35,29 @@ class TrafficDataset(Dataset):
     """
     Load and preprocess raw dataframe for traffic fields. 
     """
-    def __init__(self, csv_path, config_path):
+    def __init__(self, csv_path, config_path, vocab_path):
         super().__init__()
         
         # 1. 加载YAML配置
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
+
+        # --- 新增：定义我们的词典映射 ---
+        # 理想情况下，这个词典应该从训练数据中生成并保存/加载
+        print(f"Loading vocabulary from: {vocab_path}")
+        with open(vocab_path, 'r') as f:
+            self.vocab_maps = yaml.safe_load(f) # 使用 yaml.safe_load
+            
+        # self.vocab_maps = {
+        #     'eth.type': {
+        #         '800': 0, 
+        #         '806': 1, 
+        #         '__OOV__': 2
+        #     }
+        #     # 您可以在这里为其他高基数、非连续的字段添加更多映射
+        #     # 'ip.proto': {'6': 0, '11': 1, '__OOV__': 2}, ...
+        # }
+        # -----------------------------
         
         # 2. 读取CSV数据
         self.raw_df = pd.read_csv(csv_path, index_col='frame_num')
@@ -62,6 +79,15 @@ class TrafficDataset(Dataset):
                 if field_name != 'frame_num':
                     print(f"Warning: Field '{field_name}' not in config, skipping.")
                 continue
+            
+            if field_name in self.vocab_maps:
+                # 如果字段有预定义的词典，使用它
+                vocab_map = self.vocab_maps[field_name]
+                oov_index = vocab_map['__OOV__']
+                # .get(key, default_value) 是一个安全的查字典方法
+                processed_column = self.raw_df[field_name].astype(str).str.lower().apply(
+                    lambda x: vocab_map.get(x.replace('0x',''), oov_index)
+                ) 
 
             field_type = self.config[field_name]['type']
             column_data = self.raw_df[field_name]
