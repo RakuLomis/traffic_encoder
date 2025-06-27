@@ -47,16 +47,7 @@ class TrafficDataset(Dataset):
         print(f"Loading vocabulary from: {vocab_path}")
         with open(vocab_path, 'r') as f:
             self.vocab_maps = yaml.safe_load(f) # 使用 yaml.safe_load
-            
-        # self.vocab_maps = {
-        #     'eth.type': {
-        #         '800': 0, 
-        #         '806': 1, 
-        #         '__OOV__': 2
-        #     }
-        #     # 您可以在这里为其他高基数、非连续的字段添加更多映射
-        #     # 'ip.proto': {'6': 0, '11': 1, '__OOV__': 2}, ...
-        # }
+        
         # -----------------------------
         
         # 2. 读取CSV数据
