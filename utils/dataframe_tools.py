@@ -465,29 +465,81 @@ def protocol_tree(protocol, dict_protocol_tree, physical_nodes):
                 }) 
     return list_fields_subfields, list_fields_no_subfields 
 
+# def generate_vocabulary(csv_path, categorical_fields, output_path):
+#     """
+#     从CSV文件中为指定的分类字段生成词典映射，并保存为YAML文件。
+
+#     :param csv_path: 输入的CSV文件路径。
+#     :param categorical_fields: 需要为其创建词典的字段名称列表。
+#     :param output_path: 保存生成的词典映射的YAML文件路径。
+#     """
+#     print(f"Reading data from: {csv_path}")
+#     df = pd.read_csv(csv_path)
+    
+#     master_vocab = {}
+    
+#     for field in tqdm(categorical_fields, desc="Processing fields ..."):
+#         if field not in df.columns:
+#             print(f"Warning: Field '{field}' not found in CSV, skipping.")
+#             continue
+            
+#         # print(f"Processing field: '{field}'") 
+        
+#         unique_values = df[field].dropna().unique()
+        
+#         # 将所有值统一为小写的字符串，以便处理
+#         unique_str_values = sorted([
+#             f'{int(v):x}' if isinstance(v, (int, float)) else str(v).lower().replace('0x','')
+#             for v in unique_values
+#         ])
+        
+#         vocab_map = {val: i for i, val in enumerate(unique_str_values)}
+#         vocab_map['__OOV__'] = len(vocab_map)
+        
+#         master_vocab[field] = vocab_map
+        
+#         print(f"  - Found {len(unique_str_values)} unique values. Vocab size (incl. OOV): {len(vocab_map)}")
+
+#     # ==================== 核心修改点 开始 ====================
+#     # 定义一个函数，告诉PyYAML如何表示一个字符串
+#     def str_presenter(dumper, data):
+#         """
+#         如果字符串中包含换行符，则使用'|'风格，否则使用普通标量。
+#         这会强制PyYAML将所有str对象视为YAML的字符串类型。
+#         """
+#         if len(data.splitlines()) > 1:
+#             return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+#         return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+#     # 在dump之前，将这个表示器添加到PyYAML的默认Dumper中
+#     yaml.add_representer(str, str_presenter)
+#     # ==================== 核心修改点 结束 ====================    
+
+#     # 2. 将主词典写入YAML文件
+#     print(f"\nSaving master vocabulary to: {output_path}")
+#     with open(output_path, 'w') as f:
+#         # 使用 yaml.dump 来写入文件
+#         # default_flow_style=False 使其格式更易读（类似块状），而不是单行
+#         yaml.dump(master_vocab, f, default_flow_style=False, sort_keys=False) 
+        
+#     print("Vocabulary generation complete!")
+#     return master_vocab
 def generate_vocabulary(csv_path, categorical_fields, output_path):
     """
     从CSV文件中为指定的分类字段生成词典映射，并保存为YAML文件。
-
-    :param csv_path: 输入的CSV文件路径。
-    :param categorical_fields: 需要为其创建词典的字段名称列表。
-    :param output_path: 保存生成的词典映射的YAML文件路径。
+    (使用强制风格的自定义Dumper以保证键的类型正确)
     """
     print(f"Reading data from: {csv_path}")
     df = pd.read_csv(csv_path)
     
     master_vocab = {}
     
-    for field in tqdm(categorical_fields):
+    for field in tqdm(categorical_fields, desc="Processing fields..."):
         if field not in df.columns:
-            print(f"Warning: Field '{field}' not found in CSV, skipping.")
             continue
-            
-        print(f"Processing field: '{field}'")
         
         unique_values = df[field].dropna().unique()
         
-        # 将所有值统一为小写的字符串，以便处理
         unique_str_values = sorted([
             f'{int(v):x}' if isinstance(v, (int, float)) else str(v).lower().replace('0x','')
             for v in unique_values
@@ -497,15 +549,35 @@ def generate_vocabulary(csv_path, categorical_fields, output_path):
         vocab_map['__OOV__'] = len(vocab_map)
         
         master_vocab[field] = vocab_map
-        
-        print(f"  - Found {len(unique_str_values)} unique values. Vocab size (incl. OOV): {len(vocab_map)}")
 
-    # 2. 将主词典写入YAML文件
+    # ==================== 最终核心修改点 开始 ====================
+
+    # 1. 定义一个强制使用单引号风格的字符串表示器
+    def quoted_str_presenter(dumper, data):
+        """
+        这个表示器会强制将所有字符串用单引号括起来。
+        """
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data, style="'")
+
+    # 2. 创建一个我们自己的 Dumper 类
+    class QuotedDumper(yaml.Dumper):
+        pass
+
+    # 3. 将我们的强制规则只添加到我们自己的 Dumper 类上
+    QuotedDumper.add_representer(str, quoted_str_presenter)
+
+    # ==================== 最终核心修改点 结束 ==================== 
+
     print(f"\nSaving master vocabulary to: {output_path}")
     with open(output_path, 'w') as f:
-        # 使用 yaml.dump 来写入文件
-        # default_flow_style=False 使其格式更易读（类似块状），而不是单行
-        yaml.dump(master_vocab, f, default_flow_style=False, sort_keys=False) 
+        # 4. 在调用 yaml.dump 时，明确指定使用我们自定义的 QuotedDumper
+        yaml.dump(
+            master_vocab, 
+            f, 
+            Dumper=QuotedDumper,  # 强制使用我们的规则
+            default_flow_style=False, 
+            sort_keys=False
+        ) 
         
     print("Vocabulary generation complete!")
     return master_vocab

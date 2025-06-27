@@ -8,10 +8,10 @@ from models.FieldEmbedding import FieldEmbedding
 
 raw_df_path = os.path.join('.', 'Data', 'Test', 'merge_tls_test_01', 'discrete', '0.csv') 
 config_path = os.path.join('.', 'utils', 'f2v.yaml')
-
+vocab_path = os.path.join('.', 'Data', 'Test', 'merge_tls_test_01_vocab_v3.yaml')
 
 # raw_df = pd.read_csv(raw_df_path)
-traffic_dataset = TrafficDataset(raw_df_path, config_path)
+traffic_dataset = TrafficDataset(raw_df_path, config_path, vocab_path)
 print("---------") 
 sample_item = traffic_dataset[0]
 # 为了简洁，只打印前5个字段

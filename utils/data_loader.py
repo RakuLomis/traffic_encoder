@@ -42,7 +42,7 @@ class TrafficDataset(Dataset):
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
 
-        # --- 新增：定义我们的词典映射 ---
+        # --- 新增：加载生成的字典 ---
         # 理想情况下，这个词典应该从训练数据中生成并保存/加载
         print(f"Loading vocabulary from: {vocab_path}")
         with open(vocab_path, 'r') as f:
