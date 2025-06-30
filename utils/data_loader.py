@@ -63,42 +63,88 @@ class TrafficDataset(Dataset):
     def _preprocess_dataframe(self):
         """
         遍历DataFrame的所有列，根据YAML配置将其转换为数值。
+        (已修正逻辑覆盖问题)
         """
         processed_data_dict = {}
         for field_name in self.raw_df.columns:
-            if field_name not in self.config: # use the config file as standard
+            if field_name not in self.config:
                 if field_name != 'frame_num':
                     print(f"Warning: Field '{field_name}' not in config, skipping.")
+                    pass
                 continue
             
-            if field_name in self.vocab_maps:
-                # 如果字段有预定义的词典，使用它
+            # 使用互斥的 if/elif/else 结构来确保每个字段只被处理一次
+
+            # 处理地址数据
+            if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
+                field_type = self.config[field_name]['type']
+                processed_column = self.raw_df[field_name].apply(lambda x: _preprocess_address(x, field_type))
+            
+            # 使用生成的词典进行映射
+            elif field_name in self.vocab_maps:
                 vocab_map = self.vocab_maps[field_name]
                 oov_index = vocab_map['__OOV__']
-                # .get(key, default_value) 是一个安全的查字典方法
-                processed_column = self.raw_df[field_name].astype(str).str.lower().apply(
-                    lambda x: vocab_map.get(x.replace('0x',''), oov_index)
-                ) 
+                
+                # 安全地处理各种输入，统一为小写字符串进行查找
+                processed_column = self.raw_df[field_name].apply(
+                    lambda x: vocab_map.get(str(x).lower().replace('0x',''), oov_index) if pd.notna(x) else oov_index
+                )
+            # 其实这样转换之后
+            # 处理那些本身就是十进制的特殊字段
+            elif field_name in self.decimal_fields:
+                processed_column = self.raw_df[field_name].fillna(0).astype(int)
 
-            field_type = self.config[field_name]['type']
-            column_data = self.raw_df[field_name]
-
-            if field_name in self.decimal_fields:
-                # 对于本身就是十进制的字段，直接转换为整数，处理缺失值
-                processed_column = column_data.fillna(0).astype(int)
-            elif field_type in ['categorical', 'numerical']:
-                # 对于十六进制的分类和数值字段，转换为整数
-                processed_column = column_data.apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
-            elif field_type in ['address_ipv4', 'address_mac']:
-                # 对于地址字段，使用辅助函数处理
-                processed_column = column_data.apply(lambda x: _preprocess_address(x, field_type))
+            # 处理其他所有需要从十六进制转为整数的字段
+            elif self.config[field_name]['type'] in ['categorical', 'numerical']:
+                processed_column = self.raw_df[field_name].apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
+                
             else:
-                # 跳过未知类型
+                # 如果有任何未覆盖的情况，跳过该字段
                 continue
             
             processed_data_dict[field_name] = processed_column
             
         return processed_data_dict
+
+    # def _preprocess_dataframe(self):
+    #     """
+    #     遍历DataFrame的所有列，根据YAML配置将其转换为数值。
+    #     """
+    #     processed_data_dict = {}
+    #     for field_name in self.raw_df.columns:
+    #         if field_name not in self.config: # use the config file as standard
+    #             if field_name != 'frame_num':
+    #                 print(f"Warning: Field '{field_name}' not in config, skipping.")
+    #             continue
+            
+    #         if field_name in self.vocab_maps:
+    #             # 如果字段有预定义的词典，使用它
+    #             vocab_map = self.vocab_maps[field_name]
+    #             oov_index = vocab_map['__OOV__']
+    #             # .get(key, default_value) 是一个安全的查字典方法
+    #             processed_column = self.raw_df[field_name].astype(str).str.lower().apply(
+    #                 lambda x: vocab_map.get(x.replace('0x',''), oov_index)
+    #             ) 
+
+    #         field_type = self.config[field_name]['type']
+    #         column_data = self.raw_df[field_name]
+
+    #         if field_name in self.decimal_fields:
+    #             # 对于本身就是十进制的字段，直接转换为整数，处理缺失值
+    #             processed_column = column_data.fillna(0).astype(int)
+    #         elif field_type in ['categorical', 'numerical']:
+    #             # 对于十六进制的分类和数值字段，转换为整数
+    #             processed_column = column_data.apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
+    #         elif field_type in ['address_ipv4', 'address_mac']:
+    #             # 对于地址字段，使用辅助函数处理
+    #             processed_column = column_data.apply(lambda x: _preprocess_address(x, field_type))
+    #         else:
+    #             # 跳过未知类型
+    #             continue
+            
+    #         processed_data_dict[field_name] = processed_column
+            
+    #     return processed_data_dict
 
     def __len__(self):
         # 数据集的长度就是DataFrame的行数

@@ -8,7 +8,7 @@ from models.FieldEmbedding import FieldEmbedding
 
 raw_df_path = os.path.join('.', 'Data', 'Test', 'merge_tls_test_01', 'discrete', '0.csv') 
 config_path = os.path.join('.', 'utils', 'f2v.yaml')
-vocab_path = os.path.join('.', 'Data', 'Test', 'merge_tls_test_01_vocab_v3.yaml')
+vocab_path = os.path.join('.', 'Data', 'Test', 'categorical_vocabs.yaml')
 
 # raw_df = pd.read_csv(raw_df_path)
 traffic_dataset = TrafficDataset(raw_df_path, config_path, vocab_path)
