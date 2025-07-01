@@ -81,21 +81,26 @@ class FieldEmbedding(nn.Module):
         self.embedding_layers = nn.ModuleDict() # 使用ModuleDict来存储层，它能正确注册并允许使用字符串键
         self.total_embedding_dim = 0
 
-        # Replace '.' by '__'
-        self.field_to_key_map = {name: name.replace('.', '__') for name in self.config.keys()}
+        # slices is used to record the duration reflection of fields before and after embedding
+        self.embedding_slices = {}
+        sorted_field_names = sorted(self.config.keys()) 
+        # # Replace '.' by '__'
+        self.field_to_key_map = {name: name.replace('.', '__') for name in sorted_field_names}
 
-        # 2. 遍历配置，动态创建嵌入层
-        for field_name, field_config in tqdm(self.config.items(), desc="Creating embedding layer. "):
-            layer_key = self.field_to_key_map[field_name]
+        for field_name in tqdm(self.field_to_key_map, desc="Initing embedding layer and constructing tensor maps... "):
+            field_config = self.config[field_name]
+            
+            # 将'.'替换为'__'以作为合法的模块键名
+            layer_key = field_name.replace('.', '__')
+            # layer_key = field_name
             field_type = field_config['type']
             
             layer = None
             output_dim = 0
 
             if field_type == 'categorical':
-                vocab_size = field_config['vocab_size']
                 embedding_dim = field_config['embedding_dim']
-                layer = nn.Embedding(vocab_size, embedding_dim)
+                layer = nn.Embedding(field_config['vocab_size'], embedding_dim)
                 output_dim = embedding_dim
                 
             elif field_type == 'numerical':
@@ -105,19 +110,63 @@ class FieldEmbedding(nn.Module):
 
             elif field_type == 'address_ipv4':
                 embedding_dim = field_config['embedding_dim_per_octet']
-                aggregation = field_config['aggregation']
-                layer = _AddressEmbedding(4, embedding_dim, aggregation)
-                output_dim = embedding_dim
+                layer = _AddressEmbedding(4, embedding_dim, field_config['aggregation'])
+                output_dim = embedding_dim # 假设聚合后输出维度与embedding_dim_per_octet相同
 
             elif field_type == 'address_mac':
                 embedding_dim = field_config['embedding_dim_per_octet']
-                aggregation = field_config['aggregation']
-                layer = _AddressEmbedding(6, embedding_dim, aggregation)
+                layer = _AddressEmbedding(6, embedding_dim, field_config['aggregation'])
                 output_dim = embedding_dim
             
             if layer is not None:
                 self.embedding_layers[layer_key] = layer
+                
+                # --- 核心修改点 2：记录每个特征的切片位置 ---
+                start_index = self.total_embedding_dim
+                end_index = start_index + output_dim
+                self.embedding_slices[field_name] = (start_index, end_index)
+                
+                # 更新总维度
                 self.total_embedding_dim += output_dim
+                # --------------------------------------------        
+
+        # # Replace '.' by '__'
+        # self.field_to_key_map = {name: name.replace('.', '__') for name in self.config.keys()}
+
+        # # 2. 遍历配置，动态创建嵌入层
+        # for field_name, field_config in tqdm(self.config.items(), desc="Creating embedding layer. "):
+        #     layer_key = self.field_to_key_map[field_name]
+        #     field_type = field_config['type']
+            
+        #     layer = None
+        #     output_dim = 0
+
+        #     if field_type == 'categorical':
+        #         vocab_size = field_config['vocab_size']
+        #         embedding_dim = field_config['embedding_dim']
+        #         layer = nn.Embedding(vocab_size, embedding_dim)
+        #         output_dim = embedding_dim
+                
+        #     elif field_type == 'numerical':
+        #         embedding_dim = field_config['embedding_dim']
+        #         layer = nn.Linear(1, embedding_dim)
+        #         output_dim = embedding_dim
+
+        #     elif field_type == 'address_ipv4':
+        #         embedding_dim = field_config['embedding_dim_per_octet']
+        #         aggregation = field_config['aggregation']
+        #         layer = _AddressEmbedding(4, embedding_dim, aggregation)
+        #         output_dim = embedding_dim
+
+        #     elif field_type == 'address_mac':
+        #         embedding_dim = field_config['embedding_dim_per_octet']
+        #         aggregation = field_config['aggregation']
+        #         layer = _AddressEmbedding(6, embedding_dim, aggregation)
+        #         output_dim = embedding_dim
+            
+        #     if layer is not None:
+        #         self.embedding_layers[layer_key] = layer
+        #         self.total_embedding_dim += output_dim
     
     def forward(self, batch_data_dict):
         """

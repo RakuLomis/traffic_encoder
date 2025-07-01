@@ -413,7 +413,7 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], 
             len_prefix += 1
     return dict_protocol_tree 
 
-def protocol_tree(protocol, dict_protocol_tree, physical_nodes): 
+def find_fields_in_pta(protocol, dict_protocol_tree, physical_nodes): 
     """
     Return the list of field, subfields and field^{\prime} for Protocol Tree Attention. 
     The field^{\prime} is the field which does not have subfields. 
