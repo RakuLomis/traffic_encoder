@@ -54,7 +54,10 @@ class ProtocolTreeAttention(nn.Module):
     def __init__(self, field_embedder, protocol_tree: Dict[str, List[str]], 
                  aligned_dim: int = 128, num_heads: int = 4, num_classes: int = 2):
         """
-        实现分层协议树注意力的主模型。
+        Main module for Protocol Tree Attention (PTA). 
+        PTA handles and aggregates the subfields information, and sends the Attention results to their parent fields. 
+        Then the fields in a same protocol will be aligned and processed to find the correlation. 
+        Finally, the different protocols' weights are concatenated and pushed into final steps like Softmax to calculate the scores. 
 
         Parameters 
         ---------- 
