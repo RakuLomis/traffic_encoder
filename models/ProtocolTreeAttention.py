@@ -1,6 +1,7 @@
 import torch 
 import torch.nn as nn 
 from typing import Dict, List, Tuple
+from tqdm import tqdm
 
 class AttentionAggregator(nn.Module): 
     def __init__(self, embed_dim, num_heads=4):
@@ -79,15 +80,22 @@ class ProtocolTreeAttention(nn.Module):
         
         # --- 阶段一：为“子字段->字段”的聚合创建聚合器 ---
         self.subfield_aggregators = nn.ModuleDict()
-        for parent_field, subfields in self.protocol_tree.items():
+        for parent_field, subfields in self.protocol_tree.items(): # key: value
             # 确保父字段有子字段，且它本身也是一个需要被嵌入的特征
-            if subfields and parent_field in self.field_embedder.embedding_slices:
+            if subfields and parent_field in self.field_embedder.embedding_slices: # keys
                 # 获取该父字段的嵌入维度，作为其聚合器的维度
                 start, end = self.field_embedder.embedding_slices[parent_field]
                 parent_embed_dim = end - start
                 
                 aggregator_key = parent_field.replace('.', '__')
+                """
+                维度错误, 子向量维度?
+                """
                 self.subfield_aggregators[aggregator_key] = AttentionAggregator(parent_embed_dim, num_heads)
+        
+        """
+        What if fields are logical? 
+        """
 
         # --- 阶段二：为“字段->协议层”的聚合创建聚合器和对齐层 ---
         # 1. 创建线性层，将每个字段的嵌入（可能维度不同）对齐到`aligned_dim`
@@ -117,8 +125,8 @@ class ProtocolTreeAttention(nn.Module):
         for name in field_names:
             if name in self.field_embedder.embedding_slices:
                 start, end = self.field_embedder.embedding_slices[name]
-                vectors.append(x[:, start:end])
-        return torch.stack(vectors, dim=1)
+                vectors.append(x[:, start:end]) # [(batch_size, end-start)]
+        return torch.stack(vectors, dim=1) # (batch_size, dim)
 
     def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         # 0. 初始嵌入
