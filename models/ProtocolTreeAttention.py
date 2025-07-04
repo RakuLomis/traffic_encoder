@@ -53,6 +53,7 @@ class AttentionAggregator(nn.Module):
     
 class ProtocolTreeAttention(nn.Module):
     def __init__(self, field_embedder, protocol_tree: Dict[str, List[str]], 
+                 subfield_aligned_dim: int = 64, # newly add
                  aligned_dim: int = 128, num_heads: int = 4, num_classes: int = 2):
         """
         Main module for Protocol Tree Attention (PTA). 
@@ -78,20 +79,45 @@ class ProtocolTreeAttention(nn.Module):
         self.protocol_tree = protocol_tree
         self.aligned_dim = aligned_dim
         
-        # --- 阶段一：为“子字段->字段”的聚合创建聚合器 ---
-        self.subfield_aggregators = nn.ModuleDict()
-        for parent_field, subfields in self.protocol_tree.items(): # key: value
-            # 确保父字段有子字段，且它本身也是一个需要被嵌入的特征
-            if subfields and parent_field in self.field_embedder.embedding_slices: # keys
-                # 获取该父字段的嵌入维度，作为其聚合器的维度
-                start, end = self.field_embedder.embedding_slices[parent_field]
-                parent_embed_dim = end - start
+        # # --- 阶段一：为“子字段->字段”的聚合创建聚合器 ---
+        # self.subfield_aggregators = nn.ModuleDict()
+        # for parent_field, subfields in self.protocol_tree.items(): # key(str): value(list)
+        #     # 确保父字段有子字段，且它本身也是一个需要被嵌入的特征
+        #     if subfields and parent_field in self.field_embedder.embedding_slices: # keys
+        #         # 获取该父字段的嵌入维度，作为其聚合器的维度
+        #         start, end = self.field_embedder.embedding_slices[parent_field]
+        #         parent_embed_dim = end - start
                 
-                aggregator_key = parent_field.replace('.', '__')
-                """
-                维度错误, 子向量维度?
-                """
-                self.subfield_aggregators[aggregator_key] = AttentionAggregator(parent_embed_dim, num_heads)
+        #         aggregator_key = parent_field.replace('.', '__')
+        #         """
+        #         维度错误, 子向量维度? 
+        #         这里传递的是父字段对应的embedding向量维度
+        #         既然是aggregator的作用其实是添加CLS标记并提取这个嵌入后的字段的全局信息, 
+        #         那这里的作用就是为每个字段添加aggregator
+        #         """
+        #         self.subfield_aggregators[aggregator_key] = AttentionAggregator(parent_embed_dim, num_heads)
+
+        # --- 阶段一：为“子字段->字段”的聚合创建对齐层和聚合器 ---
+        self.subfield_aligners = nn.ModuleDict()
+        self.subfield_aggregators = nn.ModuleDict()
+
+        for parent_field, subfields in self.protocol_tree.items():
+            valid_subfields = [sf for sf in subfields if sf in self.field_embedder.embedding_slices]
+            
+            if valid_subfields and parent_field in self.field_embedder.embedding_slices:
+                parent_key = parent_field.replace('.', '__')
+                
+                # a) 为这个父字段下的所有子字段创建对齐层
+                aligner_group = nn.ModuleDict()
+                for sf_name in valid_subfields:
+                    start, end = self.field_embedder.embedding_slices[sf_name]
+                    original_dim = end - start
+                    sf_key = sf_name.replace('.', '__')
+                    aligner_group[sf_key] = nn.Linear(original_dim, subfield_aligned_dim)
+                self.subfield_aligners[parent_key] = aligner_group
+
+                # b) 创建一个输入维度为“对齐后维度”的聚合器
+                self.subfield_aggregators[parent_key] = AttentionAggregator(subfield_aligned_dim, num_heads)
         
         """
         What if fields are logical? 
