@@ -114,7 +114,7 @@ class ProtocolTreeAttention(nn.Module):
                     original_dim = end - start
                     sf_key = sf_name.replace('.', '__')
                     aligner_group[sf_key] = nn.Linear(original_dim, subfield_aligned_dim)
-                self.subfield_aligners[parent_key] = aligner_group
+                self.subfield_aligners[parent_key] = aligner_group # 对齐, subfield_aligners[parent_key][sf_key]
 
                 # b) 创建一个输入维度为“对齐后维度”的聚合器
                 self.subfield_aggregators[parent_key] = AttentionAggregator(subfield_aligned_dim, num_heads)
