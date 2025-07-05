@@ -125,11 +125,33 @@ class ProtocolTreeAttention(nn.Module):
 
         # --- 阶段二：为“字段->协议层”的聚合创建聚合器和对齐层 ---
         # 1. 创建线性层，将每个字段的嵌入（可能维度不同）对齐到`aligned_dim`
+        # self.field_aligners = nn.ModuleDict()
+        # for field_name, (start, end) in self.field_embedder.embedding_slices.items():
+        #     original_dim = end - start
+        #     aligner_key = field_name.replace('.', '__')
+        #     self.field_aligners[aligner_key] = nn.Linear(original_dim, self.aligned_dim) 
+        
+        # --- 阶段二: 字段 -> 协议层 (修正此处的初始化逻辑) ---
         self.field_aligners = nn.ModuleDict()
-        for field_name, (start, end) in self.field_embedder.embedding_slices.items():
-            original_dim = end - start
+        
+        # ==================== 核心修改点 ====================
+        # Iterate through all fields that have an embedding.
+        for field_name in self.field_embedder.embedding_slices.keys():
+            input_dim_for_aligner = 0
+            
+            # Check if this field is a "parent" field (i.e., it has an aggregator).
+            if field_name.replace('.', '__') in self.subfield_aggregators:
+                # If it's a parent, its vector in Stage 2 comes from the aggregator.
+                # The aggregator's output dimension is subfield_aligned_dim.
+                input_dim_for_aligner = subfield_aligned_dim
+            else:
+                # If it's a "simple" field, its vector is its original embedding.
+                start, end = self.field_embedder.embedding_slices[field_name]
+                input_dim_for_aligner = end - start
+
+            # Create the aligner with the CORRECT input dimension.
             aligner_key = field_name.replace('.', '__')
-            self.field_aligners[aligner_key] = nn.Linear(original_dim, self.aligned_dim)
+            self.field_aligners[aligner_key] = nn.Linear(input_dim_for_aligner, self.aligned_dim)
 
         # 2. 为每个协议主干（eth, ip, tcp）创建聚合器
         self.protocol_layer_aggregators = nn.ModuleDict({
@@ -154,51 +176,144 @@ class ProtocolTreeAttention(nn.Module):
                 vectors.append(x[:, start:end]) # [(batch_size, end-start)]
         return torch.stack(vectors, dim=1) # (batch_size, dim)
 
+    # def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+    #     # 0. 初始嵌入
+    #     # 得到 (batch_size, total_embedding_dim) 的扁平化向量
+    #     x = self.field_embedder(batch_data_dict)
+        
+    #     # ==================== 阶段一：子字段 -> 字段 ====================
+    #     # 创建一个可修改的副本，用于存放“升级后”的嵌入
+    #     upgraded_x = x.clone()
+        
+    #     for parent_field, aggregator in self.subfield_aggregators.items():
+    #         parent_field_original = parent_field.replace('__', '.')
+    #         subfield_names = self.protocol_tree[parent_field_original]
+            
+    #         # 提取所有子字段的向量
+    #         subfield_vectors = self._get_vectors_by_names(x, subfield_names)
+            
+    #         self.subfield_aligners[parent_field][subfield_names]
+
+    #         # 通过注意力聚合得到新的父字段向量
+    #         aggregated_parent_vector = aggregator(subfield_vectors)
+            
+    #         # 用聚合后的向量，替换掉副本中原始的、简单的父字段向量
+    #         start, end = self.field_embedder.embedding_slices[parent_field_original]
+    #         upgraded_x[:, start:end] = aggregated_parent_vector
+            
+    #     # ==================== 阶段二：字段 -> 协议层 ====================
+    #     protocol_vectors = []
+    #     # 按固定顺序处理，保证输出稳定
+    #     for protocol_name in ['eth', 'ip', 'tcp']:
+    #         if protocol_name in self.protocol_tree:
+    #             field_names_in_layer = self.protocol_tree[protocol_name]
+                
+    #             # 1. 提取该层所有字段的向量（已经是升级过的）
+    #             layer_field_vectors_unaligned = []
+    #             for field_name in field_names_in_layer:
+    #                 if field_name in self.field_embedder.embedding_slices:
+    #                     start, end = self.field_embedder.embedding_slices[field_name]
+    #                     layer_field_vectors_unaligned.append(upgraded_x[:, start:end])
+                
+    #             # 2. 将不同维度的字段向量对齐到`aligned_dim`
+    #             aligned_vectors = []
+    #             for i, field_name in enumerate(field_names_in_layer):
+    #                  if field_name in self.field_embedder.embedding_slices:
+    #                     aligner = self.field_aligners[field_name.replace('.', '__')]
+    #                     aligned_vectors.append(aligner(layer_field_vectors_unaligned[i]))
+                
+    #             # 3. 将对齐后的向量堆叠并送入该层的聚合器
+    #             if aligned_vectors:
+    #                 stacked_aligned_vectors = torch.stack(aligned_vectors, dim=1)
+    #                 protocol_vector = self.protocol_layer_aggregators[protocol_name](stacked_aligned_vectors)
+    #                 protocol_vectors.append(protocol_vector)
+
+    #     # ==================== 阶段三：协议层 -> 最终数据包 ====================
+    #     # 将所有协议层的代表向量堆叠起来
+    #     stacked_protocol_vectors = torch.stack(protocol_vectors, dim=1)
+        
+    #     # 进行最终的聚合
+    #     packet_vector = self.final_aggregator(stacked_protocol_vectors)
+        
+    #     # ==================== 分类 ====================
+    #     logits = self.classifier(packet_vector)
+        
+    #     return logits
     def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         # 0. 初始嵌入
         # 得到 (batch_size, total_embedding_dim) 的扁平化向量
         x = self.field_embedder(batch_data_dict)
         
-        # ==================== 阶段一：子字段 -> 字段 ====================
-        # 创建一个可修改的副本，用于存放“升级后”的嵌入
-        upgraded_x = x.clone()
+        # ==================== 阶段一：子字段 -> 字段 (已更新对齐逻辑) ====================
         
-        for parent_field, aggregator in self.subfield_aggregators.items():
-            parent_field_original = parent_field.replace('__', '.')
-            subfield_names = self.protocol_tree[parent_field_original]
-            
-            # 提取所有子字段的向量
-            subfield_vectors = self._get_vectors_by_names(x, subfield_names)
-            
-            self.subfield_aligners[parent_field][subfield_names]
+        # 创建一个新的字典，用来存放“升级后”的字段向量。
+        # 键是字段名，值是对应的向量。
+        upgraded_field_vectors = {}
+        
+        # 首先，将所有“简单”字段（没有孩子的）的原始嵌入直接复制过来
+        for field_name, (start, end) in self.field_embedder.embedding_slices.items():
+            if field_name not in self.protocol_tree or not self.protocol_tree[field_name]:
+                upgraded_field_vectors[field_name] = x[:, start:end]
 
-            # 通过注意力聚合得到新的父字段向量
-            aggregated_parent_vector = aggregator(subfield_vectors)
+        # 然后，处理所有“父”字段，用聚合后的向量覆盖它们
+        for parent_key, aggregator in self.subfield_aggregators.items():
+            parent_field_original = parent_key.replace('__', '.')
+            subfield_names = self.protocol_tree[parent_field_original]
+            valid_subfields = [sf for sf in subfield_names if sf in self.field_embedder.embedding_slices]
             
-            # 用聚合后的向量，替换掉副本中原始的、简单的父字段向量
-            start, end = self.field_embedder.embedding_slices[parent_field_original]
-            upgraded_x[:, start:end] = aggregated_parent_vector
+            # --- 这是新增的核心对齐逻辑 ---
+            
+            # 1. 准备一个空列表，用来收集对齐后的子字段向量
+            aligned_subfield_vectors = []
+            
+            # 2. 遍历该父字段下的每一个子字段
+            for sf_name in valid_subfields:
+                sf_key = sf_name.replace('.', '__')
+                
+                # 3. 提取该子字段原始的、维度不一的嵌入向量
+                start, end = self.field_embedder.embedding_slices[sf_name]
+                original_subfield_vector = x[:, start:end]
+                
+                # 4. 查找并应用它专属的对齐层(nn.Linear)
+                aligner = self.subfield_aligners[parent_key][sf_key]
+                aligned_vector = aligner(original_subfield_vector)
+                
+                aligned_subfield_vectors.append(aligned_vector)
+                
+            # --- 对齐逻辑结束 ---
+
+            if aligned_subfield_vectors:
+                # 5. 将所有维度已统一的子字段向量堆叠起来
+                stacked_aligned_vectors = torch.stack(aligned_subfield_vectors, dim=1)
+                
+                # 6. 送入该父字段专属的聚合器
+                aggregated_parent_vector = aggregator(stacked_aligned_vectors)
+                
+                # 7. 将聚合后的、高质量的向量存入我们的新字典
+                upgraded_field_vectors[parent_field_original] = aggregated_parent_vector
             
         # ==================== 阶段二：字段 -> 协议层 ====================
         protocol_vectors = []
-        # 按固定顺序处理，保证输出稳定
         for protocol_name in ['eth', 'ip', 'tcp']:
             if protocol_name in self.protocol_tree:
                 field_names_in_layer = self.protocol_tree[protocol_name]
                 
-                # 1. 提取该层所有字段的向量（已经是升级过的）
+                # 1. 提取该层所有字段的向量 (现在从upgraded_field_vectors中提取)
                 layer_field_vectors_unaligned = []
                 for field_name in field_names_in_layer:
-                    if field_name in self.field_embedder.embedding_slices:
-                        start, end = self.field_embedder.embedding_slices[field_name]
-                        layer_field_vectors_unaligned.append(upgraded_x[:, start:end])
+                    if field_name in upgraded_field_vectors:
+                        layer_field_vectors_unaligned.append(upgraded_field_vectors[field_name])
                 
                 # 2. 将不同维度的字段向量对齐到`aligned_dim`
+                # 注意：这里的对齐逻辑也需要相应调整，以处理新的输入
                 aligned_vectors = []
-                for i, field_name in enumerate(field_names_in_layer):
-                     if field_name in self.field_embedder.embedding_slices:
-                        aligner = self.field_aligners[field_name.replace('.', '__')]
-                        aligned_vectors.append(aligner(layer_field_vectors_unaligned[i]))
+                # 我们需要确保字段顺序和对齐层顺序一致
+                valid_fields_in_layer = [f for f in field_names_in_layer if f in upgraded_field_vectors]
+                for field_name in valid_fields_in_layer:
+                    aligner = self.field_aligners[field_name.replace('.', '__')]
+                    # 从upgraded_field_vectors中获取向量
+                    vector_to_align = upgraded_field_vectors[field_name]
+                    aligned_vectors.append(aligner(vector_to_align))
                 
                 # 3. 将对齐后的向量堆叠并送入该层的聚合器
                 if aligned_vectors:
@@ -206,14 +321,9 @@ class ProtocolTreeAttention(nn.Module):
                     protocol_vector = self.protocol_layer_aggregators[protocol_name](stacked_aligned_vectors)
                     protocol_vectors.append(protocol_vector)
 
-        # ==================== 阶段三：协议层 -> 最终数据包 ====================
-        # 将所有协议层的代表向量堆叠起来
+        # ==================== 阶段三、分类 （代码不变） ====================
         stacked_protocol_vectors = torch.stack(protocol_vectors, dim=1)
-        
-        # 进行最终的聚合
         packet_vector = self.final_aggregator(stacked_protocol_vectors)
-        
-        # ==================== 分类 ====================
         logits = self.classifier(packet_vector)
         
         return logits
