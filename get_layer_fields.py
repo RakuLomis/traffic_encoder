@@ -26,7 +26,7 @@ if pcap_path_list is not None:
         dict_reassemble = get_reasemmble_info(pcap_file) 
         df_reassemble = pd.DataFrame({
             "frame_num": list(dict_reassemble.keys()), 
-            "reassembled_segments": list(dict_reassemble.values()) 
+            "tcp.reassembled_segments": list(dict_reassemble.values()) 
         }) 
         # df_reassemble.to_csv(os.path.join(directory_path, 'reassemble_' + file_name + '.csv'), index=False) 
         df_fields = pd.DataFrame(list_fields) # frame_num

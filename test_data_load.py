@@ -59,5 +59,6 @@ output_logits = pta_model(first_batch)
 
 print(f"Shape of the final output logits: {output_logits.shape}")
 # 期待的输出形状: (batch_size, num_classes)
+print(f"The value of output is: {output_logits}")
 print("ProtocolTreeAttention class defined successfully.")
 print("To run this file, you need to instantiate a mock FieldEmbedding class and provide a protocol_tree dictionary.")

@@ -1,7 +1,9 @@
 import pyshark 
 from tqdm import tqdm 
 import os 
-import re
+import re 
+import pandas as pd
+from .dataframe_tools import filter_out_nan
 
 def packet_count(file, display_filter=None):
     """
@@ -175,3 +177,39 @@ def get_reasemmble_info(pcap: pyshark.FileCapture):
                 res_dict[index] = segment_index 
     pcap.close() 
     return res_dict
+
+
+def pcap_to_csv(directory_path, output_directory_path): 
+    """
+    Transform the pcap into csv and add some extra features. 
+
+    Parameters 
+    ---------- 
+    directory_path: 
+        The path of pcap files' directory. 
+    output_directory_path: 
+        The path of output csvs' directory.
+    """
+    pcap_path_list, file_name_list = get_pcap_path(directory_path) 
+    # pcap_path_list, file_name_list = get_file_path(dir_path=directory_path, postfix=['pcap, pcapng'])
+    if pcap_path_list is not None: 
+        for pcap_path, file_name in tqdm(zip(pcap_path_list, file_name_list), desc=f"Handling pcaps from {directory_path}"): 
+            pcap_file = pyshark.FileCapture(pcap_path) 
+            list_fields = get_fields_over_layers(pcap_file) 
+            dict_reassemble = get_reasemmble_info(pcap_file) 
+            df_reassemble = pd.DataFrame({
+                "frame_num": list(dict_reassemble.keys()), 
+                "tcp.reassembled_segments": list(dict_reassemble.values()) 
+            }) 
+            # df_reassemble.to_csv(os.path.join(directory_path, 'reassemble_' + file_name + '.csv'), index=False) 
+            df_fields = pd.DataFrame(list_fields) # frame_num
+            # df_fields['index'] = range(1, len(df_reassemble) + 1) 
+            df_merge_tls = pd.merge(df_fields, df_reassemble, on=["frame_num"], how="outer") 
+            print(f'original shape: ${df_merge_tls.shape}')
+            # df_fields.to_csv(os.path.join(directory_path, file_name + '.csv'), index=False) 
+            df_merge_tls = filter_out_nan(df_merge_tls) 
+            # all_nan_cols = df_merge_tls.columns[df_merge_tls.isna().all()] 
+            # df_merge_tls = df_merge_tls.drop(columns=all_nan_cols)
+            print(f'fill out NaN shape: ${df_merge_tls.shape}') 
+            df_merge_tls.to_csv(os.path.join(output_directory_path, 'merge_' + file_name + '.csv'), index=False)
+            pcap_file.close() 
