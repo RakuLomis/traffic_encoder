@@ -333,107 +333,6 @@ def get_reasemmble_info_v2(pcap_path: pyshark.FileCapture):
     pcaps.close() 
     return res_dict
 
-# def get_fields_over_layers_v2(pcap_path: str, given_layers=['eth', 'ip', 'tcp', 'tls']):
-#     """
-#     使用高效的pyshark迭代模式，在单次遍历中提取所有字段和重组信息。
-#     这个函数旨在替换 get_fields_over_layers 和 get_reasemmble_info。
-
-#     :param pcap_path: pcap文件的路径。
-#     :param given_layers: 需要提取的协议层列表。
-#     :return: 一个包含所有数据包信息的DataFrame。
-#     """
-    
-#     # 推荐使用 keep_packets=False 处理大文件，这可以防止pyshark将所有包缓存在内存中
-#     pcap_file = pyshark.FileCapture(pcap_path, keep_packets=False)
-    
-#     all_packets_list = []
-    
-#     # 使用高效的 for...in 循环进行单次遍历
-#     for packet in tqdm(pcap_file, desc=f"Processing {os.path.basename(pcap_path)}"):
-        
-#         # 我们只关心TCP包
-#         if not hasattr(packet, 'tcp'):
-#             continue
-            
-#         current_fields = {}
-        
-#         # 1. 添加 frame_num
-#         current_fields['frame_num'] = int(packet.frame_info.number)
-        
-#         # 2. 遍历packet中的所有层，提取字段
-#         for layer in packet.layers:
-#             if layer.layer_name not in given_layers:
-#                 continue
-            
-#             # layer.get_field_names() 是获取该层所有字段的直接方式
-#             for field_name in layer.get_field_names():
-#                 # getattr(layer, field_name) 是获取字段对象的安全方式
-#                 field_obj = getattr(layer, field_name)
-                
-#                 # field_obj.raw_value 提供了我们需要的十六进制原始值
-#                 hex_value = field_obj.raw_value
-                
-#                 if hex_value is None or len(hex_value) >= 64:
-#                     continue
-                
-#                 # 构建pyshark风格的完整字段名
-#                 full_field_name = f"{layer.layer_name}.{field_name}"
-#                 current_fields[full_field_name] = hex_value
-
-#         # 3. 处理特殊的十进制显示的字段
-#         current_fields['tcp.stream'] = packet.tcp.stream
-#         current_fields['tcp.len'] = packet.tcp.len
-        
-#         # 4. 在同一次循环中，处理重组信息
-#         # pyshark将重组信息直接附加在TCP层对象上
-#         reassembled_in = -1 # 默认为-1，表示不重组
-#         if hasattr(packet.tcp, 'reassembled_in'):
-#             reassembled_in = int(packet.tcp.reassembled_in)
-#         current_fields['tcp.reassembled_segments'] = reassembled_in
-
-#         all_packets_list.append(current_fields)
-
-#     # 循环结束后，一次性创建DataFrame
-#     if not all_packets_list:
-#         print(f"Warning: No processable TCP packets found in {pcap_path}")
-#         return pd.DataFrame()
-        
-#     df = pd.DataFrame(all_packets_list)
-
-#     # --- 后处理重组逻辑 ---
-#     # 这一部分可以在DataFrame层面高效完成
-#     if 'tcp.reassembled_segments' in df.columns:
-#         df = df.set_index('frame_num')
-#         # 创建一个映射，键是作为重组一部分的数据包帧号，值是它们最终被重组到的那个数据包的帧号
-#         reassembly_map = df[df['tcp.reassembled_segments'] != -1]['tcp.reassembled_segments'].to_dict()
-#         df['group_id'] = df.index.map(reassembly_map)
-        
-#         # 在同一个tcp.stream内，向前填充group_id，以标记属于同一重组事件的所有包
-#         # 因为只有最后一个包才有 reassembled_in 记录
-#         if 'tcp.stream' in df.columns:
-#             df['group_id'] = df.groupby('tcp.stream')['group_id'].backfill()
-        
-#         # 用每个组的最小帧号作为该重组块的唯一ID
-#         df['final_reassembled_id'] = df.groupby('group_id')['group_id'].transform('min')
-#         df['tcp.reassembled_segments'] = df['final_reassembled_id'].fillna(-1).astype(int)
-#         df = df.drop(columns=['group_id', 'final_reassembled_id']).reset_index()
-
-#     return df 
-
-# def pcap_to_csv_v2(directory_path, output_directory_path): 
-#     pcap_path_list, file_name_list = get_pcap_path(directory_path)
-    
-#     if pcap_path_list is not None: 
-#         for pcap_path, file_name in tqdm(zip(pcap_path_list, file_name_list), desc=f"Processing pcaps in {directory_path}"): 
-#             # 只调用这一个优化后的函数
-#             df_merged = get_fields_over_layers_v2(pcap_path)
-            
-#             if not df_merged.empty:
-#                 print(f'Original shape: {df_merged.shape}')
-#                 df_cleaned = filter_out_nan(df_merged) # 调用您原来的清理函数
-#                 print(f'Final shape after cleaning: {df_cleaned.shape}')
-#                 df_cleaned.to_csv(os.path.join(output_directory_path, 'merge_' + file_name + '.csv'), index=False)
-
 
 def pcap_to_csv_v2(directory_path, output_directory_path): 
     """
@@ -469,3 +368,98 @@ def pcap_to_csv_v2(directory_path, output_directory_path):
             print(f'fill out NaN shape: ${df_merge_tls.shape}') 
             df_merge_tls.to_csv(os.path.join(output_directory_path, 'merge_' + file_name + '.csv'), index=False)
             # pcap_file.close() 
+
+def extract_all_data_single_pass(pcap_path: str, given_layers=['eth', 'ip', 'tcp', 'tls']):
+    """
+    Combines all data extraction into a single, efficient pass over the pcap file.
+    This function is designed to be a robust replacement for separate extraction functions.
+
+    :param pcap_path: Path to the pcap file.
+    :param given_layers: A list of protocol layers to extract fields from.
+    :return: A DataFrame containing all extracted packet information.
+    """
+    # Use a try...finally block to GUARANTEE that the capture is closed,
+    # which helps terminate the background tshark process.
+    pcap_capture = pyshark.FileCapture(pcap_path, keep_packets=False)
+    
+    try:
+        all_packets_list = []
+        
+        # Use a single, efficient stream-based loop
+        for packet in tqdm(pcap_capture, desc=f"Processing {os.path.basename(pcap_path)}"):
+            
+            if not hasattr(packet, 'tcp'):
+                continue
+                
+            current_fields = {'frame_num': int(packet.frame_info.number)}
+            
+            # --- Field Extraction Logic ---
+            for layer in packet.layers:
+                if layer.layer_name not in given_layers:
+                    continue
+                
+                for field_name in layer.field_names:
+                    field_obj = getattr(layer, field_name)
+                    hex_value = field_obj.raw_value
+                    
+                    if hex_value is not None and len(hex_value) < 64:
+                        full_field_name = f"{layer.layer_name}.{field_name}"
+                        current_fields[full_field_name] = hex_value
+            
+            # --- Handle Special Decimal-Based Fields ---
+            current_fields['tcp.stream'] = packet.tcp.stream
+            current_fields['tcp.len'] = packet.tcp.len
+            
+            # --- Handle Reassembly Info in the SAME LOOP ---
+            reassembled_in = -1 # Default value
+            if hasattr(packet.tcp, 'reassembled_in'):
+                reassembled_in = int(packet.tcp.reassembled_in)
+            current_fields['tcp.reassembled_segments'] = reassembled_in
+
+            all_packets_list.append(current_fields)
+
+        if not all_packets_list:
+            print(f"Warning: No processable TCP packets found in {pcap_path}")
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(all_packets_list)
+
+        # --- Efficient Post-Processing for Reassembly ---
+        if 'tcp.reassembled_segments' in df.columns:
+            # This logic correctly groups all packets belonging to the same reassembled block
+            df_final = df.loc[df['tcp.reassembled_segments'] != -1, ['frame_num', 'tcp.reassembled_segments']]
+            if not df_final.empty:
+                df_map = df_final.set_index('frame_num')['tcp.reassembled_segments']
+                df['group'] = df['frame_num'].map(df_map)
+                if 'tcp.stream' in df.columns:
+                    df['group'] = df.groupby('tcp.stream')['group'].ffill().bfill()
+                df_id = df.groupby('group')['frame_num'].transform('min')
+                df['tcp.reassembled_segments'] = df_id.fillna(-1).astype(int)
+                df = df.drop(columns=['group'])
+        
+        return df
+
+    finally:
+        # This block will execute no matter what, ensuring processes are closed.
+        pcap_capture.close()
+
+
+def pcap_to_csv_v3(directory_path, output_directory_path): 
+    """
+    Transforms pcap files into CSVs using the optimized single-pass function.
+    """
+    pcap_path_list, file_name_list = get_pcap_path(directory_path)
+    
+    if pcap_path_list is not None: 
+        for pcap_path, file_name in zip(pcap_path_list, file_name_list):
+            
+            # === SINGLE, EFFICIENT CALL ===
+            df_merged = extract_all_data_single_pass(pcap_path)
+            
+            if not df_merged.empty:
+                print(f'\nOriginal shape for {file_name}: {df_merged.shape}')
+                
+                df_cleaned = filter_out_nan(df_merged) # Your existing cleaning function
+                
+                print(f'Final shape after cleaning: {df_cleaned.shape}')
+                df_cleaned.to_csv(os.path.join(output_directory_path, 'merge_' + file_name + '.csv'), index=False)

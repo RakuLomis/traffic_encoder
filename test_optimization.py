@@ -1,6 +1,7 @@
 import os 
 from utils.pcap_tools import pcap_to_csv 
 from utils.pcap_tools import pcap_to_csv_v2 
+from utils.pcap_tools import pcap_to_csv_v3 
 from tqdm import tqdm 
 
 pcap_directory_01 = os.path.join('..', 'TrafficData', 'dataset_29_d1')
@@ -22,10 +23,10 @@ test_pcap_path = os.path.join('.', 'Data', 'Test')
 #         pcap_folder = os.path.join(pcap_directory_01, folder) 
 #         output_folder = os.path.join(output_directory_csv, folder)
 #         os.makedirs(output_folder, exist_ok=True) 
-#         pcap_to_csv(pcap_folder, output_folder) 
+#         pcap_to_csv_v2(pcap_folder, output_folder) 
 # else:
 #     print(f"目录不存在: {pcap_directory_01}") 
 
 output_test_path = os.path.join('.', 'Data', 'Test', 'optimized_tls_test_01.csv') 
 
-pcap_to_csv_v2(test_pcap_path, test_pcap_path)
+pcap_to_csv_v3(test_pcap_path, test_pcap_path)
