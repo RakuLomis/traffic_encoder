@@ -300,7 +300,7 @@ def get_fields_and_reassembled_info(pcap_path: str, given_layers = ['eth', 'ip',
         # pcap.close() 
         return res_list, reassembled_info 
     finally: 
-        pcap.close()
+        pcaps.close()
 
 def pcap_to_csv_v2(directory_path, output_directory_path): 
     """
