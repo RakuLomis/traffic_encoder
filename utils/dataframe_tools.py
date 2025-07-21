@@ -465,65 +465,6 @@ def find_fields_in_pta(protocol, dict_protocol_tree, physical_nodes):
                 }) 
     return list_fields_subfields, list_fields_no_subfields 
 
-# def generate_vocabulary(csv_path, categorical_fields, output_path):
-#     """
-#     从CSV文件中为指定的分类字段生成词典映射，并保存为YAML文件。
-
-#     :param csv_path: 输入的CSV文件路径。
-#     :param categorical_fields: 需要为其创建词典的字段名称列表。
-#     :param output_path: 保存生成的词典映射的YAML文件路径。
-#     """
-#     print(f"Reading data from: {csv_path}")
-#     df = pd.read_csv(csv_path)
-    
-#     master_vocab = {}
-    
-#     for field in tqdm(categorical_fields, desc="Processing fields ..."):
-#         if field not in df.columns:
-#             print(f"Warning: Field '{field}' not found in CSV, skipping.")
-#             continue
-            
-#         # print(f"Processing field: '{field}'") 
-        
-#         unique_values = df[field].dropna().unique()
-        
-#         # 将所有值统一为小写的字符串，以便处理
-#         unique_str_values = sorted([
-#             f'{int(v):x}' if isinstance(v, (int, float)) else str(v).lower().replace('0x','')
-#             for v in unique_values
-#         ])
-        
-#         vocab_map = {val: i for i, val in enumerate(unique_str_values)}
-#         vocab_map['__OOV__'] = len(vocab_map)
-        
-#         master_vocab[field] = vocab_map
-        
-#         print(f"  - Found {len(unique_str_values)} unique values. Vocab size (incl. OOV): {len(vocab_map)}")
-
-#     # ==================== 核心修改点 开始 ====================
-#     # 定义一个函数，告诉PyYAML如何表示一个字符串
-#     def str_presenter(dumper, data):
-#         """
-#         如果字符串中包含换行符，则使用'|'风格，否则使用普通标量。
-#         这会强制PyYAML将所有str对象视为YAML的字符串类型。
-#         """
-#         if len(data.splitlines()) > 1:
-#             return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
-#         return dumper.represent_scalar('tag:yaml.org,2002:str', data)
-
-#     # 在dump之前，将这个表示器添加到PyYAML的默认Dumper中
-#     yaml.add_representer(str, str_presenter)
-#     # ==================== 核心修改点 结束 ====================    
-
-#     # 2. 将主词典写入YAML文件
-#     print(f"\nSaving master vocabulary to: {output_path}")
-#     with open(output_path, 'w') as f:
-#         # 使用 yaml.dump 来写入文件
-#         # default_flow_style=False 使其格式更易读（类似块状），而不是单行
-#         yaml.dump(master_vocab, f, default_flow_style=False, sort_keys=False) 
-        
-#     print("Vocabulary generation complete!")
-#     return master_vocab
 def generate_vocabulary(csv_path, categorical_fields, output_path):
     """
     从CSV文件中为指定的分类字段生成词典映射，并保存为YAML文件。
@@ -581,3 +522,72 @@ def generate_vocabulary(csv_path, categorical_fields, output_path):
         
     print("Vocabulary generation complete!")
     return master_vocab
+
+def label_and_merge_csvs(root_directory: str, output_directory: str):
+    """
+    遍历根目录下的所有子文件夹，将子文件夹名作为标签添加到每个CSV文件中，
+    然后按标签合并所有CSV文件。
+
+    :param root_directory: 包含标签子文件夹的根目录路径。
+    :param output_directory: 保存合并后CSV文件的输出目录路径。
+    """
+    # 1. 确保输出目录存在
+    os.makedirs(output_directory, exist_ok=True)
+    print(f"We get output directory: {output_directory}")
+
+    # 2. 获取所有代表标签的子文件夹名称
+    try:
+        label_folders = [f for f in os.listdir(root_directory) if os.path.isdir(os.path.join(root_directory, f))]
+    except FileNotFoundError:
+        print(f"Error: The root directory '{root_directory}' was not found.")
+        return
+
+    if not label_folders:
+        print(f"No label subdirectories found in '{root_directory}'.")
+        return
+
+    print(f"Found {len(label_folders)} labels: {label_folders}")
+
+    # 3. 遍历每一个标签文件夹
+    for label in tqdm(label_folders, desc="Processing labels"):
+        label_path = os.path.join(root_directory, label)
+        
+        # 找到该标签文件夹下的所有CSV文件
+        try:
+            csv_files = [f for f in os.listdir(label_path) if f.endswith('.csv')]
+        except FileNotFoundError:
+            print(f"Warning: Directory for label '{label}' not found at '{label_path}', skipping.")
+            continue
+
+        if not csv_files:
+            print(f"Warning: No CSV files found for label '{label}', skipping.")
+            continue
+        
+        # 准备一个列表，用来存放该标签下的所有DataFrame
+        list_of_dfs_for_label = []
+        
+        # 4. 读取每个CSV，添加标签，并存入列表
+        for csv_file in tqdm(csv_files, desc=f"Reading files for '{label}'", leave=False):
+            csv_path = os.path.join(label_path, csv_file)
+            try:
+                df = pd.read_csv(csv_path)
+                # 添加新的'label'列
+                df['label'] = label
+                list_of_dfs_for_label.append(df)
+            except Exception as e:
+                print(f"Error reading or processing {csv_path}: {e}")
+
+        # 5. 如果列表不为空，则将所有DataFrame合并成一个
+        if list_of_dfs_for_label:
+            print(f"\nMerging {len(list_of_dfs_for_label)} CSV files for label '{label}'...")
+            # 使用concat进行合并，ignore_index=True会重新生成一个连续的索引
+            merged_df = pd.concat(list_of_dfs_for_label, ignore_index=True)
+            
+            # 6. 构造输出文件名并保存
+            output_filename = f"{label}_merged.csv"
+            output_path = os.path.join(output_directory, output_filename)
+            
+            merged_df.to_csv(output_path, index=False)
+            print(f"Successfully saved merged file for '{label}' to '{output_path}'. Shape: {merged_df.shape}")
+        else:
+            print(f"No dataframes were created for label '{label}'.")
