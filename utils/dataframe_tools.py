@@ -570,7 +570,7 @@ def label_and_merge_csvs(root_directory: str, output_directory: str):
         for csv_file in tqdm(csv_files, desc=f"Reading files for '{label}'", leave=False):
             csv_path = os.path.join(label_path, csv_file)
             try:
-                df = pd.read_csv(csv_path)
+                df = pd.read_csv(csv_path, dtype=str)
                 # 添加新的'label'列
                 df['label'] = label
                 list_of_dfs_for_label.append(df)
