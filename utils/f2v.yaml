@@ -248,7 +248,7 @@ field_embedding_config:
     embedding_dim: 8
     
   # --- Field: reassembled_segments ---
-  reassembled_segments: # this field only exist when the tls payload is too large, and it can be represent as a same mark. So it is always smaller than streams.  
+  tcp.reassembled_segments: # this field only exist when the tls payload is too large, and it can be represent as a same mark. So it is always smaller than streams.  
     type: categorical
     vocab_size: 1536 # we use 2^10 + 2^9 = 1024 + 512 = 1536
     embedding_dim: 16
