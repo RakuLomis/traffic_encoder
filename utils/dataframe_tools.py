@@ -260,8 +260,9 @@ def block_to_dataframe(dict_block: dict, df_ori: pd.DataFrame): # delete output_
     columns_values = dict_block['columns'] 
     rows_values = dict_block['rows'] 
     for block_name, columns, rows in tqdm(zip(block_values, columns_values, rows_values)): 
-        if 0 not in columns: # frame_num must be added as index
-            columns.append(0) 
+        # if 0 not in columns: # frame_num must be added as index
+        #     columns.append(0) 
+        # after merging, frame_num can not be index any more. 
         subset_rows = df_ori.loc[rows] 
         sub_df = subset_rows.iloc[:, columns] 
         # output_csv_in_fold(sub_df, output_path, 'block_' + block_name + '.csv') 
@@ -523,7 +524,7 @@ def generate_vocabulary(csv_path, categorical_fields, output_path):
     print("Vocabulary generation complete!")
     return master_vocab
 
-def label_and_merge_csvs(root_directory: str, output_directory: str):
+def label_and_merge_csvs(root_directory: str, output_directory: str, need_label=False): 
     """
     遍历根目录下的所有子文件夹，将子文件夹名作为标签添加到每个CSV文件中，
     然后按标签合并所有CSV文件。
@@ -566,13 +567,15 @@ def label_and_merge_csvs(root_directory: str, output_directory: str):
         # 准备一个列表，用来存放该标签下的所有DataFrame
         list_of_dfs_for_label = []
         
-        # 4. 读取每个CSV，添加标签，并存入列表
+        # 4. 读取每个CSV，添加标签，并存入列表 
+        # We decide not to add label in this part. Labels will be added after field block truncation. 
         for csv_file in tqdm(csv_files, desc=f"Reading files for '{label}'", leave=False):
             csv_path = os.path.join(label_path, csv_file)
             try:
                 df = pd.read_csv(csv_path, dtype=str)
                 # 添加新的'label'列
-                df['label'] = label
+                if need_label: 
+                    df['label'] = label
                 list_of_dfs_for_label.append(df)
             except Exception as e:
                 print(f"Error reading or processing {csv_path}: {e}")
@@ -580,14 +583,83 @@ def label_and_merge_csvs(root_directory: str, output_directory: str):
         # 5. 如果列表不为空，则将所有DataFrame合并成一个
         if list_of_dfs_for_label:
             print(f"\nMerging {len(list_of_dfs_for_label)} CSV files for label '{label}'...")
-            # 使用concat进行合并，ignore_index=True会重新生成一个连续的索引
+        # 使用concat进行合并，ignore_index=True会重新生成一个连续的索引
             merged_df = pd.concat(list_of_dfs_for_label, ignore_index=True)
-            
+
             # 6. 构造输出文件名并保存
-            output_filename = f"{label}_merged.csv"
+            # We do not need `merged' as a postfix.
+            if need_label: 
+                output_filename = f"{label}_label.csv" 
+            else: 
+                output_filename = f"{label}.csv" 
             output_path = os.path.join(output_directory, output_filename)
-            
+
             merged_df.to_csv(output_path, index=False)
             print(f"Successfully saved merged file for '{label}' to '{output_path}'. Shape: {merged_df.shape}")
         else:
-            print(f"No dataframes were created for label '{label}'.")
+            print(f"No dataframes were created for label '{label}'.") 
+
+def merge_csvs_with_different_columns(root_directory: str, output_filepath: str, prefix: Optional[str]=None, postfix: Optional[str]=None):
+    """
+    遍历目录下的所有CSV文件，将它们合并成一个单一的CSV文件，
+    即使它们的列名不完全相同也能正确处理。
+
+    :param root_directory: 包含待合并CSV文件的目录路径。
+    :param output_filepath: 最终合并后的CSV文件的保存路径。
+    """
+    # 1. 检查输入目录是否存在
+    if not os.path.isdir(root_directory):
+        print(f"错误：目录 '{root_directory}' 不存在。")
+        return
+
+    # 2. 找到所有需要合并的CSV文件
+    # 假设它们都以 '_label.csv' 结尾
+    try:
+        # csv_files = [f for f in os.listdir(root_directory) if f.endswith('_label.csv')]
+        csv_file_paths, csv_files = get_file_path(root_directory, prefix, postfix)
+    except Exception as e:
+        print(f"读取目录 '{root_directory}' 时出错: {e}")
+        return
+
+    if not csv_files:
+        print(f"No target files in '{root_directory}'. ")
+        return
+
+    print(f"找到了 {len(csv_files)} 个待合并的CSV文件。")
+
+    # 3. 准备一个列表，用来存放从每个CSV文件中读取出的DataFrame
+    list_of_dfs = []
+
+    # 4. 遍历文件列表，读取数据并添加到列表中
+    for filename in tqdm(csv_files, desc="正在读取CSV文件"):
+        filepath = os.path.join(root_directory, filename + postfix)
+        try:
+            # 读取时将所有列都当作字符串处理，可以避免因类型推断错误导致的警告
+            df = pd.read_csv(filepath, dtype=str)
+            list_of_dfs.append(df)
+        except Exception as e:
+            print(f"\n读取文件 {filepath} 时出错: {e}")
+
+    # 5. 检查是否成功读取了任何数据
+    if not list_of_dfs:
+        print("未能成功读取任何CSV文件，程序退出。")
+        return
+
+    # 6. 使用pd.concat进行合并
+    # 这会自动处理列名不同的情况，缺失的列会用NaN填充
+    print("\n正在合并所有数据...")
+    merged_df = pd.concat(list_of_dfs, ignore_index=True, sort=False)
+    print("合并完成！")
+    
+    # 确保输出目录存在
+    output_dir = os.path.dirname(output_filepath)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # 7. 将最终的DataFrame保存到单一的CSV文件中
+    print(f"正在将合并后的数据保存到: {output_filepath}")
+    merged_df.to_csv(output_filepath, index=False)
+    
+    print("\n处理完毕！")
+    print(f"最终合并文件的形状 (行, 列): {merged_df.shape}")
+    print(f"总列数: {len(merged_df.columns)}")
