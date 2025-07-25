@@ -59,7 +59,7 @@ def filter_out_nan(df: pd.DataFrame):
     return df.drop(columns=all_nan_cols) 
 
 
-def to_integer_code(df: pd.DataFrame, col_name = 'reassembled_segments'): 
+def to_integer_code(df: pd.DataFrame, col_name = 'tcp.reassembled_segments'): 
     """
     Turn the specific column into the integer code for convenience. 
 
@@ -259,14 +259,31 @@ def block_to_dataframe(dict_block: dict, df_ori: pd.DataFrame): # delete output_
     block_values = dict_block['block'] 
     columns_values = dict_block['columns'] 
     rows_values = dict_block['rows'] 
+
+    all_column_names = df_ori.columns.tolist()
+
     for block_name, columns, rows in tqdm(zip(block_values, columns_values, rows_values)): 
         # if 0 not in columns: # frame_num must be added as index
         #     columns.append(0) 
         # after merging, frame_num can not be index any more. 
-        subset_rows = df_ori.loc[rows] 
-        sub_df = subset_rows.iloc[:, columns] 
-        # output_csv_in_fold(sub_df, output_path, 'block_' + block_name + '.csv') 
-        list_block.append(sub_df) 
+        try:
+            subset_column_names = [all_column_names[i] for i in columns]
+        except IndexError:
+            print(f"警告：块 {block_name} 的列索引超出了范围，跳过此块。")
+            continue
+
+        # 2. 核心修改：确保'index'列始终被包含，以保持联系
+        if 'index' not in subset_column_names:
+            subset_column_names.insert(0, 'index') # 插入到最前面
+
+        # 3. 使用行的索引标签（.loc）和列名进行切片
+        try:
+            subset_rows = df_ori.loc[rows]
+            sub_df = subset_rows[subset_column_names]
+            list_block.append(sub_df)
+        except KeyError:
+             print(f"警告：块 {block_name} 的某些行或列标签在DataFrame中不存在，跳过此块。")
+             continue
     return list_block 
 
 # def truncating_features(dict_true: dict): 

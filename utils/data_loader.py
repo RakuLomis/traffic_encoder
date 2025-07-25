@@ -51,10 +51,10 @@ class TrafficDataset(Dataset):
         # -----------------------------
         
         # 2. 读取CSV数据
-        self.raw_df = pd.read_csv(csv_path, index_col='frame_num')
-        
+        # self.raw_df = pd.read_csv(csv_path, index_col='frame_num')
+        self.raw_df = pd.read_csv(csv_path).drop(columns=['frame_num'], inplace=True)
         # 定义不需要进行十六进制转换的字段
-        self.decimal_fields = {'frame_num', 'tcp.stream', 'reassembled_segments'}
+        self.decimal_fields = {'tcp.stream', 'tcp.reassembled_segments'}
         
         # 3. 对整个DataFrame进行预处理，将所有值转换为数值格式
         self.processed_data = self._preprocess_dataframe()
