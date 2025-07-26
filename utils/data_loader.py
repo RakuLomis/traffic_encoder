@@ -51,8 +51,10 @@ class TrafficDataset(Dataset):
         # -----------------------------
         
         # 2. 读取CSV数据
-        # self.raw_df = pd.read_csv(csv_path, index_col='frame_num')
-        self.raw_df = pd.read_csv(csv_path).drop(columns=['frame_num'], inplace=True)
+        self.raw_df = pd.read_csv(csv_path, dtype=str)
+        # self.raw_df = pd.read_csv(csv_path, index_col='index')
+        if 'index' in self.raw_df.columns:
+            self.raw_df.set_index('index', inplace=True) 
         # 定义不需要进行十六进制转换的字段
         self.decimal_fields = {'tcp.stream', 'tcp.reassembled_segments'}
         
@@ -68,7 +70,7 @@ class TrafficDataset(Dataset):
         processed_data_dict = {}
         for field_name in self.raw_df.columns:
             if field_name not in self.config:
-                if field_name != 'frame_num':
+                if field_name != 'index': 
                     print(f"Warning: Field '{field_name}' not in config, skipping.")
                     pass
                 continue
@@ -96,7 +98,19 @@ class TrafficDataset(Dataset):
 
             # 处理其他所有需要从十六进制转为整数的字段
             elif self.config[field_name]['type'] in ['categorical', 'numerical']:
-                processed_column = self.raw_df[field_name].apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
+
+                def robust_hex_to_int(x):
+                    if not pd.notna(x):
+                        return 0
+                    # Convert to string and handle cases like '45.0' by splitting at the decimal
+                    str_x = str(x).split('.')[0]
+                    try:
+                        return int(str_x, 16)
+                    except ValueError:
+                        return 0 # Return 0 if it's still not a valid hex
+
+                # processed_column = self.raw_df[field_name].apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
+                processed_column = self.raw_df[field_name].apply(robust_hex_to_int)
                 
             else:
                 # 如果有任何未覆盖的情况，跳过该字段

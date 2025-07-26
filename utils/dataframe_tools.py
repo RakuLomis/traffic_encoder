@@ -274,7 +274,10 @@ def block_to_dataframe(dict_block: dict, df_ori: pd.DataFrame): # delete output_
 
         # 2. 核心修改：确保'index'列始终被包含，以保持联系
         if 'index' not in subset_column_names:
-            subset_column_names.insert(0, 'index') # 插入到最前面
+            subset_column_names.insert(0, 'index') # 插入到最前面 
+
+        if 'label' not in subset_column_names: 
+            subset_column_names.append('label')
 
         # 3. 使用行的索引标签（.loc）和列名进行切片
         try:
