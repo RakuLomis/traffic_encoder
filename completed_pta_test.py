@@ -85,7 +85,7 @@ traffic_dataloader = DataLoader(
 first_batch = next(iter(traffic_dataloader))
 # print(first_batch['eth.dst'])
 # print("---------") 
-field_embedder = FieldEmbedding(config_path) # embedding_slices here
+field_embedder = FieldEmbedding(config_path, vocab_path) # embedding_slices here
 
 # 实例化PTA模型
 pta_model = ProtocolTreeAttention(field_embedder, protocol_tree, num_classes=10)
