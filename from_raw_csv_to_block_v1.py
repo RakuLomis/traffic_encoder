@@ -14,3 +14,4 @@ completed_csv_path = os.path.join(csv_directory_merged_completed, 'dataset_29_co
 label_and_merge_csvs(raw_csv_directory_path, csv_directory_merged, need_label=True) 
 # 将所有csv文件合并成一个总的csv
 merge_csvs_with_different_columns(csv_directory_merged, completed_csv_path, postfix='_label.csv') 
+
