@@ -17,7 +17,7 @@ DISCRETE_BLOCK = 'discrete'
 
 current_path = os.path.dirname(os.path.abspath(__file__)) 
 # csv_name = 'dataset_29_completed_label' 
-csv_name = '0' 
+csv_name = '2' 
 raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
 block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
 # raw_df_path = os.path.join(raw_df_directory, csv_name + '.csv') 

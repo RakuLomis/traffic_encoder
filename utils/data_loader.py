@@ -35,7 +35,8 @@ class TrafficDataset(Dataset):
     """
     Load and preprocess raw dataframe for traffic fields. 
     """
-    def __init__(self, csv_path, config_path, vocab_path):
+    # def __init__(self, csv_path, config_path, vocab_path): 
+    def __init__(self, dataframe: pd.DataFrame, config_path, vocab_path):
         super().__init__()
         
         # 1. 加载YAML配置
@@ -51,8 +52,11 @@ class TrafficDataset(Dataset):
         # -----------------------------
         
         # 2. 读取CSV数据
-        self.raw_df = pd.read_csv(csv_path, dtype=str)
-        # self.raw_df = pd.read_csv(csv_path, index_col='index')
+        # self.raw_df = pd.read_csv(csv_path, dtype=str)
+        # 分离特征和标签
+        self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
+        self.raw_df = dataframe.drop(columns=['label', 'label_id'])
+
         if 'index' in self.raw_df.columns:
             self.raw_df.set_index('index', inplace=True) 
         # 定义不需要进行十六进制转换的字段
@@ -163,14 +167,18 @@ class TrafficDataset(Dataset):
     def __len__(self):
         # 数据集的长度就是DataFrame的行数
         # 我们以第一列的长度为准
-        first_key = next(iter(self.fields))
-        return len(self.processed_data[first_key])
+        # first_key = next(iter(self.fields))
+        # return len(self.processed_data[first_key]) 
+        return len(self.raw_df)
 
     def __getitem__(self, idx):
-        # 获取索引为idx的一条数据
-        # 返回一个字典，键为字段名，值为对应的数值
-        sample = {field: self.processed_data[field].iloc[idx] for field in self.fields}
-        return sample
+        # # 获取索引为idx的一条数据
+        # # 返回一个字典，键为字段名，值为对应的数值
+        # sample = {field: self.processed_data[field].iloc[idx] for field in self.fields}
+        # return sample
+        features = {field: self.processed_data[field].iloc[idx] for field in self.fields}
+        label = self.labels[idx]
+        return features, label 
 
 # --- 使用示例 ---
 if __name__ == '__main__':
