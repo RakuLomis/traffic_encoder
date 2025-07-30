@@ -2,7 +2,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import yaml
-import os
+import os 
+from tqdm import tqdm
 
 def _preprocess_address(addr_str, addr_type):
     """Turn the hex address into a dec addresss list. """
@@ -51,78 +52,177 @@ class TrafficDataset(Dataset):
         
         # -----------------------------
         
-        # 2. 读取CSV数据
-        # self.raw_df = pd.read_csv(csv_path, dtype=str)
-        # 分离特征和标签
-        self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
-        self.raw_df = dataframe.drop(columns=['label', 'label_id'])
+        # # 2. 读取CSV数据
+        # # self.raw_df = pd.read_csv(csv_path, dtype=str)
+        # # 分离特征和标签
+        # self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
+        # self.raw_df = dataframe.drop(columns=['label', 'label_id'])
 
-        if 'index' in self.raw_df.columns:
-            self.raw_df.set_index('index', inplace=True) 
-        # 定义不需要进行十六进制转换的字段
-        self.decimal_fields = {'tcp.stream', 'tcp.reassembled_segments'}
+        # if 'index' in self.raw_df.columns:
+        #     self.raw_df.set_index('index', inplace=True) 
+        # # 定义不需要进行十六进制转换的字段
+        # self.decimal_fields = {'tcp.stream', 'tcp.reassembled_segments'}
         
-        # 3. 对整个DataFrame进行预处理，将所有值转换为数值格式
-        self.processed_data = self._preprocess_dataframe()
-        self.fields = list(self.processed_data.keys())
+        # # 3. 对整个DataFrame进行预处理，将所有值转换为数值格式
+        # self.processed_data = self._preprocess_dataframe()
+        # self.fields = list(self.processed_data.keys()) 
+            
+        # ------------- 加速处理
+        # 标签
+        self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
+
+        # 一次性处理特征
+        raw_features = dataframe.drop(columns=['label', 'label_id'])
+        processed_dict = self._preprocess_dataframe(raw_features)
+
+        # 转换为 tensor 列表
+        self.items = []
+        n = len(self.labels)
+        for i in tqdm(range(n), desc="Converting to tensors"):
+            item = {
+                k: torch.tensor(v.iloc[i]) if not isinstance(v.iloc[i], list)
+                   else torch.tensor(v.iloc[i], dtype=torch.long)
+                for k, v in processed_dict.items()
+            }
+            self.items.append(item)
 
     def _preprocess_dataframe(self):
         """
         遍历DataFrame的所有列，根据YAML配置将其转换为数值。
-        (已修正逻辑覆盖问题)
+        此版本集成了调试钩子，并修正了逻辑处理的优先级。
         """
         processed_data_dict = {}
         for field_name in self.raw_df.columns:
+            # 首先，检查该字段是否在我们的总配置中，如果不在则完全跳过
             if field_name not in self.config:
-                if field_name != 'index': 
-                    print(f"Warning: Field '{field_name}' not in config, skipping.")
+                if field_name not in ['index', 'label']: # 抑制对元数据列的警告
+                    # print(f"Warning: Field '{field_name}' not in config, skipping.")
                     pass
                 continue
             
-            # 使用互斥的 if/elif/else 结构来确保每个字段只被处理一次
+            # 使用严格互斥的 if/elif/else 结构，并按正确优先级排序
 
-            # 处理地址数据
+            # 规则1 (最高优先级): 处理地址类型
             if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
                 field_type = self.config[field_name]['type']
                 processed_column = self.raw_df[field_name].apply(lambda x: _preprocess_address(x, field_type))
-            
-            # 使用生成的词典进行映射
+
+            # 规则2: 使用生成的词典进行映射
             elif field_name in self.vocab_maps:
                 vocab_map = self.vocab_maps[field_name]
-                oov_index = vocab_map['__OOV__']
+                oov_index = vocab_map.get('__OOV__')
+                if oov_index is None: # 安全检查
+                    oov_index = len(vocab_map)
+
+                # ==================== 调试钩子 开始 ====================
+                # 我们定义一个更详细的函数来替代简单的lambda
+                def find_mismatch_and_map(x):
+                    if not pd.notna(x):
+                        return oov_index
+                    
+                    # 确保我们用来查找的键，与generate_vocab.py中创建键的方式完全一致
+                    key_to_lookup = str(x).lower().replace('0x', '')
+                    
+                    if key_to_lookup not in vocab_map:
+                        # 如果在词典中找不到这个键，就打印详细的错误报告
+                        print("\n" + "="*60)
+                        print("!!! Potential mismatch with vocab yaml !!!")
+                        print(f"FIELD:           '{field_name}'")
+                        print(f"Value from data (VALUE):   '{x}'")
+                        print(f"Key used to search (KEY):     '{key_to_lookup}'")
+                        print("This KEY is not found in vocab.yaml. ")
+                        print("It may be the reason of IndexError. ")
+                        print("Please check the vocab.yaml. ")
+                        print("="*60 + "\n")
+                        return oov_index # 将未找到的值映射到OOV索引
+                    
+                    # 如果找到了，返回正确的索引
+                    return vocab_map[key_to_lookup]
+                # ==================== 调试钩子 结束 ====================
                 
-                # 安全地处理各种输入，统一为小写字符串进行查找
-                processed_column = self.raw_df[field_name].apply(
-                    lambda x: vocab_map.get(str(x).lower().replace('0x',''), oov_index) if pd.notna(x) else oov_index
-                )
-            # 其实这样转换之后
-            # 处理那些本身就是十进制的特殊字段
+                # 应用我们刚刚定义的这个更强大的函数
+                processed_column = self.raw_df[field_name].apply(find_mismatch_and_map)
+
+            # 规则3: 处理特殊的十进制字段
             elif field_name in self.decimal_fields:
                 processed_column = self.raw_df[field_name].fillna(0).astype(int)
 
-            # 处理其他所有需要从十六进制转为整数的字段
+            # 规则4 (最低优先级): 处理其他所有需要从十六进制转整数的字段
             elif self.config[field_name]['type'] in ['categorical', 'numerical']:
-
                 def robust_hex_to_int(x):
                     if not pd.notna(x):
                         return 0
-                    # Convert to string and handle cases like '45.0' by splitting at the decimal
                     str_x = str(x).split('.')[0]
                     try:
                         return int(str_x, 16)
                     except ValueError:
-                        return 0 # Return 0 if it's still not a valid hex
-
-                # processed_column = self.raw_df[field_name].apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
+                        return 0
                 processed_column = self.raw_df[field_name].apply(robust_hex_to_int)
                 
             else:
-                # 如果有任何未覆盖的情况，跳过该字段
                 continue
             
             processed_data_dict[field_name] = processed_column
             
         return processed_data_dict
+
+    # def _preprocess_dataframe(self):
+    #     """
+    #     遍历DataFrame的所有列，根据YAML配置将其转换为数值。
+    #     (已修正逻辑覆盖问题)
+    #     """
+    #     processed_data_dict = {}
+    #     for field_name in self.raw_df.columns:
+    #         if field_name not in self.config:
+    #             if field_name != 'index': 
+    #                 print(f"Warning: Field '{field_name}' not in config, skipping.")
+    #                 pass
+    #             continue
+            
+    #         # 使用互斥的 if/elif/else 结构来确保每个字段只被处理一次
+
+    #         # 处理地址数据
+    #         if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
+    #             field_type = self.config[field_name]['type']
+    #             processed_column = self.raw_df[field_name].apply(lambda x: _preprocess_address(x, field_type))
+            
+    #         # 使用生成的词典进行映射
+    #         elif field_name in self.vocab_maps:
+    #             vocab_map = self.vocab_maps[field_name]
+    #             oov_index = vocab_map['__OOV__']
+                
+    #             # 安全地处理各种输入，统一为小写字符串进行查找
+    #             processed_column = self.raw_df[field_name].apply(
+    #                 lambda x: vocab_map.get(str(x).lower().replace('0x',''), oov_index) if pd.notna(x) else oov_index
+    #             )
+    #         # 其实这样转换之后
+    #         # 处理那些本身就是十进制的特殊字段
+    #         elif field_name in self.decimal_fields:
+    #             processed_column = self.raw_df[field_name].fillna(0).astype(int)
+
+    #         # 处理其他所有需要从十六进制转为整数的字段
+    #         elif self.config[field_name]['type'] in ['categorical', 'numerical']:
+
+    #             def robust_hex_to_int(x):
+    #                 if not pd.notna(x):
+    #                     return 0
+    #                 # Convert to string and handle cases like '45.0' by splitting at the decimal
+    #                 str_x = str(x).split('.')[0]
+    #                 try:
+    #                     return int(str_x, 16)
+    #                 except ValueError:
+    #                     return 0 # Return 0 if it's still not a valid hex
+
+    #             # processed_column = self.raw_df[field_name].apply(lambda x: int(str(x), 16) if pd.notna(x) else 0)
+    #             processed_column = self.raw_df[field_name].apply(robust_hex_to_int)
+                
+    #         else:
+    #             # 如果有任何未覆盖的情况，跳过该字段
+    #             continue
+            
+    #         processed_data_dict[field_name] = processed_column
+            
+    #     return processed_data_dict
 
     # def _preprocess_dataframe(self):
     #     """
@@ -176,9 +276,10 @@ class TrafficDataset(Dataset):
         # # 返回一个字典，键为字段名，值为对应的数值
         # sample = {field: self.processed_data[field].iloc[idx] for field in self.fields}
         # return sample
-        features = {field: self.processed_data[field].iloc[idx] for field in self.fields}
-        label = self.labels[idx]
-        return features, label 
+        # features = {field: self.processed_data[field].iloc[idx] for field in self.fields}
+        # label = self.labels[idx]
+        # return features, label 
+        return self.items[idx], self.labels[idx]
 
 # --- 使用示例 ---
 if __name__ == '__main__':

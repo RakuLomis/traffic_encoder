@@ -82,7 +82,7 @@ if __name__ == '__main__':
     
     config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
     vocab_path = os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml') 
-    csv_name = '2' 
+    csv_name = '0' 
     raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
     block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
     # raw_df_path = os.path.join(raw_df_directory, csv_name + '.csv') 

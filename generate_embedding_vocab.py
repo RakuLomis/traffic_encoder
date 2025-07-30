@@ -14,6 +14,7 @@ categorical_fields = [item for item in fields if yaml_config[item]['type'] == 'c
 
 addr_fields = ['eth.dst', 'eth.src', 'ip.src', 'ip.dst']
 other_fields = ['tcp.reassembled_segments']
-fields_except_addr = [item for item in fields if item not in addr_fields and item not in other_fields]
+target_categorical_fields = [item for item in categorical_fields if item not in addr_fields and item not in other_fields]
+print(target_categorical_fields)
 
-vocab_reflect = generate_vocabulary(csv_path, categorical_fields, os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs_v1.yaml'))
+vocab_reflect = generate_vocabulary(csv_path, target_categorical_fields, os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml'))

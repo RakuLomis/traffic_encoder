@@ -492,7 +492,7 @@ def generate_vocabulary(csv_path, categorical_fields, output_path):
     (使用强制风格的自定义Dumper以保证键的类型正确)
     """
     print(f"Reading data from: {csv_path}")
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, dtype=str)
     
     master_vocab = {}
     
