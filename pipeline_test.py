@@ -91,7 +91,7 @@ if __name__ == '__main__':
     # --- 数据分割 ---
     print("正在分割数据集...")
     # 假设 block_0_df 是您从 '0.csv' 加载的完整DataFrame
-    block_0_df = pd.read_csv(raw_df_path, low_memory=False) 
+    block_0_df = pd.read_csv(raw_df_path, low_memory=False, dtype=str) 
 
     # 首先，创建一个从字符串标签到整数的映射，这对模型至关重要
     # {'aimchat': 0, 'amazon': 1, ...}
@@ -125,8 +125,8 @@ if __name__ == '__main__':
     train_dataset = TrafficDataset(train_df, config_path, vocab_path)
     val_dataset = TrafficDataset(val_df, config_path, vocab_path)
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True)
     
     # --- 3. 初始化模型、损失函数和优化器 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

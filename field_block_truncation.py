@@ -16,7 +16,7 @@ input_directory_path = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merg
 csv_path_list, csv_name_list = get_file_path(input_directory_path, postfix='.csv') 
 if csv_path_list is not None: 
     for csv_path, csv_name in zip(csv_path_list, csv_name_list): 
-        df = pd.read_csv(csv_path) 
+        df = pd.read_csv(csv_path, dtype=str) 
         
         list_df_block = padding_or_truncating(df, False, DISCRETE_BLOCK) 
         for block_num in range(len(list_df_block)): 
