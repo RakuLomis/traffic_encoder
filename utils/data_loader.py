@@ -31,7 +31,95 @@ def _preprocess_address(addr_str, addr_type):
     print("Something was wrong, so we return a empty list. ")
     return []
 
+# class TrafficDataset(Dataset):
+#     """
+#     一个经过最终性能优化的数据集类。
+#     所有数据在初始化时被完全转换为原生Python类型，以实现最快的多进程加载。
+#     """
+#     def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str):
+#         super().__init__()
+        
+#         # 1. 加载配置文件 (无变化)
+#         with open(config_path, 'r') as f:
+#             self.config = yaml.safe_load(f)['field_embedding_config']
+#         with open(vocab_path, 'r') as f:
+#             self.vocab_maps = yaml.safe_load(f)
+            
+#         # 2. 预处理标签 (无变化)
+#         self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
+        
+#         # 3. 预处理特征 (在Pandas层面完成列式转换)
+#         print("正在一次性预处理所有特征...")
+#         # index列只是为了分块时的联系，对于模型是无用的，可以安全删除
+#         raw_features = dataframe.drop(columns=['label', 'label_id', 'index'], errors='ignore')
+            
+#         self.decimal_fields = {'tcp.stream'} 
+        
+#         processed_pandas_dict = self._preprocess_dataframe(raw_features)
 
+#         # ==================== 核心优化点 开始 ====================
+#         # 4. 将预处理过的Pandas数据，完全转换为一个【Tensor字典】的列表
+#         #    这是最耗时的一步，但它只在程序启动时执行一次！
+        
+#         print("正在将数据转换为Tensor格式以实现极速加载...")
+#         self.items = []
+#         num_samples = len(self.labels)
+        
+#         # 将pandas字典转换为更快的“列式”访问
+#         processed_columns = {k: v.to_list() for k, v in processed_pandas_dict.items()}
+#         column_names = list(processed_columns.keys())
+        
+#         for i in tqdm(range(num_samples), desc="Converting to Tensors"):
+#             # 直接从Python列表中按索引取值，这比.iloc快得多
+#             item_py = {name: processed_columns[name][i] for name in column_names}
+            
+#             # 将每个值都转换为Tensor
+#             item_tensor = {
+#                 k: torch.tensor(v, dtype=torch.long) if not isinstance(v, list) else torch.tensor(v, dtype=torch.long)
+#                 for k, v in item_py.items()
+#             }
+#             self.items.append(item_tensor)
+#         # ==================== 核心优化点 结束 ====================
+
+#     # _preprocess_dataframe 函数保持不变，它高效地处理列
+#     def _preprocess_dataframe(self, df: pd.DataFrame):
+#         # ... (您上一版中正确的 _preprocess_dataframe 逻辑可以原封不动地放在这里) ...
+#         processed_data_dict = {}
+#         for field_name in df.columns:
+#             if field_name not in self.config:
+#                 continue
+            
+#             if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
+#                 field_type = self.config[field_name]['type']
+#                 processed_column = df[field_name].apply(lambda x: _preprocess_address(x, field_type))
+#             elif field_name in self.vocab_maps:
+#                 vocab_map = self.vocab_maps[field_name]
+#                 oov_index = vocab_map.get('__OOV__', len(vocab_map))
+#                 processed_column = df[field_name].apply(
+#                     lambda x: vocab_map.get(str(x).lower().replace('0x',''), oov_index) if pd.notna(x) else oov_index
+#                 )
+#             elif field_name in self.decimal_fields:
+#                 processed_column = df[field_name].fillna(0).astype(int)
+#             elif self.config[field_name]['type'] in ['categorical', 'numerical']:
+#                 def robust_hex_to_int(x):
+#                     if not pd.notna(x): return 0
+#                     str_x = str(x).split('.')[0]
+#                     try: return int(str_x, 16)
+#                     except ValueError: return 0
+#                 processed_column = df[field_name].apply(robust_hex_to_int)
+#             else:
+#                 continue
+#             processed_data_dict[field_name] = processed_column
+#         return processed_data_dict
+
+#     def __len__(self):
+#         return len(self.labels)
+
+#     def __getitem__(self, idx):
+#         # __getitem__ 现在快如闪电：它只做一次列表索引，返回一个纯Python字典
+#         return self.items[idx], self.labels[idx]
+
+### Not fast enough
 class TrafficDataset(Dataset):
     """
     An optimized Dataset for multi-process data loading.
