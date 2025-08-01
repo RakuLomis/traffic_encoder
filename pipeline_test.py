@@ -2,7 +2,7 @@ import torch
 import torch.optim as optim 
 import torch.nn as nn 
 from tqdm import tqdm 
-from utils.data_loader import TrafficDataset 
+from utils.data_loader import TrafficDataset
 from torch.utils.data import Dataset, DataLoader
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
@@ -13,6 +13,9 @@ from utils.dataframe_tools import padding_or_truncating
 import pandas as pd 
 from sklearn.model_selection import train_test_split
 import os
+from torch.profiler import profile, record_function, ProfilerActivity
+from utils.data_loader import custom_collate_fn
+
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
     model.train() # 将模型设置为训练模式
@@ -22,8 +25,11 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
 
     for features, labels in tqdm(dataloader, desc="Training"):
         # 将数据移动到指定设备 (GPU or CPU)
-        features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
-        labels = labels.to(device)
+        # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
+        # labels = labels.to(device)
+
+        features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
+        labels = labels.to(device, non_blocking=True)
 
         # 1. 前向传播
         outputs = model(features)
@@ -122,11 +128,32 @@ if __name__ == '__main__':
     print(f" - 验证集: {len(val_df)} 条")
     print(f" - 测试集: {len(test_df)} 条")
 
+    # train_dataset = TrafficDataset(train_df, config_path, vocab_path)
+    # val_dataset = TrafficDataset(val_df, config_path, vocab_path)
+    
+    # train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, collate_fn=custom_collate_fn)
+    # val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True, collate_fn=custom_collate_fn) 
+
     train_dataset = TrafficDataset(train_df, config_path, vocab_path)
     val_dataset = TrafficDataset(val_df, config_path, vocab_path)
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True,
+        num_workers=8, # 保持多进程
+        pin_memory=True,
+        collate_fn=custom_collate_fn # <-- 使用自定义整理函数
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False,
+        num_workers=8,
+        pin_memory=True,
+        collate_fn=custom_collate_fn # <-- 同样使用
+    )
     
     # --- 3. 初始化模型、损失函数和优化器 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -167,3 +194,38 @@ if __name__ == '__main__':
     test_loss, test_acc = evaluate(final_model, test_loader, loss_fn, device)
     print(f"\nFinal Test Performance:")
     print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+
+    # # 获取一个迭代器
+    # train_iterator = iter(train_loader)
+
+    # print("\n--- Running Performance Profiler for a few steps ---")
+    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    #     for _ in range(10): # 只运行10个batch进行分析
+    #         with record_function("model_train_step"):
+    #             try:
+    #                 features, labels = next(train_iterator)
+                    
+    #                 features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
+    #                 labels = labels.to(device)
+
+    #                 # 前向传播
+    #                 outputs = pta_model(features)
+    #                 loss = loss_fn(outputs, labels)
+                    
+    #                 # 反向传播
+    #                 optimizer.zero_grad()
+    #                 loss.backward()
+    #                 optimizer.step()
+    #             except StopIteration:
+    #                 break # 数据加载完毕
+
+    # # 打印性能分析结果
+    # print("\n--- Profiler Results ---")
+    # # 按CPU总时间排序，找到最耗时的CPU操作
+    # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=15))
+    
+    # # 按CUDA总时间排序，找到最耗时的GPU操作
+    # print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+
+    # # 您还可以将结果保存为Chrome可以查看的轨迹文件
+    # # prof.export_chrome_trace("trace.json")
