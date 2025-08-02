@@ -35,35 +35,21 @@ def _preprocess_address(addr_str, addr_type):
 
 def custom_collate_fn(batch):
     """
-    A custom collate function to batch features and labels efficiently.
+    A stateless collate function to correctly batch features and labels into Tensors.
     """
-    # batch is a list of tuples: [(features_dict_0, label_0), (features_dict_1, label_1), ...]
-    
-    # 1. Separate features and labels
     feature_list = [item[0] for item in batch]
     labels = torch.tensor([item[1] for item in batch], dtype=torch.long)
     
-    # 2. Batch the features
-    # Get all unique field names from the first sample
     field_names = feature_list[0].keys()
     batched_features = {}
     
     for field in field_names:
-        # Collect all values for this field from the batch
         values = [sample[field] for sample in feature_list]
-        
-        # Stack them into a single tensor
-        # Check if the item is a list (like an address) or a single number
-        # if isinstance(values[0], list):
-        #     batched_features[field] = torch.tensor(values, dtype=torch.long)
-        # else:
-        #     batched_features[field] = torch.tensor(values)
-        # 将Python/Numpy的数值或列表，安全地转换为PyTorch Tensor
         try:
-            # 对于地址（list）和分类/数值（numpy.int64），这个通用转换都有效
+            # This handles both lists (for addresses) and scalar numbers
             batched_features[field] = torch.tensor(values, dtype=torch.long)
-        except TypeError:
-            # 如果出现混合类型等问题，可以逐个转换作为备用方案
+        except (ValueError, TypeError):
+             # Fallback for any unexpected types
             batched_features[field] = torch.tensor([v for v in values], dtype=torch.long)
             
     return batched_features, labels
@@ -83,14 +69,15 @@ class TrafficDataset(Dataset):
             
         self.labels = dataframe['label_id'].values
         
-        print("正在一次性预处理所有特征...")
+        print("Pre-processing all features...")
         raw_features = dataframe.drop(columns=['label', 'label_id', 'index'], errors='ignore')
-        self.decimal_fields = {'tcp.stream'}
+        self.decimal_fields = {'tcp.stream'} # Note: reassembled_segments was removed
         processed_pandas_dict = self._preprocess_dataframe(raw_features)
 
-        print("正在将数据转换为可快速访问的Numpy/List格式...")
+        print("Converting data to fast-access Numpy/List format...")
         self.processed_data = {}
-        for name, series in tqdm(processed_pandas_dict.items(), desc="Converting to fast-access format"):
+        for name, series in tqdm(processed_pandas_dict.items(), desc="Converting columns"):
+            # Check the first element to decide the conversion strategy
             if not series.empty and isinstance(series.iloc[0], list):
                 self.processed_data[name] = series.to_list()
             else:
