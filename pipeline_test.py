@@ -14,7 +14,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import os
 from torch.profiler import profile, record_function, ProfilerActivity
-from utils.data_loader import custom_collate_fn
+# from utils.data_loader import custom_collate_fn
 
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
@@ -25,11 +25,11 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
 
     for features, labels in tqdm(dataloader, desc="Training"):
         # 将数据移动到指定设备 (GPU or CPU)
-        # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
-        # labels = labels.to(device)
+        features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
+        labels = labels.to(device)
 
-        features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
-        labels = labels.to(device, non_blocking=True)
+        # features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
+        # labels = labels.to(device, non_blocking=True)
 
         # 1. 前向传播
         outputs = model(features)
@@ -78,10 +78,8 @@ def evaluate(model, dataloader, loss_fn, device):
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 10
-    BATCH_SIZE = 256
+    BATCH_SIZE = 64
     LEARNING_RATE = 1e-4
-    
-
 
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -128,12 +126,6 @@ if __name__ == '__main__':
     print(f" - 验证集: {len(val_df)} 条")
     print(f" - 测试集: {len(test_df)} 条")
 
-    # train_dataset = TrafficDataset(train_df, config_path, vocab_path)
-    # val_dataset = TrafficDataset(val_df, config_path, vocab_path)
-    
-    # train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True, collate_fn=custom_collate_fn)
-    # val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8, pin_memory=True, collate_fn=custom_collate_fn) 
-
     train_dataset = TrafficDataset(train_df, config_path, vocab_path)
     val_dataset = TrafficDataset(val_df, config_path, vocab_path)
     
@@ -141,18 +133,18 @@ if __name__ == '__main__':
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True,
-        num_workers=8, # 保持多进程
-        pin_memory=True,
-        collate_fn=custom_collate_fn # <-- 使用自定义整理函数
+        num_workers=4, # 保持多进程
+        # pin_memory=True,
+        # collate_fn=custom_collate_fn # <-- 使用自定义整理函数
     )
     
     val_loader = DataLoader(
         val_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False,
-        num_workers=8,
-        pin_memory=True,
-        collate_fn=custom_collate_fn # <-- 同样使用
+        num_workers=4,
+        # pin_memory=True,
+        # collate_fn=custom_collate_fn # <-- 同样使用
     )
     
     # --- 3. 初始化模型、损失函数和优化器 ---
@@ -163,8 +155,18 @@ if __name__ == '__main__':
     ptree = protocol_tree(train_df.columns.tolist())
     num_classes = len(label_to_int)
 
-    field_embedder = FieldEmbedding(config_path, vocab_path)
-    pta_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device)
+    # field_embedder = FieldEmbedding(config_path, vocab_path)
+
+    # field_embedder.to(device)
+
+    # pta_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device) 
+
+    pta_model = ProtocolTreeAttention(config_path, vocab_path, ptree, num_classes=num_classes).to(device) 
+
+    print("\n--- 设备诊断 ---")
+    print(f"PTA Model (self) is on: {next(pta_model.parameters()).device}")
+    print(f"Field Embedder held by PTA is on: {next(pta_model.field_embedder.parameters()).device}")
+    print("-----------------\n")
     
     loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)

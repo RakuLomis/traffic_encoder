@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn 
 from typing import Dict, List, Tuple
 from tqdm import tqdm
+from models.FieldEmbedding import FieldEmbedding
 
 class AttentionAggregator(nn.Module): 
     def __init__(self, embed_dim, num_heads=4):
@@ -53,13 +54,18 @@ class AttentionAggregator(nn.Module):
     
 class ProtocolTreeAttention(nn.Module):
     # __init__ 方法与我们上一版讨论的、解决了对齐层维度问题的版本完全相同
-    def __init__(self, field_embedder, protocol_tree: Dict[str, List[str]], 
-                 subfield_aligned_dim: int = 64,
-                 aligned_dim: int = 128,
-                 num_heads: int = 4, 
-                 num_classes: int = 2):
+    def __init__(self, 
+                #  field_embedder, 
+                config_path: str, # Make the embedder be the inner module of PTA
+                vocab_path: str, 
+                protocol_tree: Dict[str, List[str]], 
+                subfield_aligned_dim: int = 64,
+                aligned_dim: int = 128,
+                num_heads: int = 4, 
+                num_classes: int = 2):
         super().__init__()
-        self.field_embedder = field_embedder
+        # self.field_embedder = field_embedder
+        self.field_embedder = FieldEmbedding(config_path, vocab_path)
         self.protocol_tree = protocol_tree
         self.aligned_dim = aligned_dim
         

@@ -261,8 +261,11 @@ class FieldEmbedding(nn.Module):
         :param batch_data_dict: 输入的原始数据字典。
         :return: 一个字典，键是字段名，值是对应的嵌入向量张量。
         """
+        if not hasattr(self, '_printed_device_info'):
+            print(f"  [Inside FieldEmbedding] Module is on: {next(self.parameters()).device}")
+            print(f"  [Inside FieldEmbedding] Received data is on: {next(iter(batch_data_dict.values())).device}")
+            self._printed_device_info = True # 设置标志 
         embedded_vectors_dict = {}
-        
         # 遍历输入批次中的字段
         for field_name, input_tensor in batch_data_dict.items():
             layer_key = self.field_to_key_map.get(field_name)
@@ -289,71 +292,3 @@ class FieldEmbedding(nn.Module):
                 embedded_vectors_dict[field_name] = layer(input_tensor)
 
         return embedded_vectors_dict
-
-# # --- 使用示例 ---
-# if __name__ == '__main__':
-#     # 假设您的YAML文件与此脚本在同一目录下或在指定路径
-#     # 为了演示，我们先创建一个临时的YAML文件
-    
-#     # 找到当前文件所在目录
-#     current_dir = os.path.dirname(os.path.abspath(__file__))
-#     # 定位到项目根目录（假设models文件夹在根目录下）
-#     project_root = os.path.dirname(current_dir)
-#     # 构建到utils文件夹下f2v.yaml的路径
-#     config_file_path = os.path.join(project_root, 'utils', 'f2v.yaml')
-
-#     print(f"Loading config from: {config_file_path}")
-
-#     # 1. 实例化嵌入模块
-#     field_embedder = FieldEmbedding(config_path=config_file_path)
-#     print("\nField Embedding Module instantiated:")
-#     print(field_embedder)
-#     print(f"\nTotal concatenated embedding dimension: {field_embedder.total_embedding_dim}")
-
-#     # 2. 创建一批虚拟数据 (batch_size = 4)
-#     # 注意：真实数据需要经过预处理，将类别转为整数索引，地址转为字节列表等
-#     batch_size = 4
-#     dummy_batch = {
-#         'eth.dst': torch.randint(0, 256, (batch_size, 6)),  # MAC地址，6个字节
-#         'eth.dst.lg': torch.randint(0, 3, (batch_size,)),
-#         'eth.dst.ig': torch.randint(0, 3, (batch_size,)),
-#         'eth.src': torch.randint(0, 256, (batch_size, 6)),
-#         'eth.src.lg': torch.randint(0, 3, (batch_size,)),
-#         'eth.src.ig': torch.randint(0, 2, (batch_size,)),
-#         'eth.type': torch.randint(0, 3, (batch_size,)),
-#         'ip.version': torch.randint(0, 3, (batch_size,)),
-#         'ip.hdr_len': torch.rand(batch_size) * 20, # 数值型
-#         'ip.dsfield': torch.randint(0, 6, (batch_size,)),
-#         'ip.dsfield.dscp': torch.randint(0, 6, (batch_size,)),
-#         'ip.dsfield.ecn': torch.randint(0, 3, (batch_size,)),
-#         'ip.len': torch.rand(batch_size) * 1500,
-#         'ip.id': torch.rand(batch_size),
-#         'ip.flags': torch.randint(0, 8, (batch_size,)),
-#         'ip.flags.rb': torch.randint(0, 2, (batch_size,)),
-#         'ip.flags.df': torch.randint(0, 2, (batch_size,)),
-#         'ip.flags.mf': torch.randint(0, 2, (batch_size,)),
-#         'ip.frag_offset': torch.rand(batch_size),
-#         'ip.ttl': torch.rand(batch_size) * 128,
-#         'ip.proto': torch.randint(0, 3, (batch_size,)),
-#         'ip.checksum': torch.rand(batch_size),
-#         'ip.src': torch.randint(0, 256, (batch_size, 4)), # IPv4地址，4个字节
-#         'ip.dst': torch.randint(0, 256, (batch_size, 4)),
-#         'tcp.srcport': torch.randint(0, 65536, (batch_size,)),
-#         'tcp.dstport': torch.randint(0, 65536, (batch_size,)),
-#         'tcp.stream': torch.randint(0, 2048, (batch_size,)),
-#         'tcp.len': torch.rand(batch_size) * 1460,
-#         'tcp.seq': torch.rand(batch_size),
-#         'tcp.seq_raw': torch.rand(batch_size),
-#         'tcp.ack': torch.rand(batch_size),
-#         'tcp.ack_raw': torch.rand(batch_size),
-#         'tcp.hdr_len': torch.rand(batch_size) * 40,
-#         'tcp.flags': torch.randint(0, 96, (batch_size,)),
-#         # ... 这里省略了所有TCP flag子字段的虚拟数据创建
-#         'reassembled_segments': torch.randint(0, 1536, (batch_size,)),
-#     }
-
-#     # 3. 执行前向传播
-#     output_vector = field_embedder(dummy_batch)
-
-#     print(f"\nShape of the final concatenated output vector: {output_vector.shape}")
-#     assert output_vector.shape == (batch_size, field_embedder.total_embedding_dim)
