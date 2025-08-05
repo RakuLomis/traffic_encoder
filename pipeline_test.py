@@ -78,7 +78,7 @@ def evaluate(model, dataloader, loss_fn, device):
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 10
-    BATCH_SIZE = 64
+    BATCH_SIZE = 256
     LEARNING_RATE = 1e-4
     
 
@@ -190,8 +190,8 @@ if __name__ == '__main__':
     test_dataset = TrafficDataset(test_df, config_path, vocab_path)
     test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False)
     # pta_model.load_state_dict(torch.load('best_model.pth')) # 加载最佳模型
-    final_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device)
-    test_loss, test_acc = evaluate(final_model, test_loader, loss_fn, device)
+    # final_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device)
+    test_loss, test_acc = evaluate(pta_model, test_loader, loss_fn, device)
     print(f"\nFinal Test Performance:")
     print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
 
