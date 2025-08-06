@@ -14,7 +14,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 import os
 from torch.profiler import profile, record_function, ProfilerActivity
-# from utils.data_loader import custom_collate_fn
+from utils.data_loader import custom_collate_fn
 
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
@@ -25,11 +25,11 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
 
     for features, labels in tqdm(dataloader, desc="Training"):
         # 将数据移动到指定设备 (GPU or CPU)
-        features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
-        labels = labels.to(device)
+        # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
+        # labels = labels.to(device)
 
-        # features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
-        # labels = labels.to(device, non_blocking=True)
+        features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
+        labels = labels.to(device, non_blocking=True)
 
         # 1. 前向传播
         outputs = model(features)
@@ -60,8 +60,10 @@ def evaluate(model, dataloader, loss_fn, device):
 
     with torch.no_grad(): # 在评估时，不计算梯度
         for features, labels in tqdm(dataloader, desc="Evaluating"):
-            features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
-            labels = labels.to(device)
+            # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
+            # labels = labels.to(device)
+            features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
+            labels = labels.to(device, non_blocking=True)
 
             outputs = model(features)
             loss = loss_fn(outputs, labels)
@@ -78,7 +80,7 @@ def evaluate(model, dataloader, loss_fn, device):
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 10
-    BATCH_SIZE = 64
+    BATCH_SIZE = 256
     LEARNING_RATE = 1e-4
 
     # --- 2. 准备数据 ---
@@ -125,6 +127,7 @@ if __name__ == '__main__':
     print(f" - 训练集: {len(train_df)} 条")
     print(f" - 验证集: {len(val_df)} 条")
     print(f" - 测试集: {len(test_df)} 条")
+    del block_0_df, temp_df
 
     train_dataset = TrafficDataset(train_df, config_path, vocab_path)
     val_dataset = TrafficDataset(val_df, config_path, vocab_path)
@@ -134,8 +137,8 @@ if __name__ == '__main__':
         batch_size=BATCH_SIZE, 
         shuffle=True,
         num_workers=4, # 保持多进程
-        # pin_memory=True,
-        # collate_fn=custom_collate_fn # <-- 使用自定义整理函数
+        pin_memory=True,
+        collate_fn=custom_collate_fn # <-- 使用自定义整理函数
     )
     
     val_loader = DataLoader(
@@ -143,8 +146,8 @@ if __name__ == '__main__':
         batch_size=BATCH_SIZE, 
         shuffle=False,
         num_workers=4,
-        # pin_memory=True,
-        # collate_fn=custom_collate_fn # <-- 同样使用
+        pin_memory=True,
+        collate_fn=custom_collate_fn # <-- 同样使用
     )
     
     # --- 3. 初始化模型、损失函数和优化器 ---
@@ -190,7 +193,7 @@ if __name__ == '__main__':
     print("\nTraining complete!")
     # --- 5. 最终测试 ---
     test_dataset = TrafficDataset(test_df, config_path, vocab_path)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True, collate_fn=custom_collate_fn)
     # pta_model.load_state_dict(torch.load('best_model.pth')) # 加载最佳模型
     # final_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device)
     test_loss, test_acc = evaluate(pta_model, test_loader, loss_fn, device)
