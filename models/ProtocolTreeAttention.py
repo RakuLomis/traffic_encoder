@@ -110,7 +110,8 @@ class ProtocolTreeAttention(nn.Module):
         self.classifier = nn.Linear(self.aligned_dim, num_classes)
 
     # ==================== 核心修改点：重构后的 forward 方法 ====================
-    def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+    # def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward_features(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         # 0. 初始嵌入
         x = self.field_embedder(batch_data_dict)
         
@@ -188,8 +189,15 @@ class ProtocolTreeAttention(nn.Module):
 
         stacked_protocol_vectors = torch.stack(protocol_vectors, dim=1)
         packet_vector = self.final_aggregator(stacked_protocol_vectors)
-        logits = self.classifier(packet_vector)
+        # logits = self.classifier(packet_vector)
         
+        # return logits
+        return packet_vector 
+    
+    def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # 完整的forward方法现在只是调用feature提取，然后进行分类
+        packet_vector = self.forward_features(batch_data_dict)
+        logits = self.classifier(packet_vector)
         return logits
     
 # class ProtocolTreeAttention(nn.Module):

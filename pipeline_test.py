@@ -15,6 +15,7 @@ from sklearn.model_selection import train_test_split
 import os
 from torch.profiler import profile, record_function, ProfilerActivity
 from utils.data_loader import custom_collate_fn
+from models.MoEPTA import MoEPTA
 
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
@@ -166,10 +167,17 @@ if __name__ == '__main__':
 
     pta_model = ProtocolTreeAttention(config_path, vocab_path, ptree, num_classes=num_classes).to(device) 
 
-    print("\n--- 设备诊断 ---")
-    print(f"PTA Model (self) is on: {next(pta_model.parameters()).device}")
-    print(f"Field Embedder held by PTA is on: {next(pta_model.field_embedder.parameters()).device}")
-    print("-----------------\n")
+    # moe_pta_model = MoEPTA(
+    #     block_directory=block_directory, 
+    #     config_path=config_path, 
+    #     vocab_path=vocab_path, 
+    #     num_classes=num_classes
+    # ).to(device)
+
+    # print("\n--- 设备诊断 ---")
+    # print(f"PTA Model (self) is on: {next(pta_model.parameters()).device}")
+    # print(f"Field Embedder held by PTA is on: {next(pta_model.field_embedder.parameters()).device}")
+    # print("-----------------\n")
     
     loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
