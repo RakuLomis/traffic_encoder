@@ -159,13 +159,13 @@ if __name__ == '__main__':
     ptree = protocol_tree(train_df.columns.tolist())
     num_classes = len(label_to_int)
 
-    # field_embedder = FieldEmbedding(config_path, vocab_path)
+    field_embedder = FieldEmbedding(config_path, vocab_path)
 
-    # field_embedder.to(device)
+    field_embedder.to(device)
 
-    # pta_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device) 
+    pta_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device) 
 
-    pta_model = ProtocolTreeAttention(config_path, vocab_path, ptree, num_classes=num_classes).to(device) 
+    # pta_model = ProtocolTreeAttention(config_path, vocab_path, ptree, num_classes=num_classes).to(device) 
 
     # moe_pta_model = MoEPTA(
     #     block_directory=block_directory, 

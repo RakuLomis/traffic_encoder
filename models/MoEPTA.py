@@ -9,30 +9,35 @@ import os
 from tqdm import tqdm 
 
 class MoEPTA(nn.Module): 
-    def __init__(self, block_directory: str, config_path: str, vocab_path: str,  num_classes: int, final_aggregator_dim: int=64, num_heads: int=4):
+    def __init__(self, block_directory: str, config_path: str, vocab_path: str, eligible_blocks: list, 
+                 block_num_classes: dict, num_classes: int, final_aggregator_dim: int=64, num_heads: int=4):
         super().__init__() 
         self.field_embedder = FieldEmbedding(config_path, vocab_path)
-        self.expert = nn.ModuleDict() 
+        self.experts = nn.ModuleDict() 
 
         print("Building expert for each block. ") 
-        block_csv_files = sorted([f for f in os.listdir(block_directory) if f.endswith('.csv')]) 
+        # block_csv_files = sorted([f for f in os.listdir(block_directory) if f.endswith('.csv')]) 
 
         self.expert_output_dims = {}
 
-        for block_filename in tqdm(block_csv_files, desc="Initializing Experts"):
+        for block_filename in tqdm(eligible_blocks, desc="Initializing Experts"):
             block_name = os.path.splitext(block_filename)[0]
             block_path = os.path.join(block_directory, block_filename)
             
             # 读取该Block的CSV以获取其独特的字段结构
             block_df = pd.read_csv(block_path, dtype=str, nrows=0) # 只读表头
             block_ptree = protocol_tree(block_df.columns.tolist())
-            
+            local_num_classes = block_num_classes[block_name]
+
+
             # 为这个Block创建一个专属的PTA模型实例
             # 注意：这个PTA模型现在不包含最后的分类器
             expert_model = ProtocolTreeAttention(
                 field_embedder=self.field_embedder,
+                # config_path=config_path, 
+                # vocab_path=vocab_path, 
                 protocol_tree=block_ptree,
-                num_classes=num_classes # 暂时保留，但我们只用它倒数第二层的输出
+                num_classes=local_num_classes # 暂时保留，但我们只用它倒数第二层的输出
             )
             
             expert_key = f"expert_{block_name}"
