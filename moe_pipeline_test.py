@@ -182,7 +182,8 @@ if __name__ == '__main__':
         vocab_path=vocab_path,
         block_num_classes=block_label_nums, 
         num_classes=num_classes
-    ).to(device)
+    )
+    moe_pta_model.to(device)
     
     optimizer = optim.AdamW(moe_pta_model.parameters(), lr=LEARNING_RATE) 
     loss_fn = nn.CrossEntropyLoss() 

@@ -111,19 +111,22 @@ class ProtocolTreeAttention(nn.Module):
 
     # ==================== 核心修改点：重构后的 forward 方法 ====================
     # def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
-    def forward_features(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward_features(self, batch_data_dict: Dict[str, torch.Tensor], device: torch.device) -> torch.Tensor:
         # 0. 初始嵌入
-        x = self.field_embedder(batch_data_dict)
+        # x = self.field_embedder(batch_data_dict)
         
         # 1. 创建“中央数据总线”：一个包含所有初始嵌入向量的字典
         # field_vectors = {
         #     name: x[:, start:end]
         #     for name, (start, end) in self.field_embedder.embedding_slices.items()
         # }
+        # print("\n--- Entering PTA Expert forward_features ---")
         field_vectors = self.field_embedder(batch_data_dict) 
-
+        # print(f"Step 0: Initial embedding complete. Number of embedded fields: {len(field_vectors)}")
         # ==================== 阶段一：子字段 -> 字段 ====================
         # 在这个阶段，我们“升级” field_vectors 字典中父字段的向量
+
+        # print("\n--- PTA Stage 1: Subfield -> Field ---")
         for parent_key, aggregator in self.subfield_aggregators.items():
             parent_field_original = parent_key.replace('__', '.')
             subfield_names = self.protocol_tree[parent_field_original]
@@ -146,11 +149,13 @@ class ProtocolTreeAttention(nn.Module):
             # b) 聚合：将对齐后的向量送入聚合器
             stacked_aligned = torch.stack(aligned_subfield_vectors, dim=1)
             aggregated_vector = aggregator(stacked_aligned)
-            
+            # print(f"  - Aggregated '{parent_field_original}' -> Shape: {aggregated_vector.shape}")
+
             # c) 更新：用聚合后的高级向量，替换字典中原始的父字段向量
             field_vectors[parent_field_original] = aggregated_vector
 
         # ==================== 阶段二：字段 -> 协议层 ====================
+        # print("\n--- PTA Stage 2: Field -> Protocol Layer ---")
         protocol_vectors = []
         for protocol_name in ['eth', 'ip', 'tcp']:
             if protocol_name not in self.protocol_tree:
@@ -178,25 +183,65 @@ class ProtocolTreeAttention(nn.Module):
 
             # b) 聚合：将对齐后的向量送入该协议层的聚合器
             stacked_aligned = torch.stack(aligned_field_vectors, dim=1)
-            protocol_vector = self.protocol_layer_aggregators[protocol_name](stacked_aligned)
+            stacked_aligned.to(device)
+            protocol_vector = self.protocol_layer_aggregators[protocol_name](stacked_aligned) 
+
+            # print(f"  - Input to '{protocol_name}' aggregator -> Shape: {stacked_aligned.shape}")
+            # print(f"  - Output of '{protocol_name}' aggregator -> Shape: {protocol_vector.shape}")
+
             protocol_vectors.append(protocol_vector)
 
         # ==================== 阶段三、分类 （代码不变） ====================
-        if not protocol_vectors:
-             # 如果没有任何协议层被处理，返回一个零向量以避免崩溃
-            batch_size = next(iter(batch_data_dict.values())).shape[0]
-            return torch.zeros(batch_size, self.classifier.out_features)
+        # if not protocol_vectors:
+        #      # 如果没有任何协议层被处理，返回一个零向量以避免崩溃
+        #     batch_size = next(iter(batch_data_dict.values())).shape[0]
+        #     return torch.zeros(batch_size, self.classifier.out_features, device=device)
 
-        stacked_protocol_vectors = torch.stack(protocol_vectors, dim=1)
-        packet_vector = self.final_aggregator(stacked_protocol_vectors)
-        # logits = self.classifier(packet_vector)
+        # stacked_protocol_vectors = torch.stack(protocol_vectors, dim=1) 
+        # print(f"  - Input to final aggregator -> Shape: {stacked_protocol_vectors.shape}")
+
+        # packet_vector = self.final_aggregator(stacked_protocol_vectors)
+        # print(f"  - Final output 'packet_vector' -> Shape: {packet_vector.shape}")
+        # print("--- Exiting PTA Expert forward_features ---\n")
+        # # logits = self.classifier(packet_vector)
         
-        # return logits
-        return packet_vector 
+        # # return logits
+        # return packet_vector 
+
+        # ==================== 核心修改点：健壮的阶段三逻辑 ====================
+        # print("\n--- PTA Stage 3: Protocol Layer -> Packet ---")
+        
+        # --- 情况 A: 列表为空 ---
+        if not protocol_vectors:
+            # print("  - WARNING: No protocol vectors were generated. Returning a zero vector.")
+            batch_size = next(iter(batch_data_dict.values())).shape[0]
+            # 确保返回的零向量也在正确的设备上
+            return torch.zeros(batch_size, self.aligned_dim, device=device)
+
+        # --- 情况 B: 列表中只有一个向量 (单层Block) ---
+        elif len(protocol_vectors) == 1:
+            # print(f"  - Single protocol layer found. Bypassing final aggregation.")
+            # 直接将这个唯一的协议层向量作为最终的数据包表示
+            packet_vector = protocol_vectors[0]
+
+        # --- 情况 C: 列表中有多个向量 (多层Block) ---
+        else:
+            # print(f"  - {len(protocol_vectors)} protocol layers found. Performing final aggregation.")
+            # 将所有协议层的代表向量堆叠起来
+            stacked_protocol_vectors = torch.stack(protocol_vectors, dim=1)
+            
+            # 进行最终的聚合
+            packet_vector = self.final_aggregator(stacked_protocol_vectors)
+        
+        # print(f"  - Final output 'packet_vector' -> Shape: {packet_vector.shape}")
+        # print("--- Exiting PTA Expert forward_features ---\n")
+        
+        return packet_vector
     
     def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
         # 完整的forward方法现在只是调用feature提取，然后进行分类
-        packet_vector = self.forward_features(batch_data_dict)
+        deivce = next(self.parameters()).device
+        packet_vector = self.forward_features(batch_data_dict, device=deivce)
         logits = self.classifier(packet_vector)
         return logits
     
@@ -413,26 +458,3 @@ class ProtocolTreeAttention(nn.Module):
 #         logits = self.classifier(packet_vector)
         
 #         return logits
-
-# ==================== 使用示例 ====================
-if __name__ == '__main__':
-    # 这是一个演示如何使用PTA模块的伪代码
-    
-    # 假设我们有实例化的 FieldEmbedding 和 protocol_tree
-    # class MockFieldEmbedding(nn.Module): ... # (需要一个模拟的FieldEmbedding类)
-    # field_embedder = MockFieldEmbedding(...)
-    # protocol_tree = {...} # 您之前提供的协议树
-    
-    # 实例化PTA模型
-    # pta_model = ProtocolTreeAttention(field_embedder, protocol_tree, num_classes=10)
-    
-    # 创建一批虚拟数据
-    # dummy_batch = {...} # (一个符合格式的数据字典)
-    
-    # 执行前向传播
-    # output_logits = pta_model(dummy_batch)
-    
-    # print(f"Shape of the final output logits: {output_logits.shape}")
-    # 期待的输出形状: (batch_size, num_classes)
-    print("ProtocolTreeAttention class defined successfully.")
-    print("To run this file, you need to instantiate a mock FieldEmbedding class and provide a protocol_tree dictionary.")

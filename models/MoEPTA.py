@@ -12,7 +12,9 @@ class MoEPTA(nn.Module):
     def __init__(self, block_directory: str, config_path: str, vocab_path: str, eligible_blocks: list, 
                  block_num_classes: dict, num_classes: int, final_aggregator_dim: int=64, num_heads: int=4):
         super().__init__() 
-        self.field_embedder = FieldEmbedding(config_path, vocab_path)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device} in MoE")
+        self.field_embedder = FieldEmbedding(config_path, vocab_path).to(self.device)
         self.experts = nn.ModuleDict() 
 
         print("Building expert for each block. ") 
@@ -39,6 +41,7 @@ class MoEPTA(nn.Module):
                 protocol_tree=block_ptree,
                 num_classes=local_num_classes # 暂时保留，但我们只用它倒数第二层的输出
             )
+            expert_model.to(self.device)
             
             expert_key = f"expert_{block_name}"
             self.experts[expert_key] = expert_model
@@ -66,6 +69,7 @@ class MoEPTA(nn.Module):
                                 值是对应专家需要处理的批处理数据字典。
         :return: 最终的分类logits。
         """
+        device = self.device
         expert_outputs = []
         
         # 1. 让每个专家处理其对应的数据块
@@ -78,7 +82,7 @@ class MoEPTA(nn.Module):
                 
                 # 获取PTA模型在分类器之前的输出
                 # 我们需要修改PTA模型，让它能返回中间向量
-                packet_vector = expert_model.forward_features(block_data) # 假设有这个方法
+                packet_vector = expert_model.forward_features(block_data, device=device) # 假设有这个方法
                 
                 # 2. 将每个专家的输出对齐到统一维度
                 aligner = self.aligners[expert_key]
