@@ -26,7 +26,7 @@ class AttentionAggregator(nn.Module):
             nn.Linear(embed_dim * 4, embed_dim)
         )
 
-    def forward(self, x): 
+    def forward(self, x: torch.Tensor): 
         """
         Parameters 
         ---------- 
@@ -46,11 +46,13 @@ class AttentionAggregator(nn.Module):
         x_with_cls = torch.cat([cls_tokens, x], dim=1) 
 
         attn_output, _ = self.attention(x_with_cls, x_with_cls, x_with_cls) 
+        # attn_output, attn_weights = self.attention(query=x_with_cls, key=x_with_cls, value=x_with_cls, need_weights=True) 
         x = self.layer_norm(x_with_cls + attn_output) # residual 
         x = self.layer_norm(x + self.ffn(x)) 
 
         cls_output = x[:, 0, :] 
-        return cls_output 
+        return cls_output
+        # return cls_output, attn_weights
     
 class ProtocolTreeAttention(nn.Module):
     # __init__ 方法与我们上一版讨论的、解决了对齐层维度问题的版本完全相同

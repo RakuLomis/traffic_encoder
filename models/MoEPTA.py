@@ -104,8 +104,14 @@ class MoEPTA(nn.Module):
         
         # 4. 让“最终决策者”对所有意见进行注意力聚合
         final_packet_representation = self.final_attention_combiner(stacked_outputs)
+        # final_packet_representation, final_attn_weights = self.final_attention_combiner(stacked_outputs)
         
         # 5. 得出最终分类结果
         logits = self.classifier(final_packet_representation)
         
         return logits
+
+        # if self.training:
+        #     return logits
+        # else: # 在评估时返回权重
+        #     return logits, final_attn_weights

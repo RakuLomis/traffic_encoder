@@ -65,6 +65,8 @@ def evaluate_one_epoch(model, data_loaders_dict, loss_fn, device):
                 labels = labels.to(device, non_blocking=True)
                 
                 outputs = model(batch_for_model)
+                # outputs, attn_weights = model(batch_for_model) 
+                # print(attn_weights[0, 0, 0, 1:])
                 loss = loss_fn(outputs, labels)
 
                 total_loss += loss.item() * len(labels)
@@ -82,7 +84,7 @@ def evaluate_one_epoch(model, data_loaders_dict, loss_fn, device):
 
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 5
+    NUM_EPOCHS = 10
     BATCH_SIZE = 512
     LEARNING_RATE = 1e-4
     NUM_WORKERS = 8
@@ -92,8 +94,8 @@ if __name__ == '__main__':
     vocab_path = os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml') 
     csv_name = '0' 
     raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
-    # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
-    block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'test')
+    block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
+    # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'test')
     # raw_df_path = os.path.join(raw_df_directory, csv_name + '.csv') 
     raw_df_path = os.path.join(block_directory, csv_name + '.csv') 
     
@@ -130,6 +132,14 @@ if __name__ == '__main__':
             continue
         val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42, stratify=temp_df['label_id'])
         
+        # 尝试创建一个临时的Dataset
+        temp_train_dataset = TrafficDataset(train_df, config_path, vocab_path)
+        
+        # 检查这个Dataset是否包含了任何有效的、可在config中找到的特征
+        if not temp_train_dataset.fields: # .fields 列表为空
+            print(f"\nBlock {block_name} 虽然样本充足，但其特征均不在config文件中，视为无效Block，跳过。")
+            continue
+
         block_label_nums[block_name] = len(labels)
         
         # c) 创建Dataset和DataLoader

@@ -7,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
 from models.ProtocolTreeAttention import ProtocolTreeAttention 
+# from models.PTA_rebuild import ProtocolTreeAttention
 from utils.dataframe_tools import get_file_path 
 from utils.dataframe_tools import output_csv_in_fold 
 from utils.dataframe_tools import padding_or_truncating
@@ -28,7 +29,8 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
         # 将数据移动到指定设备 (GPU or CPU)
         # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
         # labels = labels.to(device)
-
+        # print(list(features.keys())[:10])   # 先看前 10 个
+        # break
         features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
         labels = labels.to(device, non_blocking=True)
 
@@ -165,20 +167,6 @@ if __name__ == '__main__':
 
     pta_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device) 
 
-    # pta_model = ProtocolTreeAttention(config_path, vocab_path, ptree, num_classes=num_classes).to(device) 
-
-    # moe_pta_model = MoEPTA(
-    #     block_directory=block_directory, 
-    #     config_path=config_path, 
-    #     vocab_path=vocab_path, 
-    #     num_classes=num_classes
-    # ).to(device)
-
-    # print("\n--- 设备诊断 ---")
-    # print(f"PTA Model (self) is on: {next(pta_model.parameters()).device}")
-    # print(f"Field Embedder held by PTA is on: {next(pta_model.field_embedder.parameters()).device}")
-    # print("-----------------\n")
-    
     loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
 
@@ -202,8 +190,6 @@ if __name__ == '__main__':
     # --- 5. 最终测试 ---
     test_dataset = TrafficDataset(test_df, config_path, vocab_path)
     test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True, collate_fn=custom_collate_fn)
-    # pta_model.load_state_dict(torch.load('best_model.pth')) # 加载最佳模型
-    # final_model = ProtocolTreeAttention(field_embedder, ptree, num_classes=num_classes).to(device)
     test_loss, test_acc = evaluate(pta_model, test_loader, loss_fn, device)
     print(f"\nFinal Test Performance:")
     print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
