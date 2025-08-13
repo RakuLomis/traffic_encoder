@@ -84,7 +84,7 @@ def evaluate_one_epoch(model, data_loaders_dict, loss_fn, device):
 
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 10
+    NUM_EPOCHS = 100
     BATCH_SIZE = 512
     LEARNING_RATE = 1e-4
     NUM_WORKERS = 8
@@ -173,7 +173,7 @@ if __name__ == '__main__':
         config_path=config_path,
         vocab_path=vocab_path,
         eligible_blocks=eligible_blocks, 
-        block_num_classes=block_label_nums,
+        # block_num_classes=block_label_nums,
         num_classes=num_classes
     ).to(device)
     

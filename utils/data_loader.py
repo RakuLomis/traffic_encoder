@@ -32,7 +32,6 @@ def _preprocess_address(addr_str, addr_type):
     print("Something was wrong, so we return a empty list. ")
     return []
 
-
 def custom_collate_fn(batch):
     """
     A custom collate function to batch features and labels efficiently.
