@@ -694,7 +694,12 @@ def truncate_to_block_by_schema(source_csv_path: str, output_dir_path: str):
     print(f"Data loading completed, {len(df)} records here. ") 
 
     meta_columns = ['index', 'label', 'label_id'] 
-    feature_columns = [col for col in df.columns if col not in meta_columns] 
+    cols_to_drop = []
+    if 'frame_num' in df.columns:
+        cols_to_drop.append('frame_num') 
+    if 'tcp.reassembled_segments' in df.columns: 
+        cols_to_drop.append('tcp.reassembled_segments') 
+    feature_columns = [col for col in df.columns if col not in meta_columns and col not in cols_to_drop] 
 
     notna_mask = df[feature_columns].notna() 
 
