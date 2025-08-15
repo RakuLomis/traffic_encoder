@@ -682,4 +682,40 @@ def merge_csvs_with_different_columns(root_directory: str, output_filepath: str,
     
     print("\n处理完毕！")
     print(f"最终合并文件的形状 (行, 列): {merged_df.shape}")
-    print(f"总列数: {len(merged_df.columns)}")
+    print(f"总列数: {len(merged_df.columns)}") 
+
+def truncate_to_block_by_schema(source_csv_path: str, output_dir_path: str): 
+    os.makedirs(output_dir_path, exist_ok=True) 
+    try: 
+        df = pd.read_csv(source_csv_path, dtype=str, low_memory=False) 
+    except FileNotFoundError: 
+        print(f"Source file is not found: {source_csv_path}") 
+        return 
+    print(f"Data loading completed, {len(df)} records here. ") 
+
+    meta_columns = ['index', 'label', 'label_id'] 
+    feature_columns = [col for col in df.columns if col not in meta_columns] 
+
+    notna_mask = df[feature_columns].notna() 
+
+    # eth.dst|ip.src|tcp.dstport|...
+    fingerprints = notna_mask.apply(
+        lambda row: '|'.join(row.index[row]), 
+        axis=1
+    )
+    print("Fingerprints has been built. ") 
+
+    grouped = df.groupby(fingerprints) 
+    num_blocks = len(grouped) 
+    print(f"There are {num_blocks} Field Block in total. ") 
+
+    block_counter = 0 
+    for fingerprint, group_df in tqdm(grouped, desc="Saving blocks"): 
+        block_cleaned = group_df.dropna(axis=1, how='all')
+        
+        output_filename = f"{block_counter}.csv"
+        output_path = os.path.join(output_dir_path, output_filename)
+        
+        block_cleaned.to_csv(output_path, index=False)
+        block_counter += 1
+    print(f"Truncation succeeded! ")
