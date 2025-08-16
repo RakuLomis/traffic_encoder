@@ -695,11 +695,11 @@ def truncate_to_block_by_schema(source_csv_path: str, output_dir_path: str):
 
     df.reset_index(inplace=True) # add index
     # meta_columns = ['index', 'label', 'label_id'] 
-    cols_to_drop = ['frame_num', 'tcp.reassembled_segments']
-    # if 'frame_num' in df.columns:
-    #     cols_to_drop.append('frame_num') 
-    # if 'tcp.reassembled_segments' in df.columns: 
-    #     cols_to_drop.append('tcp.reassembled_segments') 
+    cols_to_drop = []
+    if 'frame_num' in df.columns:
+        cols_to_drop.append('frame_num') 
+    if 'tcp.reassembled_segments' in df.columns: 
+        cols_to_drop.append('tcp.reassembled_segments') 
     feature_columns = [col for col in df.columns if col not in cols_to_drop] 
 
     notna_mask = df[feature_columns].notna() 
@@ -717,7 +717,7 @@ def truncate_to_block_by_schema(source_csv_path: str, output_dir_path: str):
 
     block_counter = 0 
     for fingerprint, group_df in tqdm(grouped, desc="Saving blocks"): 
-        block_cleaned = group_df.dropna(axis=1, how='all')
+        block_cleaned = group_df.drop(columns=cols_to_drop).dropna(axis=1, how='all')
         
         output_filename = f"{block_counter}.csv"
         output_path = os.path.join(output_dir_path, output_filename)

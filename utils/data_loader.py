@@ -6,31 +6,79 @@ import os
 from tqdm import tqdm
 import numpy as np
 
-def _preprocess_address(addr_str, addr_type):
-    """Turn the hex address into a dec addresss list. """
-    if pd.isna(addr_str):
-        num_octets = 4 if addr_type == 'address_ipv4' else 6
-        return [0] * num_octets # 用0填充缺失的地址
+# def _preprocess_address(addr_str, addr_type):
+#     """Turn the hex address into a dec addresss list. """
+#     if pd.isna(addr_str):
+#         num_octets = 4 if addr_type == 'address_ipv4' else 6
+#         return [0] * num_octets # 用0填充缺失的地址
     
-    # 确保输入是字符串
+#     # 确保输入是字符串
+#     addr_str = str(addr_str)
+#     # 对于pyshark可能输出的'x'格式，先移除
+#     if 'x' in addr_str:
+#         addr_str = addr_str.split('x')[-1]
+    
+#     octets = []
+#     if addr_type == 'address_ipv4':
+#         # e.g., 'c0a80503' -> ['c0', 'a8', '05', '03']
+#         for i in range(0, 8, 2):
+#             octets.append(int(addr_str[i:i+2], 16))
+#         return octets
+#     elif addr_type == 'address_mac':
+#         # e.g., 'f42d06784ee9' -> ['f4', '2d', ...]
+#         for i in range(0, 12, 2):
+#             octets.append(int(addr_str[i:i+2], 16))
+#         return octets
+#     print("Something was wrong, so we return a empty list. ")
+#     return []
+
+def _preprocess_address(addr_str, addr_type):
+    """
+    一个更健壮的版本，用于将十六进制地址字符串转换为十进制整数列表。
+    可以正确处理NaN、空字符串和长度不足的字符串。
+    """
+    # --- 1. 确定地址类型应有的八位字节数和十六进制字符串长度 ---
+    if addr_type == 'address_ipv4':
+        num_octets = 4
+        expected_len = 8
+    elif addr_type == 'address_mac':
+        num_octets = 6
+        expected_len = 12
+    else:
+        # 如果传入了未知的地址类型，返回一个默认的表示
+        return [0] * 4
+
+    # --- 2. 检查输入是否为NaN ---
+    if pd.isna(addr_str):
+        return [0] * num_octets
+
+    # --- 3. 确保输入是字符串并进行初步清理 ---
     addr_str = str(addr_str)
-    # 对于pyshark可能输出的'x'格式，先移除
     if 'x' in addr_str:
         addr_str = addr_str.split('x')[-1]
     
+    # ==================== 核心修改点 开始 ====================
+    # --- 4. 检查清理后的字符串长度是否满足要求 ---
+    #    这个检查可以同时处理空字符串''和长度不足的填充值'0'
+    if len(addr_str) < expected_len:
+        return [0] * num_octets
+    # ==================== 核心修改点 结束 ====================
+
     octets = []
-    if addr_type == 'address_ipv4':
-        # e.g., 'c0a80503' -> ['c0', 'a8', '05', '03']
-        for i in range(0, 8, 2):
-            octets.append(int(addr_str[i:i+2], 16))
-        return octets
-    elif addr_type == 'address_mac':
-        # e.g., 'f42d06784ee9' -> ['f4', '2d', ...]
-        for i in range(0, 12, 2):
-            octets.append(int(addr_str[i:i+2], 16))
-        return octets
-    print("Something was wrong, so we return a empty list. ")
-    return []
+    # --- 5. 使用try-except块增加代码的健壮性，作为最终的“安全网” ---
+    try:
+        if addr_type == 'address_ipv4':
+            for i in range(0, 8, 2):
+                octets.append(int(addr_str[i:i+2], 16))
+            return octets
+        elif addr_type == 'address_mac':
+            for i in range(0, 12, 2):
+                octets.append(int(addr_str[i:i+2], 16))
+            return octets
+    except (ValueError, IndexError):
+        # 如果在循环中仍然出现任何切片或转换错误
+        # (例如，字符串中包含非十六进制字符)，则返回一个零列表
+        return [0] * num_octets
 
 def custom_collate_fn(batch):
     """
