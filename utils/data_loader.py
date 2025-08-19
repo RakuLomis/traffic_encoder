@@ -135,26 +135,33 @@ def custom_collate_fn(batch):
 class TrafficDataset(Dataset):
     """
     一个为多进程加载优化的、最终的、健壮的数据集类。
-    __init__方法非常轻量，所有针对单一样本的预处理都在__getitem__中完成，
-    这使得工作可以被多个worker进程并行处理。
+    采用“懒加载”模式，__init__方法极其轻量，每个worker进程
+    将独立地、按需地加载和处理它所负责的数据。
     """
     def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str):
         super().__init__()
         
         # --- 1. __init__ 现在变得极其轻量 ---
-        # 它只加载配置文件，并持有对DataFrame的引用。
-        # 这个DataFrame对象可以被多进程高效地共享（使用写时复制技术）。
+        # 它只加载配置文件，并保存DataFrame或其路径。
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
         with open(vocab_path, 'r') as f:
             self.vocab_maps = yaml.safe_load(f)
-            
-        self.labels = dataframe['label_id'].values
-        
-        # 只保留特征列，并重置索引以便.iloc能按整数位置快速访问
-        self.features_df = dataframe.drop(columns=['label', 'label_id'], errors='ignore').reset_index(drop=True)
-        
-        self.fields = self.features_df.columns.tolist()
+
+        # 这个Dataset对象现在可以被安全地、轻量地复制给多个worker
+        if isinstance(dataframe, str):
+            # 如果传入的是路径，先读一次获取标签和长度
+            temp_df = pd.read_csv(dataframe, dtype=str, usecols=['label_id'])
+            self.labels = temp_df['label_id'].values
+            self.df_path = dataframe
+            self.raw_df = None # 不在主进程中持有数据
+        else:
+            # 如果传入的是DataFrame
+            self.labels = dataframe['label_id'].values
+            self.raw_df = dataframe.drop(columns=['label', 'label_id'], errors='ignore').reset_index(drop=True)
+            self.df_path = None
+
+        self.fields = self.raw_df.columns.tolist() if self.raw_df is not None else []
         self.decimal_fields = {'tcp.stream'}
 
     def __len__(self):
@@ -164,10 +171,17 @@ class TrafficDataset(Dataset):
         # --- 2. 所有耗时的工作都转移到了这里 ---
         # 这个函数现在由8个worker进程并行调用，从而实现了加速。
         
-        # a) 从DataFrame中获取一行原始数据，这非常快
-        raw_row = self.features_df.iloc[idx]
+        # a) 如果数据不在内存中，则加载它。每个worker只会执行一次。
+        if self.raw_df is None:
+            # print(f"Worker {os.getpid()} is loading data from {self.df_path}")
+            self.raw_df = pd.read_csv(self.df_path, dtype=str)
+            self.raw_df = self.raw_df.drop(columns=['label', 'label_id'], errors='ignore').reset_index(drop=True)
+            self.fields = self.raw_df.columns.tolist()
+
+        # b) 从DataFrame中获取一行原始数据
+        raw_row = self.raw_df.iloc[idx]
         
-        # b) 对这一行数据进行完整的预处理
+        # c) 对这一行数据进行完整的预处理
         features = {}
         for field_name in self.fields:
             if field_name not in self.config:
@@ -183,7 +197,7 @@ class TrafficDataset(Dataset):
                 oov_index = vocab_map.get('__OOV__', len(vocab_map))
                 features[field_name] = vocab_map.get(str(value).lower().replace('0x',''), oov_index) if pd.notna(value) else oov_index
             elif field_name in self.decimal_fields:
-                features[field_name] = int(value) if pd.notna(value) else 0
+                features[field_name] = int(value) if pd.notna(value) and str(value).isdigit() else 0
             elif self.config[field_name]['type'] in ['categorical', 'numerical']:
                 if not pd.notna(value):
                     features[field_name] = 0
