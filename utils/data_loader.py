@@ -111,18 +111,39 @@ def custom_collate_fn(batch):
             batched_features[field] = torch.tensor(values, dtype=torch.long)
         except TypeError:
             # 如果出现混合类型等问题，可以逐个转换作为备用方案
-            batched_features[field] = torch.tensor([v for v in values], dtype=torch.long)
+            batched_features[field] = torch.tensor([v for v in values], dtype=torch.long) 
+        except (OverflowError, RuntimeError) as e:
+            # 如果捕获到溢出错误...
+            print("\n" + "="*60)
+            print("!!! OVERFLOW ERROR DETECTED & HANDLED !!!")
+            print(f"FIELD: '{field}' is overflow. ")
+            print("Cutting...")
+            print(f"Original error: {e}")
+
+            # 对值进行截断，使其不超过torch.long的最大值
+            # 同时处理Python原生int和Numpy的整数类型
+            safe_values = [
+                min(v, torch.iinfo(torch.long).max) if isinstance(v, (int, np.integer)) and v > 0 else v 
+                for v in values
+            ]
+            batched_features[field] = torch.tensor(safe_values, dtype=torch.long)
+            print("="*60 + "\n")
             
     return batched_features, labels
 
+
 class TrafficDataset(Dataset):
     """
-    一个经过最终性能优化的数据集类。
-    在初始化时将Pandas数据转换为更快的Numpy/List格式，以实现高效的多进程加载。
+    一个为多进程加载优化的、最终的、健壮的数据集类。
+    __init__方法非常轻量，所有针对单一样本的预处理都在__getitem__中完成，
+    这使得工作可以被多个worker进程并行处理。
     """
     def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str):
         super().__init__()
         
+        # --- 1. __init__ 现在变得极其轻量 ---
+        # 它只加载配置文件，并持有对DataFrame的引用。
+        # 这个DataFrame对象可以被多进程高效地共享（使用写时复制技术）。
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
         with open(vocab_path, 'r') as f:
@@ -130,57 +151,124 @@ class TrafficDataset(Dataset):
             
         self.labels = dataframe['label_id'].values
         
-        print("正在一次性预处理所有特征...")
-        raw_features = dataframe.drop(columns=['label', 'label_id', 'index'], errors='ignore')
-        self.decimal_fields = {'tcp.stream'}
-        processed_pandas_dict = self._preprocess_dataframe(raw_features)
-
-        print("正在将数据转换为可快速访问的Numpy/List格式...")
-        self.processed_data = {}
-        for name, series in tqdm(processed_pandas_dict.items(), desc="Converting to fast-access format"):
-            if not series.empty and isinstance(series.iloc[0], list):
-                self.processed_data[name] = series.to_list()
-            else:
-                self.processed_data[name] = series.to_numpy()
+        # 只保留特征列，并重置索引以便.iloc能按整数位置快速访问
+        self.features_df = dataframe.drop(columns=['label', 'label_id'], errors='ignore').reset_index(drop=True)
         
-        self.fields = list(self.processed_data.keys())
-
-    def _preprocess_dataframe(self, df: pd.DataFrame):
-        processed_data_dict = {}
-        for field_name in df.columns:
-            if field_name not in self.config:
-                continue
-            
-            if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
-                field_type = self.config[field_name]['type']
-                processed_column = df[field_name].apply(lambda x: _preprocess_address(x, field_type))
-            elif field_name in self.vocab_maps:
-                vocab_map = self.vocab_maps[field_name]
-                oov_index = vocab_map.get('__OOV__', len(vocab_map))
-                processed_column = df[field_name].apply(
-                    lambda x: vocab_map.get(str(x).lower().replace('0x',''), oov_index) if pd.notna(x) else oov_index
-                )
-            elif field_name in self.decimal_fields:
-                processed_column = df[field_name].fillna(0).astype(int)
-            elif self.config[field_name]['type'] in ['categorical', 'numerical']:
-                def robust_hex_to_int(x):
-                    if not pd.notna(x): return 0
-                    str_x = str(x).split('.')[0]
-                    try: return int(str_x, 16)
-                    except ValueError: return 0
-                processed_column = df[field_name].apply(robust_hex_to_int)
-            else:
-                continue
-            processed_data_dict[field_name] = processed_column
-        return processed_data_dict
+        self.fields = self.features_df.columns.tolist()
+        self.decimal_fields = {'tcp.stream'}
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        features = {field: self.processed_data[field][idx] for field in self.fields}
+        # --- 2. 所有耗时的工作都转移到了这里 ---
+        # 这个函数现在由8个worker进程并行调用，从而实现了加速。
+        
+        # a) 从DataFrame中获取一行原始数据，这非常快
+        raw_row = self.features_df.iloc[idx]
+        
+        # b) 对这一行数据进行完整的预处理
+        features = {}
+        for field_name in self.fields:
+            if field_name not in self.config:
+                continue
+            
+            value = raw_row[field_name]
+            
+            # 使用我们之前建立的、健壮的if/elif处理逻辑
+            if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
+                features[field_name] = _preprocess_address(value, self.config[field_name]['type'])
+            elif field_name in self.vocab_maps:
+                vocab_map = self.vocab_maps[field_name]
+                oov_index = vocab_map.get('__OOV__', len(vocab_map))
+                features[field_name] = vocab_map.get(str(value).lower().replace('0x',''), oov_index) if pd.notna(value) else oov_index
+            elif field_name in self.decimal_fields:
+                features[field_name] = int(value) if pd.notna(value) else 0
+            elif self.config[field_name]['type'] in ['categorical', 'numerical']:
+                if not pd.notna(value):
+                    features[field_name] = 0
+                else:
+                    str_x = str(value).split('.')[0]
+                    try:
+                        features[field_name] = int(str_x, 16)
+                    except ValueError:
+                        features[field_name] = 0
+            else:
+                continue
+
         label = self.labels[idx]
         return features, label
+
+"""
+It does work but is not fast
+"""
+# class TrafficDataset(Dataset):
+#     """
+#     一个经过最终性能优化的数据集类。
+#     在初始化时将Pandas数据转换为更快的Numpy/List格式，以实现高效的多进程加载。
+#     """
+#     def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str):
+#         super().__init__()
+        
+#         with open(config_path, 'r') as f:
+#             self.config = yaml.safe_load(f)['field_embedding_config']
+#         with open(vocab_path, 'r') as f:
+#             self.vocab_maps = yaml.safe_load(f)
+            
+#         self.labels = dataframe['label_id'].values
+        
+#         # print("正在一次性预处理所有特征...")
+#         raw_features = dataframe.drop(columns=['label', 'label_id', 'index'], errors='ignore')
+#         self.decimal_fields = {'tcp.stream'}
+#         processed_pandas_dict = self._preprocess_dataframe(raw_features)
+
+#         # print("正在将数据转换为可快速访问的Numpy/List格式...")
+#         self.processed_data = {}
+#         # for name, series in tqdm(processed_pandas_dict.items(), desc="Converting to fast-access format"):
+#         for name, series in processed_pandas_dict.items():
+#             if not series.empty and isinstance(series.iloc[0], list):
+#                 self.processed_data[name] = series.to_list()
+#             else:
+#                 self.processed_data[name] = series.to_numpy()
+        
+#         self.fields = list(self.processed_data.keys())
+
+#     def _preprocess_dataframe(self, df: pd.DataFrame):
+#         processed_data_dict = {}
+#         for field_name in df.columns:
+#             if field_name not in self.config:
+#                 continue
+            
+#             if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
+#                 field_type = self.config[field_name]['type']
+#                 processed_column = df[field_name].apply(lambda x: _preprocess_address(x, field_type))
+#             elif field_name in self.vocab_maps:
+#                 vocab_map = self.vocab_maps[field_name]
+#                 oov_index = vocab_map.get('__OOV__', len(vocab_map))
+#                 processed_column = df[field_name].apply(
+#                     lambda x: vocab_map.get(str(x).lower().replace('0x',''), oov_index) if pd.notna(x) else oov_index
+#                 )
+#             elif field_name in self.decimal_fields:
+#                 processed_column = df[field_name].fillna(0).astype(int)
+#             elif self.config[field_name]['type'] in ['categorical', 'numerical']:
+#                 def robust_hex_to_int(x):
+#                     if not pd.notna(x): return 0
+#                     str_x = str(x).split('.')[0]
+#                     try: return int(str_x, 16)
+#                     except ValueError: return 0
+#                 processed_column = df[field_name].apply(robust_hex_to_int)
+#             else:
+#                 continue
+#             processed_data_dict[field_name] = processed_column
+#         return processed_data_dict
+
+#     def __len__(self):
+#         return len(self.labels)
+
+#     def __getitem__(self, idx):
+#         features = {field: self.processed_data[field][idx] for field in self.fields}
+#         label = self.labels[idx]
+#         return features, label
 
 
 """

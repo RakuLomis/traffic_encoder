@@ -103,13 +103,26 @@ if __name__ == '__main__':
     # 假设 block_0_df 是您从 '0.csv' 加载的完整DataFrame
     block_0_df = pd.read_csv(raw_df_path, low_memory=False, dtype=str) 
 
+    # 1. 统计每个label的样本数量
+    label_counts = block_0_df['label'].value_counts()
+    
+    # 2. 确定哪些label的样本数量足够多可以进行分割 (阈值 >= 4)
+    min_samples_per_class = 8
+    valid_labels = label_counts[label_counts >= min_samples_per_class].index
+    
+    original_rows = len(block_0_df)
+    filtered_df = block_0_df[block_0_df['label'].isin(valid_labels)]
+    rows_dropped = original_rows - len(filtered_df)
+
+    block_0_df = filtered_df.copy()
+
     # 首先，创建一个从字符串标签到整数的映射，这对模型至关重要
     # {'aimchat': 0, 'amazon': 1, ...}
     labels = block_0_df['label'].unique()
     label_to_int = {label: i for i, label in enumerate(labels)}
     # 将字符串标签列转换为整数标签列
     block_0_df['label_id'] = block_0_df['label'].map(label_to_int)
-
+    print(block_0_df['label'].value_counts())
 
     # 第一次分割：从总数据中分出训练集和临时集（包含验证+测试）
     train_df, temp_df = train_test_split(
@@ -127,11 +140,19 @@ if __name__ == '__main__':
         stratify=temp_df['label_id']
     )
 
-    print(f"数据集分割完成:")
-    print(f" - 训练集: {len(train_df)} 条")
-    print(f" - 验证集: {len(val_df)} 条")
-    print(f" - 测试集: {len(test_df)} 条")
-    del block_0_df, temp_df
+    if train_df is None:
+        print("数据集无法被安全分割，测试终止。")
+        # sys.exit() # 可以选择直接退出
+    else:
+        print("数据集分割完成。")
+        # ... 后续的DataLoader创建和训练 ...
+
+        print(f"数据集分割完成:")
+        print(f" - 训练集: {len(train_df)} 条")
+        print(f" - 验证集: {len(val_df)} 条")
+        print(f" - 测试集: {len(test_df)} 条")
+    # del block_0_df, temp_df 
+    del block_0_df
 
     train_dataset = TrafficDataset(train_df, config_path, vocab_path)
     val_dataset = TrafficDataset(val_df, config_path, vocab_path)
