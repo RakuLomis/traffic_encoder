@@ -114,11 +114,11 @@ def custom_collate_fn(batch):
             batched_features[field] = torch.tensor([v for v in values], dtype=torch.long) 
         except (OverflowError, RuntimeError) as e:
             # 如果捕获到溢出错误...
-            print("\n" + "="*60)
-            print("!!! OVERFLOW ERROR DETECTED & HANDLED !!!")
+            # print("\n" + "="*60)
+            # print("!!! OVERFLOW ERROR DETECTED & HANDLED !!!")
             print(f"FIELD: '{field}' is overflow. ")
-            print("Cutting...")
-            print(f"Original error: {e}")
+            # print("Cutting...")
+            # print(f"Original error: {e}")
 
             # 对值进行截断，使其不超过torch.long的最大值
             # 同时处理Python原生int和Numpy的整数类型
@@ -127,7 +127,7 @@ def custom_collate_fn(batch):
                 for v in values
             ]
             batched_features[field] = torch.tensor(safe_values, dtype=torch.long)
-            print("="*60 + "\n")
+            # print("="*60 + "\n")
             
     return batched_features, labels
 

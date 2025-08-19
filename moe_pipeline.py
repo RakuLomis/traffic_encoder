@@ -84,95 +84,53 @@ def train_one_epoch(model, train_loaders_dict, loss_fn, optimizer, device):
     total_correct = 0
     total_samples = 0
 
-    # --- 核心修改点：创建并行的迭代器 ---
-    # a) 为每个 a loader 创建一个迭代器
-    iterators = {name: iter(loader) for name, loader in train_loaders_dict.items()}
-    
-    # b) 找出批次数量最多的那个 a loader，以确定本轮 epoch 的总步数
-    if not train_loaders_dict: return 0.0, 0.0 # 处理没有合格block的情况
-    num_steps = max(len(loader) for loader in train_loaders_dict.values())
+    # --- 核心修改点：回归到串行遍历 ---
+    # 这种方式保证在任何时候，内存中只有一个Block的数据
+    for block_name, loader in tqdm(train_loaders_dict.items(), desc="Training Epoch (Serial Experts)"):
+        for features, labels in loader:
+            batch_for_model = {block_name: features}
+            
+            features_on_device = {k: {fname: fval.to(device, non_blocking=True) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
+            labels_on_device = labels.to(device, non_blocking=True)
+            
+            outputs = model(features_on_device)
+            loss = loss_fn(outputs, labels_on_device)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-    # c) 使用总步数来驱动主训练循环
-    for _ in tqdm(range(num_steps), desc="Training Epoch"):
-        optimizer.zero_grad()
-        
-        # --- d) 在每一步构建“混合批次” ---
-        mega_batch_features = {}
-        mega_batch_labels = []
-        
-        # 从每个 a loader 的迭代器中取出一个批次
-        for block_name, it in iterators.items():
-            try:
-                features, labels = next(it)
-                mega_batch_features[block_name] = features
-                mega_batch_labels.append(labels)
-            except StopIteration:
-                # 如果某个 a loader 的数据用完了，就为它重新创建一个迭代器
-                iterators[block_name] = iter(train_loaders_dict[block_name])
-                features, labels = next(iterators[block_name])
-                mega_batch_features[block_name] = features
-                mega_batch_labels.append(labels)
-        
-        # 将混合批次的数据和标签都移动到GPU
-        for block_name, features in mega_batch_features.items():
-            mega_batch_features[block_name] = {k: v.to(device, non_blocking=True) for k, v in features.items()}
-        labels = torch.cat(mega_batch_labels).to(device, non_blocking=True)
-        
-        # --- e) 用“混合批次”进行一次完整的前向和反向传播 ---
-        outputs = model(mega_batch_features)
-        loss = loss_fn(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        
-        # --- f) 统计损失和准确率 (逻辑不变) ---
-        total_loss += loss.item() * len(labels)
-        _, predicted = torch.max(outputs.data, 1)
-        total_samples += len(labels)
-        total_correct += (predicted == labels).sum().item()
+            total_loss += loss.item() * len(labels)
+            _, predicted = torch.max(outputs.data, 1)
+            total_samples += len(labels)
+            total_correct += (predicted == labels_on_device).sum().item()
 
     epoch_loss = total_loss / total_samples if total_samples > 0 else 0.0
     epoch_acc = total_correct / total_samples if total_samples > 0 else 0.0
     return epoch_loss, epoch_acc
 
-# evaluate_one_epoch 函数也需要进行类似的修改
 def evaluate_one_epoch(model, data_loaders_dict, loss_fn, device):
     model.eval()
     total_loss = 0.0
     total_correct = 0
     total_samples = 0
-    
-    # 同样，并行处理所有评估用的 a loader
-    iterators = {name: iter(loader) for name, loader in data_loaders_dict.items()}
-    if not data_loaders_dict: return 0.0, 0.0
-    num_steps = max(len(loader) for loader in data_loaders_dict.values())
 
     with torch.no_grad():
-        for _ in tqdm(range(num_steps), desc="Evaluating Epoch"):
-            mega_batch_features = {}
-            mega_batch_labels = []
+        # 评估也使用串行方式
+        for block_name, loader in tqdm(data_loaders_dict.items(), desc="Evaluating Epoch (Serial Experts)"):
+            for features, labels in loader:
+                batch_for_model = {block_name: features}
+                
+                features_on_device = {k: {fname: fval.to(device, non_blocking=True) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
+                labels_on_device = labels.to(device, non_blocking=True)
+                
+                outputs = model(features_on_device)
+                loss = loss_fn(outputs, labels_on_device)
 
-            for block_name, it in iterators.items():
-                try:
-                    features, labels = next(it)
-                    mega_batch_features[block_name] = features
-                    mega_batch_labels.append(labels)
-                except StopIteration:
-                    # 在评估时，数据用完就用完，不需要重置
-                    continue 
-            
-            if not mega_batch_features: continue
-
-            for block_name, features in mega_batch_features.items():
-                mega_batch_features[block_name] = {k: v.to(device, non_blocking=True) for k, v in features.items()}
-            labels = torch.cat(mega_batch_labels).to(device, non_blocking=True)
-            
-            outputs = model(mega_batch_features)
-            loss = loss_fn(outputs, labels)
-
-            total_loss += loss.item() * len(labels)
-            _, predicted = torch.max(outputs.data, 1)
-            total_samples += len(labels)
-            total_correct += (predicted == labels).sum().item()
+                total_loss += loss.item() * len(labels)
+                _, predicted = torch.max(outputs.data, 1)
+                total_samples += len(labels)
+                total_correct += (predicted == labels_on_device).sum().item()
 
     epoch_loss = total_loss / total_samples if total_samples > 0 else 0.0
     epoch_acc = total_correct / total_samples if total_samples > 0 else 0.0
