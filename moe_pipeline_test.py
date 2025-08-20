@@ -16,190 +16,297 @@ import os
 from torch.profiler import profile, record_function, ProfilerActivity
 from utils.data_loader import custom_collate_fn
 from models.MoEPTA import MoEPTA
+from models.MoEPTA import find_common_routing_fields
 
+# def train_one_epoch(model, train_loaders_dict, loss_fn, optimizer, device):
+#     model.train()
+#     total_loss = 0.0
+#     total_correct = 0
+#     total_samples = 0
 
-def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
-    model.train() # 将模型设置为训练模式
-    running_loss = 0.0
-    correct_predictions = 0
+#     # 遍历每一个Block的DataLoader进行训练
+#     for block_name, loader in tqdm(train_loaders_dict.items(), desc="Training Epoch"):
+#         for features, labels in loader:
+#             batch_for_model = {block_name: features}
+            
+#             # 将数据移动到GPU
+#             batch_for_model = {k: {fname: fval.to(device, non_blocking=True) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
+#             labels = labels.to(device, non_blocking=True)
+            
+#             # 执行前向和反向传播
+#             outputs = model(batch_for_model)
+#             loss = loss_fn(outputs, labels)
+            
+#             optimizer.zero_grad()
+#             loss.backward()
+#             optimizer.step()
+
+#             # 统计损失和准确率
+#             total_loss += loss.item() * len(labels)
+#             _, predicted = torch.max(outputs.data, 1)
+#             total_samples += len(labels)
+#             total_correct += (predicted == labels).sum().item()
+
+#     epoch_loss = total_loss / total_samples
+#     epoch_acc = total_correct / total_samples
+#     return epoch_loss, epoch_acc
+
+# def evaluate_one_epoch(model, data_loaders_dict, loss_fn, device):
+#     model.eval()
+#     total_loss = 0.0
+#     total_correct = 0
+#     total_samples = 0
+
+#     with torch.no_grad():
+#         for block_name, loader in tqdm(data_loaders_dict.items(), desc="Evaluating Epoch"):
+#             for features, labels in loader:
+#                 batch_for_model = {block_name: features}
+                
+#                 batch_for_model = {k: {fname: fval.to(device, non_blocking=True) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
+#                 labels = labels.to(device, non_blocking=True)
+                
+#                 outputs = model(batch_for_model)
+#                 # outputs, attn_weights = model(batch_for_model) 
+#                 # print(attn_weights[0, 0, 0, 1:])
+#                 loss = loss_fn(outputs, labels)
+
+#                 total_loss += loss.item() * len(labels)
+#                 _, predicted = torch.max(outputs.data, 1)
+#                 total_samples += len(labels)
+#                 total_correct += (predicted == labels).sum().item()
+
+#     epoch_loss = total_loss / total_samples
+#     epoch_acc = total_correct / total_samples
+#     return epoch_loss, epoch_acc
+
+def train_one_epoch(model, train_loaders_dict, loss_fn, optimizer, device):
+    model.train()
+    total_loss = 0.0
+    total_correct = 0
     total_samples = 0
 
-    for features, labels in tqdm(dataloader, desc="Training"):
-        # 将数据移动到指定设备 (GPU or CPU)
-        # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
-        # labels = labels.to(device)
+    # --- 核心修改点：回归到串行遍历 ---
+    # 这种方式保证在任何时候，内存中只有一个Block的数据
+    for block_name, loader in tqdm(train_loaders_dict.items(), desc="Training Epoch (Serial Experts)"):
+        for features, labels in loader:
+            batch_for_model = {block_name: features}
+            
+            features_on_device = {k: {fname: fval.to(device, non_blocking=True) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
+            labels_on_device = labels.to(device, non_blocking=True)
+            
+            outputs = model(features_on_device)
+            loss = loss_fn(outputs, labels_on_device)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
-        labels = labels.to(device, non_blocking=True)
-
-        # 1. 前向传播
-        outputs = model(features)
-        
-        # 2. 计算损失
-        loss = loss_fn(outputs, labels)
-        
-        # 3. 反向传播
-        optimizer.zero_grad() # 清空梯度
-        loss.backward()      # 计算梯度
-        optimizer.step()     # 更新权重
-
-        # 统计损失和准确率
-        running_loss += loss.item()
-        _, predicted = torch.max(outputs.data, 1)
-        total_samples += labels.size(0)
-        correct_predictions += (predicted == labels).sum().item()
-
-    epoch_loss = running_loss / len(dataloader)
-    epoch_acc = correct_predictions / total_samples
-    return epoch_loss, epoch_acc
-
-def evaluate(model, dataloader, loss_fn, device):
-    model.eval() # 将模型设置为评估模式
-    running_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
-
-    with torch.no_grad(): # 在评估时，不计算梯度
-        for features, labels in tqdm(dataloader, desc="Evaluating"):
-            # features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
-            # labels = labels.to(device)
-            features = {k: v.to(device, non_blocking=True) for k, v in features.items()}
-            labels = labels.to(device, non_blocking=True)
-
-            outputs = model(features)
-            loss = loss_fn(outputs, labels)
-
-            running_loss += loss.item()
+            total_loss += loss.item() * len(labels)
             _, predicted = torch.max(outputs.data, 1)
-            total_samples += labels.size(0)
-            correct_predictions += (predicted == labels).sum().item()
+            total_samples += len(labels)
+            total_correct += (predicted == labels_on_device).sum().item()
 
-    epoch_loss = running_loss / len(dataloader)
-    epoch_acc = correct_predictions / total_samples
+    epoch_loss = total_loss / total_samples if total_samples > 0 else 0.0
+    epoch_acc = total_correct / total_samples if total_samples > 0 else 0.0
     return epoch_loss, epoch_acc
+
+def evaluate_one_epoch(model, data_loaders_dict, loss_fn, device):
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    with torch.no_grad():
+        # 评估也使用串行方式
+        for block_name, loader in tqdm(data_loaders_dict.items(), desc="Evaluating Epoch (Serial Experts)"):
+            for features, labels in loader:
+                batch_for_model = {block_name: features}
+                
+                features_on_device = {k: {fname: fval.to(device, non_blocking=True) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
+                labels_on_device = labels.to(device, non_blocking=True)
+                
+                outputs = model(features_on_device)
+                loss = loss_fn(outputs, labels_on_device)
+
+                total_loss += loss.item() * len(labels)
+                _, predicted = torch.max(outputs.data, 1)
+                total_samples += len(labels)
+                total_correct += (predicted == labels_on_device).sum().item()
+
+    epoch_loss = total_loss / total_samples if total_samples > 0 else 0.0
+    epoch_acc = total_correct / total_samples if total_samples > 0 else 0.0
+    return epoch_loss, epoch_acc
+
+# ==============================================================================
+# 2. 主执行脚本
+# ==============================================================================
 
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 10
-    BATCH_SIZE = 256
+    NUM_EPOCHS = 100
+    BATCH_SIZE = 512
     LEARNING_RATE = 1e-4
+    NUM_WORKERS = 8
 
-    # --- 2. 准备数据 ---
-    # 假设 train_df, val_df, test_df 已经创建好
-    
+    # --- 2. 准备数据路径 ---
     config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
     vocab_path = os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml') 
     csv_name = '0' 
     raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
-    # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
-    block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'test')
+    block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'reborn_blocks_merge_test') 
+    # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'test')
     # raw_df_path = os.path.join(raw_df_directory, csv_name + '.csv') 
     raw_df_path = os.path.join(block_directory, csv_name + '.csv') 
-
+    
+    # --- 3. 为每个合格的Block创建Dataloader ---
     train_loaders = {} 
     val_loaders = {}
+    test_loaders = {}
     block_label_nums = {}
     eligible_blocks = []
-    # test_flag = 0
-    for block_filename in tqdm(os.listdir(block_directory), desc="Building dataloader for each block. "): 
-        block_name = os.path.splitext(block_filename)[0] 
-        block_path = os.path.join(block_directory, block_filename) 
-        block_df = pd.read_csv(block_path, low_memory=False, dtype=str) 
-
-        label_counts = block_df['label'].value_counts() 
-        min_samples_per_class = 4
-        valid_labels = label_counts[label_counts >= min_samples_per_class].index 
-
-        if len(valid_labels) < 2: # 如果有效类别少于2个，无法进行分类和分割
-            print(f"\nBlock {block_name} 过滤后有效类别少于2个，跳过此Block。")
+    
+    print("开始为每个Field Block准备数据...")
+    for block_filename in tqdm(os.listdir(block_directory), desc="Building DataLoaders"): 
+        if not block_filename.lower().endswith('.csv'): 
+            print(f"{block_filename} is not a csv file.")
             continue
+        block_name = os.path.splitext(block_filename)[0]
+        block_path = os.path.join(block_directory, block_filename)
+        block_df = pd.read_csv(block_path, dtype=str)
+        # print(f"Handling block {block_name}. ")
 
-        original_rows = len(block_df)
+        # a) 过滤样本过少的类别
+        label_counts = block_df['label'].value_counts()
+        min_samples_per_class = 8
+        valid_labels = label_counts[label_counts >= min_samples_per_class].index
+        # if len(valid_labels) < 2:
+        #     print(f"\nBlock {block_name} 有效类别少于2个，跳过。")
+        #     continue
         block_df = block_df[block_df['label'].isin(valid_labels)]
-        # print(f"过滤掉 {original_rows - len(block_df)} 行，因为它们的label样本数少于 {min_samples_per_class}。")
-        # print(f"开始后，数据总行数: {len(block_df)}")
 
+        num_unique_labels = block_df['label'].nunique()
 
-        labels = block_df['label'].unique() 
-        label_to_int = {label: i for i, label in enumerate(labels)} 
-        block_df['label_id'] = block_df['label'].map(label_to_int) 
-        print(f"Block {block_name}'s label has been transformed. ") 
-        # 第一次分割：从总数据中分出训练集和临时集（包含验证+测试）
-        train_df, temp_df = train_test_split(
-            block_df,
-            test_size=0.3,       # 30%的数据用于验证和测试
-            random_state=42,     # 保证每次分割结果都一样
-            stratify=block_df['label_id'] # 保证训练集和测试集中各标签比例相似
-        )
-        temp_label_counts = temp_df['label_id'].value_counts()
-        if temp_label_counts.min() < 2:
-            print(f"\nBlock {block_name} 在第一次分割后，部分类别的样本数少于2，无法进行第二次分割，跳过此Block。")
-            # 跳过当前循环，处理下一个Block
-            continue
-        # 第二次分割：从临时集中分出验证集和测试集
-        val_df, test_df = train_test_split(
-            temp_df,
-            test_size=0.5,       # 将临时集对半分
-            random_state=42,
-            stratify=temp_df['label_id']
-        )
+        if num_unique_labels < 2:
+            # 如果类别少于2个，无法用于分类任务，直接跳过整个Block
+            print(f"\nBlock {block_name} 过滤后有效类别少于2个，跳过。")
+            continue 
 
-        print(f"数据集{block_name}分割完成:")
-        print(f" - 训练集: {len(train_df)} 条")
-        print(f" - 验证集: {len(val_df)} 条")
-        print(f" - 测试集: {len(test_df)} 条")
+        # b) 创建标签映射并分割数据
+        labels = block_df['label'].unique()
+        label_to_int = {label: i for i, label in enumerate(labels)}
+        block_df['label_id'] = block_df['label'].map(label_to_int)
+        
+        if num_unique_labels == 1: 
+            print(f"{block_filename} only has one class, its all data will be used to train model. ")
+            train_df = block_df 
+            val_df = pd.DataFrame(columns=block_df.columns)
+            test_df = pd.DataFrame(columns=block_df.columns)
+        else: 
+            train_df, temp_df = train_test_split(block_df, test_size=0.3, random_state=42, stratify=block_df['label_id'])
+            if temp_df['label_id'].value_counts().min() < 2:
+                print(f"\nBlock {block_name} 无法安全分割成验证/测试集，跳过。")
+                continue
+            val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42, stratify=temp_df['label_id'])
 
-        block_label_nums[block_name] = len(labels) 
-        del block_df, temp_df 
+            # 尝试创建一个临时的Dataset
+            temp_train_dataset = TrafficDataset(train_df, config_path, vocab_path)
 
+            # 检查这个Dataset是否包含了任何有效的、可在config中找到的特征
+            if not temp_train_dataset.fields: # .fields 列表为空
+                print(f"\nBlock {block_name} 虽然样本充足，但其特征均不在config文件中，视为无效Block，跳过。")
+                continue
+
+            block_label_nums[block_name] = len(labels)
+        
+        # c) 创建Dataset和DataLoader
         train_dataset = TrafficDataset(train_df, config_path, vocab_path)
-        # val_dataset = TrafficDataset(val_df, config_path, vocab_path)
-        train_loaders[block_name] = DataLoader(
-            train_dataset, 
-            batch_size=BATCH_SIZE, 
-            shuffle=True,
-            num_workers=4, # 保持多进程
-            pin_memory=True,
-            collate_fn=custom_collate_fn
-        )
+        val_dataset = TrafficDataset(val_df, config_path, vocab_path)
+        test_dataset = TrafficDataset(test_df, config_path, vocab_path)
+        
+        train_loaders[block_name] = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=True, collate_fn=custom_collate_fn)
+        val_loaders[block_name] = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, collate_fn=custom_collate_fn)
+        test_loaders[block_name] = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, collate_fn=custom_collate_fn)
+
         eligible_blocks.append(block_filename)
 
-        # test_flag += 1
-        # if test_flag >= 3: 
-        #     print(f"先跑{test_flag}个看看")
-        #     break
-    
-    # --- 3. 初始化模型、损失函数和优化器 ---
+    print(f"\n数据准备完成，共 {len(eligible_blocks)} 个合格的Block。")
+
+    # --- 4. 初始化模型、损失函数和优化器 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    
+    # 确定全局类别数（所有Block中出现过的最大类别数）
+    num_classes = 0
+    # 我们需要一个全局的label_to_int映射，以确保所有专家输出的维度一致
+    # 重新读取所有合并后的数据来创建这个全局映射
+    all_labels_df = pd.concat([pd.read_csv(os.path.join(block_directory, f), dtype=str, usecols=['label']) for f in os.listdir(block_directory) if f.endswith('.csv')])
+    global_labels = all_labels_df['label'].unique()
+    num_classes = len(global_labels)
+    print(f"全局类别数量为: {num_classes}")
 
-    num_classes = max(block_label_nums.values())
-
+    ROUTING_FIELDS = find_common_routing_fields(block_directory, eligible_blocks, top_k=10)
+    print(f"We found Routing fields: {ROUTING_FIELDS}")
     moe_pta_model = MoEPTA(
         block_directory=block_directory,
-        eligible_blocks=eligible_blocks,
         config_path=config_path,
         vocab_path=vocab_path,
-        block_num_classes=block_label_nums, 
+        eligible_blocks=eligible_blocks, 
+        # block_num_classes=block_label_nums,
+        routing_fields=ROUTING_FIELDS, 
         num_classes=num_classes
-    )
-    moe_pta_model.to(device)
+    ).to(device)
     
-    optimizer = optim.AdamW(moe_pta_model.parameters(), lr=LEARNING_RATE) 
-    loss_fn = nn.CrossEntropyLoss() 
+    optimizer = optim.AdamW(moe_pta_model.parameters(), lr=LEARNING_RATE)
+    loss_fn = nn.CrossEntropyLoss()
 
-    for block_name, loader in train_loaders.items(): 
-        for features, labels in loader: 
-            # 构造一个只包含当前Block数据的批次
-                batch_for_model = {block_name: features}
-                
-                # 将数据移动到GPU
-                batch_for_model = {k: {fname: fval.to(device) for fname, fval in fdict.items()} for k, fdict in batch_for_model.items()}
-                labels = labels.to(device)
-                
-                # 执行前向和反向传播
-                outputs = moe_pta_model(batch_for_model)
-                loss = loss_fn(outputs, labels)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+    # --- 5. 训练循环 ---
+    training_results = []
+    best_val_acc = 0.0
+
+    for epoch in range(NUM_EPOCHS):
+        print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
+        
+        train_loss, train_acc = train_one_epoch(moe_pta_model, train_loaders, loss_fn, optimizer, device)
+        val_loss, val_acc = evaluate_one_epoch(moe_pta_model, val_loaders, loss_fn, device)
+        
+        print(f"Epoch {epoch+1} Summary:")
+        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+        print(f"  Val Loss: {val_loss:.4f}   | Val Acc: {val_acc:.4f}")
+        
+        # 记录结果
+        training_results.append({
+            'epoch': epoch + 1,
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'val_loss': val_loss,
+            'val_acc': val_acc
+        })
+
+        # 保存性能最佳的模型
+        if val_acc > best_val_acc:
+            print(f"  Validation accuracy improved from {best_val_acc:.4f} to {val_acc:.4f}. Saving model...")
+            torch.save(moe_pta_model.state_dict(), 'best_moe_model.pth')
+            best_val_acc = val_acc
+
+    print("\nTraining complete!")
+
+    # --- 6. 最终测试 ---
+    print("\nLoading best model for final testing...")
+    # moe_pta_model.load_state_dict(torch.load('best_moe_model.pth'))
+    
+    test_loss, test_acc = evaluate_one_epoch(moe_pta_model, test_loaders, loss_fn, device)
+    
+    print(f"\nFinal Test Performance:")
+    print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+    
+    # 将最终测试结果也添加到记录中
+    training_results.append({
+        'epoch': 'final_test',
+        'train_loss': None, 'train_acc': None,
+        'val_loss': test_loss, 'val_acc': test_acc
+    })
+
+    # --- 7. 保存结果到CSV ---
+    results_df = pd.DataFrame(training_results)
+    # results_df.to_csv('moe_pta_training_log.csv', index=False)
+    # print("\nTraining log saved to 'moe_pta_training_log.csv'")
