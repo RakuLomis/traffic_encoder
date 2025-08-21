@@ -16,6 +16,7 @@ import os
 from torch.profiler import profile, record_function, ProfilerActivity
 from utils.data_loader import custom_collate_fn
 from models.MoEPTA import MoEPTA
+from models.MoEPTA import find_common_routing_fields
 
 # def train_one_epoch(model, train_loaders_dict, loss_fn, optimizer, device):
 #     model.train()
@@ -243,12 +244,15 @@ if __name__ == '__main__':
     num_classes = len(global_labels)
     print(f"全局类别数量为: {num_classes}")
 
+    ROUTING_FIELDS = find_common_routing_fields(block_directory, eligible_blocks, top_k=10)
+    print(f"We found Routing fields: {ROUTING_FIELDS}")
     moe_pta_model = MoEPTA(
         block_directory=block_directory,
         config_path=config_path,
         vocab_path=vocab_path,
         eligible_blocks=eligible_blocks, 
         # block_num_classes=block_label_nums,
+        routing_fields=ROUTING_FIELDS, 
         num_classes=num_classes
     ).to(device)
     

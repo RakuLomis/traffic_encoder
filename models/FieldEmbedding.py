@@ -261,10 +261,10 @@ class FieldEmbedding(nn.Module):
         :param batch_data_dict: 输入的原始数据字典。
         :return: 一个字典，键是字段名，值是对应的嵌入向量张量。
         """
-        if not hasattr(self, '_printed_device_info'):
-            print(f"  [Inside FieldEmbedding] Module is on: {next(self.parameters()).device}")
-            print(f"  [Inside FieldEmbedding] Received data is on: {next(iter(batch_data_dict.values())).device}")
-            self._printed_device_info = True # 设置标志 
+        # if not hasattr(self, '_printed_device_info'):
+        #     print(f"  [Inside FieldEmbedding] Module is on: {next(self.parameters()).device}")
+        #     print(f"  [Inside FieldEmbedding] Received data is on: {next(iter(batch_data_dict.values())).device}")
+        #     self._printed_device_info = True # 设置标志 
         embedded_vectors_dict = {}
         # 遍历输入批次中的字段
         for field_name, input_tensor in batch_data_dict.items():

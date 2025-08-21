@@ -1,0 +1,257 @@
+import torch
+import torch.optim as optim 
+import torch.nn as nn 
+from tqdm import tqdm 
+from utils.data_loader import TrafficDataset
+from torch.utils.data import Dataset, DataLoader
+from models.FieldEmbedding import FieldEmbedding
+from utils.dataframe_tools import protocol_tree 
+from models.ProtocolTreeAttention import ProtocolTreeAttention 
+# from models.PTA_rebuild import ProtocolTreeAttention
+from utils.dataframe_tools import get_file_path 
+from utils.dataframe_tools import output_csv_in_fold 
+from utils.dataframe_tools import padding_or_truncating
+import pandas as pd 
+from sklearn.model_selection import train_test_split
+import os
+from torch.profiler import profile, record_function, ProfilerActivity
+from utils.data_loader import custom_collate_fn
+from models.MoEPTA import MoEPTA
+from utils.data_loader_gnn import GNNTrafficDataset
+from torch_geometric.loader import DataLoader
+from models.ProtocolTreeGAttention import ProtocolTreeGAttention
+
+def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
+    model.train() # 将模型设置为训练模式
+    running_loss = 0.0
+    correct_predictions = 0
+    total_samples = 0
+
+    # 现在的 dataloader 输出的是一个批处理好的图对象 (batched_graph)
+    for batched_graph in tqdm(dataloader, desc="Training"):
+        # a) 将整个图对象一次性移动到GPU
+        batched_graph.to(device)
+        
+        # b) 从图对象中获取标签
+        labels = batched_graph.y
+
+        # c) 前向传播
+        outputs = model(batched_graph)
+        
+        # d) 计算损失
+        loss = loss_fn(outputs, labels)
+        
+        # e) 反向传播 (无变化)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # f) 统计损失和准确率
+        running_loss += loss.item() * batched_graph.num_graphs
+        _, predicted = torch.max(outputs.data, 1)
+        total_samples += batched_graph.num_graphs
+        correct_predictions += (predicted == labels).sum().item()
+
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0
+    epoch_acc = correct_predictions / total_samples if total_samples > 0 else 0
+    return epoch_loss, epoch_acc
+
+def evaluate(model, dataloader, loss_fn, device):
+    model.eval() # 将模型设置为评估模式
+    running_loss = 0.0
+    correct_predictions = 0
+    total_samples = 0
+
+    with torch.no_grad(): # 在评估时，不计算梯度
+        for batched_graph in tqdm(dataloader, desc="Evaluating"):
+            # 逻辑与训练函数完全相同，只是没有反向传播
+            batched_graph.to(device)
+            labels = batched_graph.y
+            
+            outputs = model(batched_graph)
+            loss = loss_fn(outputs, labels)
+
+            running_loss += loss.item() * batched_graph.num_graphs
+            _, predicted = torch.max(outputs.data, 1)
+            total_samples += batched_graph.num_graphs
+            correct_predictions += (predicted == labels).sum().item()
+
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0
+    epoch_acc = correct_predictions / total_samples if total_samples > 0 else 0
+    return epoch_loss, epoch_acc
+
+# =====================================================================
+if __name__ == '__main__':
+    # --- 1. 设置超参数 ---
+    NUM_EPOCHS = 10
+    BATCH_SIZE = 512
+    LEARNING_RATE = 1e-3
+    NUM_WORKERS = 4 
+    GNN_INPUT_DIM = 32 
+    GNN_HIDDEN_DIM = 128
+
+    # --- 2. 准备数据 ---
+    # 假设 train_df, val_df, test_df 已经创建好
+    
+    config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
+    vocab_path = os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml') 
+    csv_name = 'default_expert' 
+    raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
+    # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
+    block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'reborn_blocks_merge') 
+    # raw_df_path = os.path.join(raw_df_directory, csv_name + '.csv') 
+    raw_df_path = os.path.join(block_directory, csv_name + '.csv') 
+
+    # --- 数据分割 ---
+    print("正在分割数据集...")
+    # 假设 block_0_df 是您从 '0.csv' 加载的完整DataFrame
+    block_0_df = pd.read_csv(raw_df_path, low_memory=False, dtype=str) 
+
+    # 1. 统计每个label的样本数量
+    label_counts = block_0_df['label'].value_counts()
+    
+    # 2. 确定哪些label的样本数量足够多可以进行分割 (阈值 >= 4)
+    min_samples_per_class = 8
+    valid_labels = label_counts[label_counts >= min_samples_per_class].index
+    
+    original_rows = len(block_0_df)
+    filtered_df = block_0_df[block_0_df['label'].isin(valid_labels)]
+    rows_dropped = original_rows - len(filtered_df)
+
+    block_0_df = filtered_df.copy()
+
+    # 首先，创建一个从字符串标签到整数的映射，这对模型至关重要
+    # {'aimchat': 0, 'amazon': 1, ...}
+    labels = block_0_df['label'].unique()
+    label_to_int = {label: i for i, label in enumerate(labels)}
+    # 将字符串标签列转换为整数标签列
+    block_0_df['label_id'] = block_0_df['label'].map(label_to_int)
+    print(block_0_df['label'].value_counts())
+
+    # 第一次分割：从总数据中分出训练集和临时集（包含验证+测试）
+    train_df, temp_df = train_test_split(
+        block_0_df,
+        test_size=0.3,       # 30%的数据用于验证和测试
+        random_state=42,     # 保证每次分割结果都一样
+        stratify=block_0_df['label_id'] # 保证训练集和测试集中各标签比例相似
+    )
+
+    # 第二次分割：从临时集中分出验证集和测试集
+    val_df, test_df = train_test_split(
+        temp_df,
+        test_size=0.5,       # 将临时集对半分
+        random_state=42,
+        stratify=temp_df['label_id']
+    )
+
+    if train_df is None:
+        print("数据集无法被安全分割，测试终止。")
+        # sys.exit() # 可以选择直接退出
+    else:
+        print("数据集分割完成。")
+        # ... 后续的DataLoader创建和训练 ...
+
+        print(f"数据集分割完成:")
+        print(f" - 训练集: {len(train_df)} 条")
+        print(f" - 验证集: {len(val_df)} 条")
+        print(f" - 测试集: {len(test_df)} 条")
+    # del block_0_df, temp_df 
+    del block_0_df
+    
+    ptree_train = protocol_tree(train_df.columns.tolist())
+    ptree_val = protocol_tree(val_df.columns.tolist())
+    num_classes = len(label_to_int)
+
+    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path)
+    val_dataset = GNNTrafficDataset(val_df, config_path, vocab_path)
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True,
+        num_workers=NUM_WORKERS, # 保持多进程
+        pin_memory=True,
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=True,
+    )
+    
+    # --- 3. 初始化模型、损失函数和优化器 ---
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # 假设protocol_tree和label_to_int已经准备好
+    
+
+    field_embedder = FieldEmbedding(config_path, vocab_path)
+
+    # field_embedder.to(device)
+
+    # pta_model = ProtocolTreeGAttention(input_dim=GNN_INPUT_DIM, hidden_dim=GNN_HIDDEN_DIM, num_classes=num_classes).to(device)
+    pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, num_classes=num_classes).to(device)
+
+    loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
+    optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
+
+    # --- 4. 训练循环 ---
+    for epoch in range(NUM_EPOCHS):
+        print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
+        
+        train_loss, train_acc = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device)
+        val_loss, val_acc = evaluate(pta_model, val_loader, loss_fn, device)
+        
+        print(f"Epoch {epoch+1} Summary:")
+        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+        print(f"  Val Loss: {val_loss:.4f}   | Val Acc: {val_acc:.4f}")
+        
+        # 这里可以添加保存最佳模型的逻辑
+        # if val_acc > best_val_acc:
+        #     torch.save(pta_model.state_dict(), 'best_model.pth')
+        #     best_val_acc = val_acc
+    print("\nTraining complete!")
+    # --- 5. 最终测试 ---
+    test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
+    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    test_loss, test_acc = evaluate(pta_model, test_loader, loss_fn, device)
+    print(f"\nFinal Test Performance:")
+    print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+
+    # # 获取一个迭代器
+    # train_iterator = iter(train_loader)
+
+    # print("\n--- Running Performance Profiler for a few steps ---")
+    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+    #     for _ in range(10): # 只运行10个batch进行分析
+    #         with record_function("model_train_step"):
+    #             try:
+    #                 features, labels = next(train_iterator)
+                    
+    #                 features = {k: v.to(device) for k, v in features.items() if hasattr(v, 'to')}
+    #                 labels = labels.to(device)
+
+    #                 # 前向传播
+    #                 outputs = pta_model(features)
+    #                 loss = loss_fn(outputs, labels)
+                    
+    #                 # 反向传播
+    #                 optimizer.zero_grad()
+    #                 loss.backward()
+    #                 optimizer.step()
+    #             except StopIteration:
+    #                 break # 数据加载完毕
+
+    # # 打印性能分析结果
+    # print("\n--- Profiler Results ---")
+    # # 按CPU总时间排序，找到最耗时的CPU操作
+    # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=15))
+    
+    # # 按CUDA总时间排序，找到最耗时的GPU操作
+    # print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+
+    # # 您还可以将结果保存为Chrome可以查看的轨迹文件
+    # # prof.export_chrome_trace("trace.json")
