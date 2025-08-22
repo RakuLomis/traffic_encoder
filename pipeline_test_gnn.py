@@ -3,7 +3,8 @@ import torch.optim as optim
 import torch.nn as nn 
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset #, DataLoader
+from torch_geometric.loader import DataLoader
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
 from models.ProtocolTreeAttention import ProtocolTreeAttention 
@@ -17,9 +18,10 @@ import os
 from torch.profiler import profile, record_function, ProfilerActivity
 from utils.data_loader import custom_collate_fn
 from models.MoEPTA import MoEPTA
-from utils.data_loader_gnn import GNNTrafficDataset
+from utils.data_loader_gnn import GNNTrafficDataset, gnn_collate_fn
 from torch_geometric.loader import DataLoader
 from models.ProtocolTreeGAttention import ProtocolTreeGAttention
+
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
     model.train() # 将模型设置为训练模式
@@ -95,7 +97,7 @@ if __name__ == '__main__':
     
     config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
     vocab_path = os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml') 
-    csv_name = 'default_expert' 
+    csv_name = '24' 
     raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
     # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
     block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'reborn_blocks_merge') 
@@ -165,12 +167,16 @@ if __name__ == '__main__':
     train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path)
     val_dataset = GNNTrafficDataset(val_df, config_path, vocab_path)
     
+    node_fields_for_model = train_dataset.node_fields 
+    print(f"Model will be built for {len(node_fields_for_model)} nodes.")
+
     train_loader = DataLoader(
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True,
         num_workers=NUM_WORKERS, # 保持多进程
         pin_memory=True,
+        # collate_fn=gnn_collate_fn
     )
     
     val_loader = DataLoader(
@@ -179,6 +185,7 @@ if __name__ == '__main__':
         shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=True,
+        # collate_fn=gnn_collate_fn
     )
     
     # --- 3. 初始化模型、损失函数和优化器 ---
@@ -193,7 +200,7 @@ if __name__ == '__main__':
     # field_embedder.to(device)
 
     # pta_model = ProtocolTreeGAttention(input_dim=GNN_INPUT_DIM, hidden_dim=GNN_HIDDEN_DIM, num_classes=num_classes).to(device)
-    pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, num_classes=num_classes).to(device)
+    pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, node_field_list=node_fields_for_model,num_classes=num_classes).to(device)
 
     loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
@@ -216,7 +223,7 @@ if __name__ == '__main__':
     print("\nTraining complete!")
     # --- 5. 最终测试 ---
     test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
     test_loss, test_acc = evaluate(pta_model, test_loader, loss_fn, device)
     print(f"\nFinal Test Performance:")
     print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")

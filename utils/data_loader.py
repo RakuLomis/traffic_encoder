@@ -324,95 +324,95 @@ Original TrafficDataset
 #         self.fields = list(self.processed_data.keys()) 
             
 
-#     def _preprocess_dataframe(self):
-#         """
-#         遍历DataFrame的所有列，根据YAML配置将其转换为数值。
-#         此版本集成了调试钩子，并修正了逻辑处理的优先级。
-#         """
-#         processed_data_dict = {}
-#         for field_name in self.raw_df.columns:
-#             # 首先，检查该字段是否在我们的总配置中，如果不在则完全跳过
-#             if field_name not in self.config:
-#                 if field_name not in ['index', 'label']: # 抑制对元数据列的警告
-#                     # print(f"Warning: Field '{field_name}' not in config, skipping.")
-#                     pass
-#                 continue
+    # def _preprocess_dataframe(self):
+    #     """
+    #     遍历DataFrame的所有列，根据YAML配置将其转换为数值。
+    #     此版本集成了调试钩子，并修正了逻辑处理的优先级。
+    #     """
+    #     processed_data_dict = {}
+    #     for field_name in self.raw_df.columns:
+    #         # 首先，检查该字段是否在我们的总配置中，如果不在则完全跳过
+    #         if field_name not in self.config:
+    #             if field_name not in ['index', 'label']: # 抑制对元数据列的警告
+    #                 # print(f"Warning: Field '{field_name}' not in config, skipping.")
+    #                 pass
+    #             continue
             
-#             # 使用严格互斥的 if/elif/else 结构，并按正确优先级排序
+    #         # 使用严格互斥的 if/elif/else 结构，并按正确优先级排序
 
-#             # 规则1 (最高优先级): 处理地址类型
-#             if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
-#                 field_type = self.config[field_name]['type']
-#                 processed_column = self.raw_df[field_name].apply(lambda x: _preprocess_address(x, field_type))
+    #         # 规则1 (最高优先级): 处理地址类型
+    #         if self.config[field_name]['type'] in ['address_ipv4', 'address_mac']:
+    #             field_type = self.config[field_name]['type']
+    #             processed_column = self.raw_df[field_name].apply(lambda x: _preprocess_address(x, field_type))
 
-#             # 规则2: 使用生成的词典进行映射
-#             elif field_name in self.vocab_maps:
-#                 vocab_map = self.vocab_maps[field_name]
-#                 oov_index = vocab_map.get('__OOV__')
-#                 if oov_index is None: # 安全检查
-#                     oov_index = len(vocab_map)
+    #         # 规则2: 使用生成的词典进行映射
+    #         elif field_name in self.vocab_maps:
+    #             vocab_map = self.vocab_maps[field_name]
+    #             oov_index = vocab_map.get('__OOV__')
+    #             if oov_index is None: # 安全检查
+    #                 oov_index = len(vocab_map)
 
-#                 # ==================== 调试钩子 开始 ====================
-#                 # 我们定义一个更详细的函数来替代简单的lambda
-#                 def find_mismatch_and_map(x):
-#                     if not pd.notna(x):
-#                         return oov_index
+    #             # ==================== 调试钩子 开始 ====================
+    #             # 我们定义一个更详细的函数来替代简单的lambda
+    #             def find_mismatch_and_map(x):
+    #                 if not pd.notna(x):
+    #                     return oov_index
                     
-#                     # 确保我们用来查找的键，与generate_vocab.py中创建键的方式完全一致
-#                     key_to_lookup = str(x).lower().replace('0x', '')
+    #                 # 确保我们用来查找的键，与generate_vocab.py中创建键的方式完全一致
+    #                 key_to_lookup = str(x).lower().replace('0x', '')
                     
-#                     if key_to_lookup not in vocab_map:
-#                         # 如果在词典中找不到这个键，就打印详细的错误报告
-#                         print("\n" + "="*60)
-#                         print("!!! Potential mismatch with vocab yaml !!!")
-#                         print(f"FIELD:           '{field_name}'")
-#                         print(f"Value from data (VALUE):   '{x}'")
-#                         print(f"Key used to search (KEY):     '{key_to_lookup}'")
-#                         print("This KEY is not found in vocab.yaml. ")
-#                         print("It may be the reason of IndexError. ")
-#                         print("Please check the vocab.yaml. ")
-#                         print("="*60 + "\n")
-#                         return oov_index # 将未找到的值映射到OOV索引
+    #                 if key_to_lookup not in vocab_map:
+    #                     # 如果在词典中找不到这个键，就打印详细的错误报告
+    #                     print("\n" + "="*60)
+    #                     print("!!! Potential mismatch with vocab yaml !!!")
+    #                     print(f"FIELD:           '{field_name}'")
+    #                     print(f"Value from data (VALUE):   '{x}'")
+    #                     print(f"Key used to search (KEY):     '{key_to_lookup}'")
+    #                     print("This KEY is not found in vocab.yaml. ")
+    #                     print("It may be the reason of IndexError. ")
+    #                     print("Please check the vocab.yaml. ")
+    #                     print("="*60 + "\n")
+    #                     return oov_index # 将未找到的值映射到OOV索引
                     
-#                     # 如果找到了，返回正确的索引
-#                     return vocab_map[key_to_lookup]
-#                 # ==================== 调试钩子 结束 ====================
+    #                 # 如果找到了，返回正确的索引
+    #                 return vocab_map[key_to_lookup]
+    #             # ==================== 调试钩子 结束 ====================
                 
-#                 # 应用我们刚刚定义的这个更强大的函数
-#                 processed_column = self.raw_df[field_name].apply(find_mismatch_and_map)
+    #             # 应用我们刚刚定义的这个更强大的函数
+    #             processed_column = self.raw_df[field_name].apply(find_mismatch_and_map)
 
-#             # 规则3: 处理特殊的十进制字段
-#             elif field_name in self.decimal_fields:
-#                 processed_column = self.raw_df[field_name].fillna(0).astype(int)
+    #         # 规则3: 处理特殊的十进制字段
+    #         elif field_name in self.decimal_fields:
+    #             processed_column = self.raw_df[field_name].fillna(0).astype(int)
 
-#             # 规则4 (最低优先级): 处理其他所有需要从十六进制转整数的字段
-#             elif self.config[field_name]['type'] in ['categorical', 'numerical']:
-#                 def robust_hex_to_int(x):
-#                     if not pd.notna(x):
-#                         return 0
-#                     str_x = str(x).split('.')[0]
-#                     try:
-#                         return int(str_x, 16)
-#                     except ValueError:
-#                         return 0
-#                 processed_column = self.raw_df[field_name].apply(robust_hex_to_int)
+    #         # 规则4 (最低优先级): 处理其他所有需要从十六进制转整数的字段
+    #         elif self.config[field_name]['type'] in ['categorical', 'numerical']:
+    #             def robust_hex_to_int(x):
+    #                 if not pd.notna(x):
+    #                     return 0
+    #                 str_x = str(x).split('.')[0]
+    #                 try:
+    #                     return int(str_x, 16)
+    #                 except ValueError:
+    #                     return 0
+    #             processed_column = self.raw_df[field_name].apply(robust_hex_to_int)
                 
-#             else:
-#                 continue
+    #         else:
+    #             continue
             
-#             processed_data_dict[field_name] = processed_column
+    #         processed_data_dict[field_name] = processed_column
             
-#         return processed_data_dict
+    #     return processed_data_dict
 
-#     def __len__(self):
-#         # 数据集的长度就是DataFrame的行数
-#         # 我们以第一列的长度为准
-#         return len(self.labels)
+    # def __len__(self):
+    #     # 数据集的长度就是DataFrame的行数
+    #     # 我们以第一列的长度为准
+    #     return len(self.labels)
 
-#     def __getitem__(self, idx):
-#         # # 获取索引为idx的一条数据
-#         # # 返回一个字典，键为字段名，值为对应的数值
-#         features = {field: self.processed_data[field].iloc[idx] for field in self.fields}
-#         label = self.labels[idx]
-#         return features, label 
+    # def __getitem__(self, idx):
+    #     # # 获取索引为idx的一条数据
+    #     # # 返回一个字典，键为字段名，值为对应的数值
+    #     features = {field: self.processed_data[field].iloc[idx] for field in self.fields}
+    #     label = self.labels[idx]
+    #     return features, label 
     

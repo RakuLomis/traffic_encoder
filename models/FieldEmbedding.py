@@ -276,7 +276,9 @@ class FieldEmbedding(nn.Module):
                 
                 # --- （这部分逻辑与之前完全相同）---
                 if isinstance(layer, _AddressEmbedding) and isinstance(input_tensor, list):
-                    input_tensor = torch.stack(input_tensor, dim=1)
+                    # input_tensor = torch.stack(input_tensor, dim=1)
+                    target_device = next(layer.parameters()).device
+                    input_tensor = torch.tensor(input_tensor, dtype=torch.long, device=target_device)
                 
                 # if isinstance(layer, nn.Linear):
                 #     input_tensor = input_tensor.view(-input_tensor.size(0), 1).float()
@@ -292,3 +294,38 @@ class FieldEmbedding(nn.Module):
                 embedded_vectors_dict[field_name] = layer(input_tensor)
 
         return embedded_vectors_dict
+        # """
+        # 前向传播。
+        # 这个版本修正了对地址字段的处理，使其与PyG DataLoader兼容。
+        # """
+        # embedded_vectors_dict = {}
+        
+        # # 按照预计算的顺序进行迭代，以保证一致性
+        # for field_name in self.field_processing_order:
+        #     if field_name not in batch_data_dict:
+        #         continue
+                
+        #     layer_key = self.field_to_key_map.get(field_name)
+        #     if not layer_key or layer_key not in self.embedding_layers:
+        #         continue
+            
+        #     input_tensor = batch_data_dict[field_name]
+        #     layer = self.embedding_layers[layer_key]
+            
+        #     # ==================== 核心修改点 开始 ====================
+            
+        #     # 检查输入是否为地址类型且是一个列表
+        #     if isinstance(layer, _AddressEmbedding) and isinstance(input_tensor, list):
+        #         # 使用 torch.tensor 将 list of lists 直接转换为一个 2D Tensor
+        #         input_tensor = torch.tensor(input_tensor, dtype=torch.long, device=self.device)
+            
+        #     # ==================== 核心修改点 结束 ====================
+            
+        #     # 特别处理数值型输入
+        #     if isinstance(layer, nn.Linear):
+        #         input_tensor = input_tensor.view(-1, 1).float()
+
+        #     embedded_vector = layer(input_tensor)
+        #     embedded_vectors_dict[field_name] = embedded_vector
+            
+        # return embedded_vectors_dict
