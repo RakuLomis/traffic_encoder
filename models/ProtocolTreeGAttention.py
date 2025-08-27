@@ -6,7 +6,7 @@ from models.FieldEmbedding import FieldEmbedding
 
 class ProtocolTreeGAttention(nn.Module):
     def __init__(self, config_path, vocab_path, num_classes, node_field_list,
-                 hidden_dim=128, num_heads=4, dropout_rate=0.5):
+                 hidden_dim=128, num_heads=4, dropout_rate=0.3):
         super().__init__()
         
         # --- 1. 模型内部创建并持有所有 nn.Module ---

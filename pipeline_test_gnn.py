@@ -85,8 +85,8 @@ def evaluate(model, dataloader, loss_fn, device):
 # =====================================================================
 if __name__ == '__main__':
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 10
-    BATCH_SIZE = 512
+    NUM_EPOCHS = 100
+    BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
     NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
