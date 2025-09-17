@@ -39,7 +39,6 @@ def gnn_collate_fn(batch: List[Data]):
     for field in field_names:
         values = [sample[field] for sample in feature_dicts]
         # 这个torch.tensor调用现在可以正确处理整数和整数列表
-        # 这个torch.tensor调用现在可以正确处理整数和整数列表
         try:
              batched_features[field] = torch.tensor(values, dtype=torch.long)
         except ValueError: # 处理变长列表的情况 (虽然不应该发生)
@@ -103,8 +102,7 @@ class GNNTrafficDataset(Dataset):
         
         if not edge_list:
             # If there are no edges, return an empty 2x0 tensor
-            return torch.empty((2, 0), dtype=torch.long)
-            
+            return torch.empty((2, 0), dtype=torch.long) # 这样设计可能使图变成不连通的若干小图            
         # .t() is transpose, .contiguous() ensures the memory layout is correct
         return torch.tensor(edge_list, dtype=torch.long).t().contiguous()
 

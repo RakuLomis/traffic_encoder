@@ -133,7 +133,8 @@ if __name__ == '__main__':
     # 第一次分割：从总数据中分出训练集和临时集（包含验证+测试）
     train_df, temp_df = train_test_split(
         block_0_df,
-        test_size=0.3,       # 30%的数据用于验证和测试
+        # test_size=0.3,       # 30%的数据用于验证和测试
+        test_size=0.2, 
         random_state=42,     # 保证每次分割结果都一样
         stratify=block_0_df['label_id'] # 保证训练集和测试集中各标签比例相似
     )
