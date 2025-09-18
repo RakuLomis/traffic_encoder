@@ -18,7 +18,8 @@ import os
 from torch.profiler import profile, record_function, ProfilerActivity
 from utils.data_loader import custom_collate_fn
 from models.MoEPTA import MoEPTA
-from utils.data_loader_gnn import GNNTrafficDataset, gnn_collate_fn
+# from utils.data_loader_gnn import GNNTrafficDataset, gnn_collate_fn
+from utils.data_loader_ptga import GNNTrafficDataset
 from torch_geometric.loader import DataLoader
 from models.ProtocolTreeGAttention import ProtocolTreeGAttention
 
@@ -43,6 +44,8 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
         # d) 计算损失
         loss = loss_fn(outputs, labels)
         
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) #防止特殊batch出现梯度爆炸
+
         # e) 反向传播 (无变化)
         optimizer.zero_grad()
         loss.backward()
@@ -161,8 +164,8 @@ if __name__ == '__main__':
     # del block_0_df, temp_df 
     del block_0_df
     
-    ptree_train = protocol_tree(train_df.columns.tolist())
-    ptree_val = protocol_tree(val_df.columns.tolist())
+    # ptree_train = protocol_tree(train_df.columns.tolist())
+    # ptree_val = protocol_tree(val_df.columns.tolist())
     num_classes = len(label_to_int)
 
     train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path)
@@ -201,7 +204,7 @@ if __name__ == '__main__':
     # field_embedder.to(device)
 
     # pta_model = ProtocolTreeGAttention(input_dim=GNN_INPUT_DIM, hidden_dim=GNN_HIDDEN_DIM, num_classes=num_classes).to(device)
-    pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, node_field_list=node_fields_for_model,num_classes=num_classes).to(device)
+    pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, node_fields_list=node_fields_for_model,num_classes=num_classes).to(device)
 
     loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)

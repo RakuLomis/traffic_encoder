@@ -5,6 +5,7 @@ from typing import Optional
 from tqdm import tqdm 
 from typing import Literal 
 import yaml
+from typing import Dict, List
 
 def get_file_path(dir_path: str, prefix: Optional[str] = None, postfix: Optional[str] = None): 
     """
@@ -433,6 +434,10 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], 
             dict_protocol_tree, list_layers, init = find_fields_by_prefix_physically(list_layers, dict_protocol_tree, list_fields, init) 
             len_prefix += 1
     return dict_protocol_tree 
+
+def add_root_layer(ptree: Dict[str, List[str]]): 
+    protocols = ['eth', 'ip', 'tcp', 'tls'] 
+    ptree['root'] = [p for p in protocols if p in ptree] 
 
 def find_fields_in_pta(protocol, dict_protocol_tree, physical_nodes): 
     """
