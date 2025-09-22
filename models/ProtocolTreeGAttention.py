@@ -7,11 +7,13 @@ from collections import defaultdict
 from typing import Dict, List
 
 class ProtocolTreeGAttention(nn.Module):
-    def __init__(self, config_path: str, vocab_path: str, num_classes: int, node_fields_list: List[str],
-                 hidden_dim: int = 128, num_heads: int = 4, dropout_rate: float = 0.3):
+    def __init__(self, #config_path: str, vocab_path: str, 
+                num_classes: int, node_fields_list: List[str], field_embedder: FieldEmbedding, 
+                hidden_dim: int = 128, num_heads: int = 4, dropout_rate: float = 0.3):
         super().__init__()
         
-        self.field_embedder = FieldEmbedding(config_path, vocab_path)
+        # self.field_embedder = FieldEmbedding(config_path, vocab_path)
+        self.field_embedder = field_embedder
         self.hidden_dim = hidden_dim
         self.dropout_rate = dropout_rate
         self.node_fields = node_fields_list # 接收从Dataset传来的、当前Block的节点列表
@@ -60,7 +62,8 @@ class ProtocolTreeGAttention(nn.Module):
         
         return aligned_vectors
 
-    def forward(self, data) -> torch.Tensor:
+    # def forward(self, data) -> torch.Tensor:
+    def forward_features(self, data) -> torch.Tensor:
         # data 是一个由PyG DataLoader准备好的批处理图对象
         
         # --- 步骤一：初始嵌入 ---
@@ -101,8 +104,13 @@ class ProtocolTreeGAttention(nn.Module):
         
         # --- 步骤五：全局池化和分类 ---
         graph_embedding = global_mean_pool(x, batch_idx)
-        logits = self.classifier(graph_embedding)
+        return graph_embedding
+        # logits = self.classifier(graph_embedding)
         
+        # return logits
+    def forward(self, data) -> torch.Tensor: 
+        graph_embedding = self.forward_features(data) 
+        logits = self.classifier(graph_embedding)
         return logits
 
 # class ProtocolTreeGAttention(nn.Module):

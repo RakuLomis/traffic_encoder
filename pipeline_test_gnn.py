@@ -22,68 +22,145 @@ from models.MoEPTA import MoEPTA
 from utils.data_loader_ptga import GNNTrafficDataset
 from torch_geometric.loader import DataLoader
 from models.ProtocolTreeGAttention import ProtocolTreeGAttention
+from utils.metrics import calculate_metrics
 
 
-def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
-    model.train() # 将模型设置为训练模式
+# def train_one_epoch(model, dataloader, loss_fn, optimizer, device):
+#     model.train() # 将模型设置为训练模式
+#     running_loss = 0.0
+#     correct_predictions = 0
+#     total_samples = 0
+
+#     # 现在的 dataloader 输出的是一个批处理好的图对象 (batched_graph)
+#     for batched_graph in tqdm(dataloader, desc="Training"):
+#         # a) 将整个图对象一次性移动到GPU
+#         batched_graph.to(device)
+        
+#         # b) 从图对象中获取标签
+#         labels = batched_graph.y
+
+#         # c) 前向传播
+#         outputs = model(batched_graph)
+        
+#         # d) 计算损失
+#         loss = loss_fn(outputs, labels)
+        
+#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) #防止特殊batch出现梯度爆炸
+
+#         # e) 反向传播 (无变化)
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
+
+#         # f) 统计损失和准确率
+#         running_loss += loss.item() * batched_graph.num_graphs
+#         _, predicted = torch.max(outputs.data, 1)
+#         total_samples += batched_graph.num_graphs
+#         correct_predictions += (predicted == labels).sum().item()
+
+
+
+#     epoch_loss = running_loss / total_samples if total_samples > 0 else 0
+#     epoch_acc = correct_predictions / total_samples if total_samples > 0 else 0
+#     return epoch_loss, epoch_acc
+
+def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes): # <-- 新增 num_classes 参数
+    model.train()
     running_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
+    
+    # --- 核心修改点 1：初始化混淆矩阵 ---
+    # 我们在CPU上创建，以避免频繁的GPU-CPU数据传输
+    confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
 
-    # 现在的 dataloader 输出的是一个批处理好的图对象 (batched_graph)
     for batched_graph in tqdm(dataloader, desc="Training"):
-        # a) 将整个图对象一次性移动到GPU
         batched_graph.to(device)
-        
-        # b) 从图对象中获取标签
         labels = batched_graph.y
-
-        # c) 前向传播
         outputs = model(batched_graph)
-        
-        # d) 计算损失
         loss = loss_fn(outputs, labels)
         
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) #防止特殊batch出现梯度爆炸
-
-        # e) 反向传播 (无变化)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # f) 统计损失和准确率
         running_loss += loss.item() * batched_graph.num_graphs
         _, predicted = torch.max(outputs.data, 1)
-        total_samples += batched_graph.num_graphs
-        correct_predictions += (predicted == labels).sum().item()
+        
+        # --- 核心修改点 2：累积结果到混淆矩阵 ---
+        # 将张量移回CPU进行累积
+        labels_cpu = labels.cpu()
+        predicted_cpu = predicted.cpu()
+        for t, p in zip(labels_cpu.view(-1), predicted_cpu.view(-1)):
+            confusion_matrix[t.long(), p.long()] += 1
 
-    epoch_loss = running_loss / total_samples if total_samples > 0 else 0
-    epoch_acc = correct_predictions / total_samples if total_samples > 0 else 0
-    return epoch_loss, epoch_acc
+    # --- 核心修改点 3：在epoch结束后，进行一次性的性能计算 ---
+    total_samples = confusion_matrix.sum().item()
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0.0
+    
+    # 调用我们独立的指标计算函数
+    epoch_metrics = calculate_metrics(confusion_matrix)
+    epoch_metrics['loss'] = epoch_loss # 将损失也加入字典
+    
+    return epoch_metrics, confusion_matrix 
 
-def evaluate(model, dataloader, loss_fn, device):
+# def evaluate(model, dataloader, loss_fn, device):
+#     model.eval() # 将模型设置为评估模式
+#     running_loss = 0.0
+#     correct_predictions = 0
+#     total_samples = 0
+
+#     with torch.no_grad(): # 在评估时，不计算梯度
+#         for batched_graph in tqdm(dataloader, desc="Evaluating"):
+#             # 逻辑与训练函数完全相同，只是没有反向传播
+#             batched_graph.to(device)
+#             labels = batched_graph.y
+            
+#             outputs = model(batched_graph)
+#             loss = loss_fn(outputs, labels)
+
+#             running_loss += loss.item() * batched_graph.num_graphs
+#             _, predicted = torch.max(outputs.data, 1)
+#             total_samples += batched_graph.num_graphs
+#             correct_predictions += (predicted == labels).sum().item()
+
+#     epoch_loss = running_loss / total_samples if total_samples > 0 else 0
+#     epoch_acc = correct_predictions / total_samples if total_samples > 0 else 0
+#     return epoch_loss, epoch_acc
+
+def evaluate(model, dataloader, loss_fn, device, num_classes):
     model.eval() # 将模型设置为评估模式
     running_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
+    
+    # 初始化混淆矩阵
+    confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
 
-    with torch.no_grad(): # 在评估时，不计算梯度
+    # 在评估时，我们完全不需要计算梯度
+    with torch.no_grad(): 
+        # 将tqdm的描述符修正为"Evaluating"
         for batched_graph in tqdm(dataloader, desc="Evaluating"):
-            # 逻辑与训练函数完全相同，只是没有反向传播
             batched_graph.to(device)
             labels = batched_graph.y
-            
             outputs = model(batched_graph)
             loss = loss_fn(outputs, labels)
 
             running_loss += loss.item() * batched_graph.num_graphs
             _, predicted = torch.max(outputs.data, 1)
-            total_samples += batched_graph.num_graphs
-            correct_predictions += (predicted == labels).sum().item()
 
-    epoch_loss = running_loss / total_samples if total_samples > 0 else 0
-    epoch_acc = correct_predictions / total_samples if total_samples > 0 else 0
-    return epoch_loss, epoch_acc
+            # 累积结果到混淆矩阵
+            labels_cpu = labels.cpu()
+            predicted_cpu = predicted.cpu()
+            for t, p in zip(labels_cpu.view(-1), predicted_cpu.view(-1)):
+                confusion_matrix[t.long(), p.long()] += 1
+                
+    # 在epoch结束后，进行一次性的性能计算
+    total_samples = confusion_matrix.sum().item()
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0.0
+    
+    # 调用我们独立的指标计算函数
+    epoch_metrics = calculate_metrics(confusion_matrix)
+    epoch_metrics['loss'] = epoch_loss
+    
+    return epoch_metrics, confusion_matrix
 
 # =====================================================================
 if __name__ == '__main__':
@@ -201,36 +278,83 @@ if __name__ == '__main__':
 
     field_embedder = FieldEmbedding(config_path, vocab_path)
 
-    # field_embedder.to(device)
+    field_embedder.to(device)
 
     # pta_model = ProtocolTreeGAttention(input_dim=GNN_INPUT_DIM, hidden_dim=GNN_HIDDEN_DIM, num_classes=num_classes).to(device)
-    pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, node_fields_list=node_fields_for_model,num_classes=num_classes).to(device)
+    # pta_model = ProtocolTreeGAttention(config_path=config_path, vocab_path=vocab_path, node_fields_list=node_fields_for_model,num_classes=num_classes).to(device)
+    pta_model = ProtocolTreeGAttention(field_embedder=field_embedder, node_fields_list=node_fields_for_model,num_classes=num_classes).to(device)
 
     loss_fn = nn.CrossEntropyLoss() # 适用于多分类的标准损失函数
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
 
     # --- 4. 训练循环 ---
+    training_results = []
+    best_f1 = 0.0
     for epoch in range(NUM_EPOCHS):
         print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
         
-        train_loss, train_acc = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device)
-        val_loss, val_acc = evaluate(pta_model, val_loader, loss_fn, device)
+        train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
+        val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
         
         print(f"Epoch {epoch+1} Summary:")
-        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-        print(f"  Val Loss: {val_loss:.4f}   | Val Acc: {val_acc:.4f}")
+        print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (Weighted): {train_metrics['f1_weighted']:.4f}")
+        print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f} | Val F1 (Weighted): {val_metrics['f1_weighted']:.4f}")
         
+        training_results.append({
+            'epoch': epoch + 1,
+            'train_loss': train_metrics['loss'],
+            'train_acc': train_metrics['accuracy'], 
+            'train_recall_macro': train_metrics['recall_macro'], 
+            'train_precision_macro': train_metrics['precision_macro'], 
+            'train_f1_macro': train_metrics['f1_macro'], 
+            'train_recall_weighted': train_metrics['recall_weighted'], 
+            'train_precision_weighted': train_metrics['precision_weighted'], 
+            'train_f1_weighted': train_metrics['f1_weighted'], 
+            'val_loss': val_metrics['loss'],
+            'val_acc': val_metrics['accuracy'], 
+            'val_recall_macro': val_metrics['recall_macro'], 
+            'val_precision_macro': val_metrics['precision_macro'], 
+            'val_f1_macro': val_metrics['f1_macro'], 
+            'val_recall_weighted': val_metrics['recall_weighted'], 
+            'val_precision_weighted': val_metrics['precision_weighted'], 
+            'val_f1_weighted': val_metrics['f1_weighted'], 
+        })
+
         # 这里可以添加保存最佳模型的逻辑
-        # if val_acc > best_val_acc:
-        #     torch.save(pta_model.state_dict(), 'best_model.pth')
-        #     best_val_acc = val_acc
+        if val_metrics['f1_weighted'] > best_f1:
+            torch.save(pta_model.state_dict(), 'best_model.pth')
+            best_f1 = val_metrics['f1_weighted']
     print("\nTraining complete!")
     # --- 5. 最终测试 ---
     test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
     test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
-    test_loss, test_acc = evaluate(pta_model, test_loader, loss_fn, device)
+    test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
     print(f"\nFinal Test Performance:")
-    print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+    print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Weighted): {test_metrics['f1_weighted']:.4f}")
+
+    training_results.append({
+        'epoch': 'final_test',
+        'train_loss': None,
+        'train_acc': None, 
+        'train_recall_macro': None, 
+        'train_precision_macro': None, 
+        'train_f1_macro': None, 
+        'train_recall_weighted': None, 
+        'train_precision_weighted': None, 
+        'train_f1_weighted': None, 
+        'val_loss': test_metrics['loss'],
+        'val_acc': test_metrics['accuracy'], 
+        'val_recall_macro': test_metrics['recall_macro'], 
+        'val_precision_macro': test_metrics['precision_macro'], 
+        'val_f1_macro': test_metrics['f1_macro'], 
+        'val_recall_weighted': test_metrics['recall_weighted'], 
+        'val_precision_weighted': test_metrics['precision_weighted'], 
+        'val_f1_weighted': test_metrics['f1_weighted']
+    })
+
+    results_df = pd.DataFrame(training_results)
+    # results_df.to_csv('moe_pta_training_log.csv', index=False)
+    # print("\nTraining log saved to 'moe_pta_training_log.csv'")
 
     # # 获取一个迭代器
     # train_iterator = iter(train_loader)
