@@ -195,9 +195,11 @@ if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
     
+    field_embedder = FieldEmbedding(config_path, vocab_path)
+    field_embedder.to(device)
+
     pta_model = ProtocolTreeGAttention(
-        config_path=config_path,
-        vocab_path=vocab_path,
+        field_embedder=field_embedder,
         num_classes=num_classes,
         node_fields_list=node_fields_for_model,
         hidden_dim=GNN_HIDDEN_DIM
@@ -247,13 +249,34 @@ if __name__ == '__main__':
             print("The best epoch parameters has been saved. ")
             best_f1 = val_metrics['f1_weighted']
     print("\nTraining complete!")
-    
+
     # --- 5. 最终测试 ---
     test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
     test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
     test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
     print(f"\nFinal Test Performance:")
     print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Weighted): {test_metrics['f1_weighted']:.4f}")
+    
+    # --- 7. 保存混淆矩阵到CSV ---
+    print("\nSaving confusion matrix...")
+    
+    # a) 创建从整数索引回字符串标签的映射
+    #    我们需要之前创建的 label_to_int 字典
+    int_to_label = {i: label for label, i in label_to_int.items()}
+    class_names = [int_to_label[i] for i in range(num_classes)]
+
+    # b) 将PyTorch Tensor转换为带标签的Pandas DataFrame
+    confusion_matrix_df = pd.DataFrame(
+        test_confusion_matrix.cpu().numpy(), # 必须先移回CPU
+        index=class_names,
+        columns=class_names
+    )
+    
+    # c) 保存为CSV文件
+    cm_output_path = 'final_test_confusion_matrix.csv'
+    confusion_matrix_df.to_csv(cm_output_path)
+    
+    print(f"Confusion matrix saved to: {cm_output_path}")
 
     training_results.append({
         'epoch': 'final_test',
@@ -276,3 +299,5 @@ if __name__ == '__main__':
     })
 
     results_df = pd.DataFrame(training_results)
+    results_df.to_csv('moe_pta_training_log.csv', index=False)
+    print("\nTraining log saved to 'moe_pta_training_log.csv'")
