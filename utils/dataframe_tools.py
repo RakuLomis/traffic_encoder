@@ -5,7 +5,9 @@ from typing import Optional
 from tqdm import tqdm 
 from typing import Literal 
 import yaml
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple, Any
+from collections import defaultdict
+from sklearn.model_selection import train_test_split
 
 def get_file_path(dir_path: str, prefix: Optional[str] = None, postfix: Optional[str] = None): 
     """
@@ -730,3 +732,299 @@ def truncate_to_block_by_schema(source_csv_path: str, output_dir_path: str):
         block_cleaned.to_csv(output_path, index=False)
         block_counter += 1
     print(f"Truncation succeeded! ")
+
+
+def generate_summary_tables(
+    directory_path: str, 
+    label_output_path: str, 
+    feature_output_path: str
+):
+    """
+    分析Block目录，并生成两张总结表：
+    1. 标签分布矩阵 (label vs. block)
+    2. 特征存在矩阵 (feature vs. block)
+    """
+    print(f"开始分析目录中的所有Blocks: {directory_path}")
+
+    # 检查目录是否存在
+    if not os.path.isdir(directory_path):
+        print(f"错误: 目录不存在 -> {directory_path}")
+        return
+
+    all_files = [f for f in os.listdir(directory_path) if f.lower().endswith('.csv')]
+    if not all_files:
+        print("错误: 在指定目录中未找到任何CSV文件。")
+        return
+
+    # --- 步骤一：数据收集 ---
+    # 我们需要一次遍历，收集所有必要信息
+    print("正在收集中所有Block的标签和字段信息...")
+    
+    label_distributions: Dict[str, pd.Series] = {}
+    block_schemas: Dict[str, Set[str]] = {}
+    all_unique_labels: Set[str] = set()
+    all_unique_fields: Set[str] = set()
+    
+    for filename in tqdm(all_files, desc="Collecting Data"):
+        block_name = os.path.splitext(filename)[0]
+        block_path = os.path.join(directory_path, filename)
+        
+        try:
+            # 只读取必要的列以提高速度
+            # 我们需要所有列来确定schema，但只需要'label'列来统计
+            df = pd.read_csv(block_path, dtype=str, usecols=lambda col: col != 'index')
+            
+            # a) 收集标签分布
+            if 'label' in df.columns:
+                counts = df['label'].value_counts()
+                label_distributions[block_name] = counts
+                all_unique_labels.update(counts.index)
+            
+            # b) 收集字段schema
+            meta_columns = {'label', 'label_id'} # 'index'已经被usecols排除了
+            feature_columns = set(df.columns) - meta_columns
+            block_schemas[block_name] = feature_columns
+            all_unique_fields.update(feature_columns)
+            
+        except Exception as e:
+            print(f"\n处理文件 {filename} 时发生错误: {e}")
+
+    if not label_distributions or not block_schemas:
+        print("未能成功收集到任何有效数据。")
+        return
+
+    print("数据收集完成。正在生成表格...")
+
+    # --- 步骤二：构建并保存第一张表 (标签分布矩阵) ---
+    try:
+        print(f"正在构建标签分布矩阵 ({len(all_unique_labels)} L x {len(label_distributions)} B)...")
+        # pd.DataFrame能够非常智能地处理Series字典，自动对齐索引
+        label_df = pd.DataFrame(label_distributions)
+        
+        # 将缺失值（NaN）替换为0，表示该Block中没有该label的样本
+        label_df = label_df.fillna(0).astype(int)
+        
+        # 排序以获得更清晰的视图
+        label_df = label_df.sort_index() # 按标签名字母排序
+        label_df = label_df.reindex(sorted(label_df.columns), axis=1) # 按Block名排序
+        
+        label_df.to_csv(label_output_path)
+        print(f" -> 标签分布矩阵已成功保存到: {label_output_path}")
+        
+    except Exception as e:
+        print(f"构建或保存标签分布矩阵时出错: {e}")
+        
+    # --- 步骤三：构建并保存第二张表 (特征存在矩阵) ---
+    try:
+        print(f"正在构建特征存在矩阵 ({len(all_unique_fields)} F x {len(block_schemas)} B)...")
+        
+        # 转换为有序列表
+        sorted_fields = sorted(list(all_unique_fields))
+        sorted_blocks = sorted(list(block_schemas.keys()))
+        
+        # 创建一个全零的DataFrame作为基础
+        feature_df = pd.DataFrame(0, index=sorted_fields, columns=sorted_blocks, dtype=int)
+        
+        # 遍历我们收集的schema信息，将存在特征的位置填充为1
+        for block_name, schema in tqdm(block_schemas.items(), desc="Populating Feature Matrix"):
+            # 使用.loc进行高效的批量赋值
+            feature_df.loc[list(schema), block_name] = 1
+            
+        feature_df.to_csv(feature_output_path)
+        print(f" -> 特征存在矩阵已成功保存到: {feature_output_path}")
+
+    except Exception as e:
+        print(f"构建或保存特征存在矩阵时出错: {e}")
+
+
+def generate_protocol_tree_and_nodes(columns: List[str]) -> (Dict[str, List[str]], Set[str]): # type: ignore
+    """
+    从列名中，自动发现所有真实节点和隐含的抽象节点。
+    """
+    tree = defaultdict(set)
+    all_nodes = set(columns)
+    for col in columns:
+        parts = col.split('.')
+        for i in range(1, len(parts)):
+            parent = ".".join(parts[:i])
+            child = ".".join(parts[:i+1])
+            tree[parent].add(child)
+            all_nodes.add(parent)
+    tree_final = {parent: sorted(list(children)) for parent, children in tree.items()}
+    return tree_final, all_nodes
+
+def global_stratified_split(
+    source_csv_path: str, 
+    output_dir: str, 
+    test_size: float = 0.1, 
+    validation_size: float = 0.1
+):
+    """
+    对一个大的CSV文件进行全局的、分层的 train-validation-test 分割。
+
+    :param source_csv_path: 包含所有原始数据的总CSV文件路径。
+    :param output_dir: 保存分割后的三个CSV文件的目录路径。
+    :param test_size: 测试集在总数据中所占的比例。
+    :param validation_size: 验证集在总数据中所占的比例。
+    """
+    print("="*50)
+    print("开始执行全局数据集分割...")
+    print("="*50)
+    
+    # --- 1. 创建输出目录 ---
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"输出目录已准备好: {output_dir}")
+
+    # --- 2. 加载总数据集 ---
+    print(f"正在从 {source_csv_path} 加载总数据...")
+    try:
+        # 始终使用 dtype=str 来确保数据完整性
+        df = pd.read_csv(source_csv_path, dtype=str)
+    except FileNotFoundError:
+        print(f"错误: 源文件未找到 -> {source_csv_path}")
+        return
+
+    # 检查'label'列是否存在，这是分层抽样的依据
+    if 'label' not in df.columns:
+        print("错误: 数据集中缺少 'label' 列，无法进行分层抽样。")
+        return
+        
+    print(f"数据加载完成，共 {len(df)} 条记录。")
+
+    # --- 3. 执行两步分割以得到三份数据集 ---
+    
+    # a) 第一步：从总数据中分割出【测试集】
+    print(f"\n[步骤 1/2] 分割出 {test_size:.0%} 的测试集...")
+    remaining_df, test_df = train_test_split(
+        df,
+        test_size=test_size,
+        random_state=42,  # 确保每次分割结果都一样
+        stratify=df['label'] # 【关键】进行分层抽样
+    )
+    
+    # b) 第二步：从剩余数据中分割出【验证集】
+    #    注意：这里的test_size需要重新计算，以确保验证集占【原始总数据】的比例
+    val_split_ratio = validation_size / (1.0 - test_size)
+    print(f"[步骤 2/2] 从剩余数据中分割出 {val_split_ratio:.1%} 的验证集 (相当于总数据的 {validation_size:.0%})...")
+    train_df, val_df = train_test_split(
+        remaining_df,
+        test_size=val_split_ratio,
+        random_state=42,
+        stratify=remaining_df['label'] # 【关键】再次进行分层抽样
+    )
+    
+    # --- 4. 打印总结并保存文件 ---
+    print("\n分割完成！各数据集规模如下:")
+    print(f" - 训练集 (Train Set): {len(train_df)} 条 (~{(1-test_size-validation_size):.0%})")
+    print(f" - 验证集 (Validation Set): {len(val_df)} 条 (~{validation_size:.0%})")
+    print(f" - 测试集 (Test Set): {len(test_df)} 条 (~{test_size:.0%})")
+    
+    train_path = os.path.join(output_dir, 'train_set.csv')
+    val_path = os.path.join(output_dir, 'validation_set.csv')
+    test_path = os.path.join(output_dir, 'test_set.csv')
+    
+    print(f"\n正在保存文件...")
+    train_df.to_csv(train_path, index=False)
+    val_df.to_csv(val_path, index=False)
+    test_df.to_csv(test_path, index=False)
+    print(f" - 训练集已保存到: {train_path}")
+    print(f" - 验证集已保存到: {val_path}")
+    print(f" - 测试集已保存到: {test_path}")
+    print("\n全局数据集分割步骤已成功完成！")
+
+def augment_main_block(
+    block_dir: str, 
+    main_block_name: str, 
+    output_path: str, 
+    min_samples_threshold: int = 3000
+):
+    """
+    实现“靶向数据补充”策略。
+    此版本不考虑结构相似性，旨在最大化数据覆盖度。
+
+    :param block_dir: 包含所有【已合并】的Block CSV文件的目录。
+    :param main_block_name: 作为基础的Main Block的名称 (例如 '24')。
+    :param output_path: 保存增强后的数据集的CSV文件路径。
+    :param min_samples_threshold: 定义稀有类别的样本数阈值。
+    """
+    print("="*50)
+    print("开始执行“最大化覆盖”的数据补充策略...")
+    print("="*50)
+    main_block_path = os.path.join(block_dir, f"{main_block_name}.csv")
+    
+    # 1. 加载主Block，并确定其目标Schema
+    print(f"\n[步骤 1/4] 加载 Main Block '{main_block_name}'...")
+    if not os.path.exists(main_block_path):
+        print(f"错误: Main Block文件未找到 -> {main_block_path}")
+        return
+        
+    main_df = pd.read_csv(main_block_path, dtype=str)
+    # 存储主Block的列顺序，以备后用
+    main_df_columns = main_df.columns.tolist()
+    
+    # 2. 扫描所有Block，建立一个关于类别分布的“情报数据库”
+    print("\n[步骤 2/4] 扫描所有Block，建立类别分布情报库...")
+    block_info = {}
+    all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+    for filename in tqdm(all_files, desc="Scanning Blocks"):
+        block_name = os.path.splitext(filename)[0]
+        block_path = os.path.join(block_dir, filename)
+        try:
+            df_label = pd.read_csv(block_path, dtype=str, usecols=['label'])
+            if not df_label.empty:
+                block_info[block_name] = df_label['label'].value_counts().to_dict()
+        except Exception as e:
+            print(f"\n扫描 {filename} 时出错: {e}")
+
+    # 3. 找出Main Block中需要补充的“靶向类别”
+    main_label_counts = main_df['label'].value_counts()
+    target_classes = main_label_counts[main_label_counts < min_samples_threshold].index.tolist()
+    
+    all_labels_in_db = set(l for stats in block_info.values() for l in stats)
+    missing_classes = list(all_labels_in_db - set(main_label_counts.index))
+    target_classes.extend(missing_classes)
+    
+    print(f"\n[步骤 3/4] 在 Main Block 中找到 {len(target_classes)} 个需要补充的类别:")
+    print(sorted(target_classes))
+
+    # 4. 遍历靶向类别，寻找【所有】捐献者并合并数据
+    print(f"\n[步骤 4/4] 开始从所有其他Block中寻找并合并补充数据...")
+    dfs_to_concat = [main_df]
+    
+    for target_class in tqdm(target_classes, desc="Augmenting Classes"):
+        # 遍历所有其他Block，寻找所有合格的捐献者
+        for donor_name, label_counts in block_info.items():
+            if donor_name == main_block_name or target_class not in label_counts:
+                continue
+
+            # --- 核心修改点：移除了相似度检查 ---
+            # 只要这个Block有我们需要的类别，就直接征用
+            
+            donor_path = os.path.join(block_dir, f"{donor_name}.csv")
+            donor_df = pd.read_csv(donor_path, dtype=str)
+            supplement_df = donor_df[donor_df['label'] == target_class]
+            
+            # 特征空间对齐
+            aligned_df = pd.DataFrame()
+            for col in main_df_columns:
+                if col in supplement_df.columns:
+                    aligned_df[col] = supplement_df[col]
+                else:
+                    # 填充缺失的特征列
+                    aligned_df[col] = '0'
+            
+            dfs_to_concat.append(aligned_df)
+
+    # 5. 将所有数据合并成最终的增强版DataFrame
+    print("\n正在合并所有数据...")
+    if len(dfs_to_concat) > 1:
+        augmented_df = pd.concat(dfs_to_concat, ignore_index=True)
+    else:
+        augmented_df = main_df
+    
+    # 6. 保存结果
+    augmented_df.to_csv(output_path, index=False)
+    print(f"\n数据补充成功！")
+    print(f" - 原始 Main Block 样本数: {len(main_df)}")
+    print(f" - 补充后总样本数: {len(augmented_df)}")
+    print(f" - 最终数据集已保存到: {output_path}")

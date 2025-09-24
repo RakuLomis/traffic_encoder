@@ -1,0 +1,406 @@
+# =================================================================================
+# F2V (Field to Vector) Embedding Configuration
+# ---------------------------------------------------------------------------------
+# This file is a blueprint for the FieldEmbedding module. It defines the
+# embedding strategy for each field and subfield based on their type.
+#
+# Embedding Types Explained:
+#
+#   type: categorical
+#     - For fields with discrete, unordered values.
+#
+#   type: numerical
+#     - For fields with continuous or high-cardinality sequential values.
+#
+#   type: address_mac / address_ipv4
+#     - For MAC and IPv4 address fields, processed by a specialized embedder.
+#
+# Ignored Fields:
+# - frame_num, label: Metadata, not features for the model.
+# - tcp.payload, tcp.segment_data, etc.: Raw data payloads, not treated as features.
+# - tcp.flags.str: String representation, redundant with flag subfields.
+# =================================================================================
+
+field_embedding_config:
+
+  # ==================== Layer 2: Ethernet ====================
+  eth.dst:
+    type: address_mac
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+  eth.dst.lg:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 2
+  eth.dst.ig:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 2
+  eth.src:
+    type: address_mac
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+  eth.src.lg:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 2
+  eth.src.ig:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  eth.type:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 2
+
+  # ==================== Layer 3: IP ====================
+  ip.version:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 2
+  ip.hdr_len:
+    type: numerical
+    embedding_dim: 2
+  ip.dsfield:
+    type: categorical
+    vocab_size: 6
+    embedding_dim: 8
+  ip.dsfield.dscp:
+    type: categorical
+    vocab_size: 6
+    embedding_dim: 4
+  ip.dsfield.ecn:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 2
+  ip.len:
+    type: numerical
+    embedding_dim: 16
+  ip.id:
+    type: numerical
+    embedding_dim: 2
+  ip.flags:
+    type: categorical
+    vocab_size: 8
+    embedding_dim: 4
+  ip.flags.rb:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  ip.flags.df:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  ip.flags.mf:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  ip.frag_offset:
+    type: numerical
+    embedding_dim: 8
+  ip.ttl:
+    type: numerical
+    embedding_dim: 8
+  ip.proto:
+    type: categorical
+    vocab_size: 3
+    embedding_dim: 4
+  ip.checksum:
+    type: numerical
+    embedding_dim: 8
+  ip.src:
+    type: address_ipv4
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+  ip.dst:
+    type: address_ipv4
+    embedding_dim_per_octet: 8
+    aggregation: cnn
+
+  # ==================== Layer 4: TCP ====================
+  tcp.srcport:
+    type: categorical
+    vocab_size: 65536
+    embedding_dim: 32
+  tcp.dstport:
+    type: categorical
+    vocab_size: 65536
+    embedding_dim: 32
+  tcp.stream:
+    type: categorical
+    vocab_size: 2048 # Should be determined from data
+    embedding_dim: 8
+  tcp.len:
+    type: numerical
+    embedding_dim: 16
+  tcp.seq:
+    type: numerical
+    embedding_dim: 16
+  tcp.seq_raw:
+    type: numerical
+    embedding_dim: 16
+  tcp.ack:
+    type: numerical
+    embedding_dim: 16
+  tcp.ack_raw:
+    type: numerical
+    embedding_dim: 16
+  tcp.hdr_len:
+    type: numerical
+    embedding_dim: 8
+  tcp.flags:
+    type: categorical
+    vocab_size: 96 # Should be determined from data
+    embedding_dim: 16
+  tcp.flags.res:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.ae:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.cwr:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.ece:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.urg:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.ack:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.push:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.reset:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.syn:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.flags.fin:
+    type: categorical
+    vocab_size: 2
+    embedding_dim: 2
+  tcp.window_size_value:
+    type: numerical
+    embedding_dim: 16
+  tcp.window_size:
+    type: numerical
+    embedding_dim: 16
+  tcp.window_size_scalefactor:
+    type: numerical
+    embedding_dim: 8
+  tcp.checksum:
+    type: numerical
+    embedding_dim: 8
+  tcp.urgent_pointer:
+    type: numerical
+    embedding_dim: 8
+  tcp.pdu.size:
+    type: numerical
+    embedding_dim: 16
+
+  # --- TCP Options ---
+  tcp.options.mss:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2
+  tcp.option_kind:
+    type: categorical
+    vocab_size: 256 # 8-bit kind
+    embedding_dim: 8
+  tcp.option_len:
+    type: numerical
+    embedding_dim: 4
+  tcp.options.mss_val:
+    type: numerical
+    embedding_dim: 16
+  tcp.options.wscale:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2
+  tcp.options.wscale.shift:
+    type: numerical
+    embedding_dim: 4
+  tcp.options.wscale.multiplier:
+    type: numerical
+    embedding_dim: 8
+  tcp.options.sack_perm:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2
+  tcp.options.sack_le:
+    type: numerical
+    embedding_dim: 16
+  tcp.options.sack_re:
+    type: numerical
+    embedding_dim: 16
+  tcp.options.timestamp:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2
+  tcp.options.timestamp.tsval:
+    type: numerical
+    embedding_dim: 16
+  tcp.options.timestamp.tsecr:
+    type: numerical
+    embedding_dim: 16
+  tcp.reassembled_segments:
+    type: categorical
+    vocab_size: 1536 # Should be determined from data
+    embedding_dim: 16
+
+  # ==================== Layer 5: TLS ====================
+
+  # --- TLS Record Layer ---
+  tls.record.content_type:
+    type: categorical
+    vocab_size: 24 # common types + OOV
+    embedding_dim: 8
+  tls.record.version:
+    type: categorical
+    vocab_size: 12 # common versions + OOV
+    embedding_dim: 4
+  tls.record.length:
+    type: numerical
+    embedding_dim: 16
+  tls.alert_message.level:
+    type: categorical
+    vocab_size: 6 # common levels + OOV
+    embedding_dim: 4
+  tls.alert_message.desc:
+    type: categorical
+    vocab_size: 128 # common descs + OOV
+    embedding_dim: 16
+  tls.heartbeat_message.type:
+    type: categorical
+    vocab_size: 6 # common types + OOV
+    embedding_dim: 4
+  tls.heartbeat_message.payload_length:
+    type: numerical
+    embedding_dim: 8
+
+  # --- TLS Handshake Protocol ---
+  tls.handshake.type:
+    type: categorical
+    vocab_size: 32 # common types + OOV
+    embedding_dim: 8
+  tls.handshake.length:
+    type: numerical
+    embedding_dim: 16
+  tls.handshake.version:
+    type: categorical
+    vocab_size: 12 # common versions + OOV
+    embedding_dim: 4
+  tls.handshake.random_time:
+    type: numerical # treat as a timestamp
+    embedding_dim: 16
+  tls.handshake.session_id_length:
+    type: numerical
+    embedding_dim: 8
+  tls.handshake.cipher_suites_length:
+    type: numerical
+    embedding_dim: 8
+  tls.handshake.ciphersuite:
+    type: categorical
+    vocab_size: 1024 # high cardinality
+    embedding_dim: 32
+  tls.handshake.comp_methods_length:
+    type: numerical
+    embedding_dim: 4
+  tls.handshake.comp_method:
+    type: categorical
+    vocab_size: 6 # common methods + OOV
+    embedding_dim: 4
+  tls.handshake.extensions_length:
+    type: numerical
+    embedding_dim: 16
+  tls.handshake.extension.type:
+    type: categorical
+    vocab_size: 128 # high cardinality
+    embedding_dim: 16
+  tls.handshake.extension.len:
+    type: numerical
+    embedding_dim: 8
+  tls.handshake.extensions_server_name_list_len:
+    type: numerical
+    embedding_dim: 4
+  tls.handshake.extensions_server_name_type:
+    type: categorical
+    vocab_size: 6 # common types + OOV
+    embedding_dim: 4
+  tls.handshake.extensions_server_name_len:
+    type: numerical
+    embedding_dim: 8
+  tls.handshake.extensions_server_name:
+    type: categorical
+    vocab_size: 4096 # very high cardinality
+    embedding_dim: 32
+  tls.handshake.extensions_alpn_str:
+    type: categorical
+    vocab_size: 128 # high cardinality
+    embedding_dim: 16
+  tls.handshake.sig_hash_alg_len:
+      type: numerical
+      embedding_dim: 4
+  tls.handshake.sig_hash_alg:
+    type: categorical
+    vocab_size: 256 # high cardinality
+    embedding_dim: 8
+  tls.handshake.certificates_length:
+    type: numerical
+    embedding_dim: 16
+  tls.handshake.certificate_length:
+    type: numerical
+    embedding_dim: 16
+
+  # --- X.509 Certificate Fields ---
+  tls.x509af.version:
+    type: categorical
+    vocab_size: 6 # v1, v2, v3 + OOV
+    embedding_dim: 4
+  tls.x509af.serialNumber:
+    type: categorical # Treat as high-cardinality ID
+    vocab_size: 4096
+    embedding_dim: 32
+  tls.x509af.algorithm.id:
+    type: categorical
+    vocab_size: 1024 # OIDs are high cardinality
+    embedding_dim: 16
+  tls.x509if.oid:
+    type: categorical
+    vocab_size: 256
+    embedding_dim: 16
+  tls.x509sat.printableString:
+    type: categorical
+    vocab_size: 4096
+    embedding_dim: 16
+  tls.x509af.notBefore:
+    type: numerical # treat as a timestamp
+    embedding_dim: 16
+  tls.x509af.notAfter:
+    type: numerical # treat as a timestamp
+    embedding_dim: 16
+  tls.x509ce.KeyUsage.digitalSignature:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2
+  tls.x509ce.KeyUsage.keyCertSign:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2
+  tls.x509ce.KeyUsage.cRLSign:
+    type: categorical
+    vocab_size: 3 # present or not
+    embedding_dim: 2

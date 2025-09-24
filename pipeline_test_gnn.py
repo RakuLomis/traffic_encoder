@@ -177,7 +177,7 @@ if __name__ == '__main__':
     
     config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
     vocab_path = os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml') 
-    csv_name = '24' 
+    csv_name = 'default_expert' # 24 is main block
     raw_df_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness') 
     # block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label', 'discrete') 
     block_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'reborn_blocks_merge') 
@@ -323,6 +323,7 @@ if __name__ == '__main__':
         # 这里可以添加保存最佳模型的逻辑
         if val_metrics['f1_weighted'] > best_f1:
             torch.save(pta_model.state_dict(), 'best_model.pth')
+            print("The best epoch parameters has been saved. ")
             best_f1 = val_metrics['f1_weighted']
     print("\nTraining complete!")
     # --- 5. 最终测试 ---
