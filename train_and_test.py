@@ -187,9 +187,9 @@ if __name__ == '__main__':
     print(f" - Model will be built for {len(node_fields_for_model)} nodes.")
 
     # c) 实例化 PyG 的 DataLoader (使用默认collate，无需自定义)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS,)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS,)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS,)
     
     # --- 5. 初始化模型、损失函数和优化器 ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -207,7 +207,7 @@ if __name__ == '__main__':
     
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
 
 
     # --- 4. 训练循环 ---
@@ -218,11 +218,13 @@ if __name__ == '__main__':
         
         train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
         val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
-        
+        scheduler.step()
+
         print(f"Epoch {epoch+1} Summary:")
         print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (Weighted): {train_metrics['f1_weighted']:.4f}")
         print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f} | Val F1 (Weighted): {val_metrics['f1_weighted']:.4f}")
-        
+        print(f"Epoch {epoch+1} Summary (LR: {scheduler.get_last_lr()[0]:.1e}):")
+
         training_results.append({
             'epoch': epoch + 1,
             'train_loss': train_metrics['loss'],
@@ -251,8 +253,8 @@ if __name__ == '__main__':
     print("\nTraining complete!")
 
     # --- 5. 最终测试 ---
-    test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
-    test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
+    # test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
+    # test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
     test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
     print(f"\nFinal Test Performance:")
     print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Weighted): {test_metrics['f1_weighted']:.4f}")
