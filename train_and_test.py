@@ -104,6 +104,7 @@ if __name__ == '__main__':
     NUM_EPOCHS = 100
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
+    # LEARNING_RATE = 1e-4
     NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
@@ -207,7 +208,7 @@ if __name__ == '__main__':
     
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
 
 
     # --- 4. 训练循环 ---

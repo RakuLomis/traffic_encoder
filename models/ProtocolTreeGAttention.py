@@ -30,10 +30,22 @@ class ProtocolTreeGAttention(nn.Module):
         self.conv1 = GATConv(hidden_dim, hidden_dim, heads=num_heads, dropout=dropout_rate)
         self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim, heads=1, concat=False, dropout=dropout_rate)
         # self.classifier = nn.Linear(hidden_dim, num_classes)
+        # self.classifier = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim // 2),
+        #     nn.ReLU(), # 可能造成了梯度消失
+        #     nn.Dropout(p=dropout_rate),
+        #     nn.Linear(hidden_dim // 2, num_classes)
+        # )
         self.classifier = nn.Sequential(
+            # 第一个线性层
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
+            # “稳定器”：批量归一化
+            # nn.BatchNorm1d(hidden_dim),
+            # “防死亡”激活函数
+            nn.LeakyReLU(),
+            # Dropout层
             nn.Dropout(p=dropout_rate),
+            # 第二个线性层，输出最终的logits
             nn.Linear(hidden_dim // 2, num_classes)
         )
 
