@@ -7,17 +7,17 @@ if __name__ == '__main__':
     parser.add_argument(
         '-d', '--directory', 
         # required=True, 
-        default=os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'reborn_blocks_merge_ps'),
+        default=os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'train_test', 'blocks'),
         help="包含所有Block CSV文件的目录路径。"
     )
     parser.add_argument(
         '-lo', '--label_output', 
-        default=os.path.join('.', 'label_distribution_ps.csv'), 
+        default=os.path.join('.', 'results', 'label_distribution_chiefs.csv'), 
         help="输出标签分布矩阵的CSV文件路径 (默认: ./label_distribution.csv)。"
     )
     parser.add_argument(
         '-fo', '--feature_output', 
-        default=os.path.join('.', 'feature_presence_ps.csv'), 
+        default=os.path.join('.', 'results', 'feature_presence_chiefs.csv'), 
         help="输出特征存在矩阵的CSV文件路径 (默认: ./feature_presence.csv)。"
     )
 

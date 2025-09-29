@@ -24,184 +24,75 @@ from torch_geometric.loader import DataLoader
 from models.ProtocolTreeGAttention import ProtocolTreeGAttention
 from utils.metrics import calculate_metrics
 
-# def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes): # <-- 新增 num_classes 参数
-#     model.train()
-#     running_loss = 0.0
-    
-#     # --- 核心修改点 1：初始化混淆矩阵 ---
-#     # 我们在CPU上创建，以避免频繁的GPU-CPU数据传输
-#     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
-
-#     for batched_graph in tqdm(dataloader, desc="Training"):
-#         batched_graph.to(device)
-#         labels = batched_graph.y
-#         outputs = model(batched_graph)
-#         loss = loss_fn(outputs, labels)
-        
-#         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-#         optimizer.zero_grad()
-#         loss.backward()
-#         optimizer.step()
-
-#         running_loss += loss.item() * batched_graph.num_graphs
-#         _, predicted = torch.max(outputs.data, 1)
-        
-#         # --- 核心修改点 2：累积结果到混淆矩阵 ---
-#         # 将张量移回CPU进行累积
-#         labels_cpu = labels.cpu()
-#         predicted_cpu = predicted.cpu()
-#         for t, p in zip(labels_cpu.view(-1), predicted_cpu.view(-1)):
-#             confusion_matrix[t.long(), p.long()] += 1
-
-#     # --- 核心修改点 3：在epoch结束后，进行一次性的性能计算 ---
-#     total_samples = confusion_matrix.sum().item()
-#     epoch_loss = running_loss / total_samples if total_samples > 0 else 0.0
-    
-#     # 调用我们独立的指标计算函数
-#     epoch_metrics = calculate_metrics(confusion_matrix)
-#     epoch_metrics['loss'] = epoch_loss # 将损失也加入字典
-    
-#     return epoch_metrics, confusion_matrix 
-
-# def evaluate(model, dataloader, loss_fn, device, num_classes):
-#     model.eval() # 将模型设置为评估模式
-#     running_loss = 0.0
-    
-#     # 初始化混淆矩阵
-#     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
-
-#     # 在评估时，我们完全不需要计算梯度
-#     with torch.no_grad(): 
-#         # 将tqdm的描述符修正为"Evaluating"
-#         for batched_graph in tqdm(dataloader, desc="Evaluating"):
-#             batched_graph.to(device)
-#             labels = batched_graph.y
-#             outputs = model(batched_graph)
-#             loss = loss_fn(outputs, labels)
-
-#             running_loss += loss.item() * batched_graph.num_graphs
-#             _, predicted = torch.max(outputs.data, 1)
-
-#             # 累积结果到混淆矩阵
-#             labels_cpu = labels.cpu()
-#             predicted_cpu = predicted.cpu()
-#             for t, p in zip(labels_cpu.view(-1), predicted_cpu.view(-1)):
-#                 confusion_matrix[t.long(), p.long()] += 1
-                
-#     # 在epoch结束后，进行一次性的性能计算
-#     total_samples = confusion_matrix.sum().item()
-#     epoch_loss = running_loss / total_samples if total_samples > 0 else 0.0
-    
-#     # 调用我们独立的指标计算函数
-#     epoch_metrics = calculate_metrics(confusion_matrix)
-#     epoch_metrics['loss'] = epoch_loss
-    
-#     return epoch_metrics, confusion_matrix
-
-def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, alpha=1e-3):
-    """
-    一个完整的、带有负熵正则化的训练函数。
-
-    :param alpha: 负熵正则化损失的权重系数。
-    """
+def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes): # <-- 新增 num_classes 参数
     model.train()
     running_loss = 0.0
     
-    # 初始化混淆矩阵，用于计算详细指标
+    # --- 核心修改点 1：初始化混淆矩阵 ---
+    # 我们在CPU上创建，以避免频繁的GPU-CPU数据传输
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
 
-    for i, batched_graph in enumerate(tqdm(dataloader, desc="Training")):
-        # 1. 将数据移动到GPU
+    for batched_graph in tqdm(dataloader, desc="Training"):
         batched_graph.to(device)
         labels = batched_graph.y
+        outputs = model(batched_graph)
+        loss = loss_fn(outputs, labels)
         
-        # ==================== 核心修改点 1：接收gate并计算总损失 ====================
-        
-        # a) 模型现在返回两个输出：预测logits和特征门控权重
-        outputs, gate = model(batched_graph)
-        
-        # b) 计算主任务的交叉熵损失
-        classification_loss = loss_fn(outputs, labels)
-
-        # c) 计算负熵正则化损失，鼓励gate权重保持在0.5附近，避免过早饱和
-        #    我们希望最大化熵，即最小化负熵
-        mask_entropy_loss = -(gate * torch.log(gate + 1e-8) + 
-                              (1 - gate) * torch.log(1 - gate + 1e-8)).mean()
-
-        # d) 计算加权总损失
-        # ==================== 核心修改点：暂时禁用负熵正则化 ====================
-        alpha = 0.0 
-        total_loss = classification_loss + alpha * mask_entropy_loss
-        
-        # ======================================================================
-        if i % 50 == 0: # 每50个batch打印一次
-            print(f"\n  Batch {i}: CE_Loss={classification_loss.item():.4f}, Ent_Loss={mask_entropy_loss.item():.4f}, Total_Loss={total_loss.item():.4f}")
-        
-        # 3. 使用【总损失】进行反向传播
-        optimizer.zero_grad()
-        total_loss.backward()
-        
-        # 4. （可选但推荐）梯度裁剪
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
+        optimizer.zero_grad()
+        loss.backward()
         optimizer.step()
 
-        # 5. 统计指标时，我们只关心【主任务的损失】
-        running_loss += classification_loss.item() * batched_graph.num_graphs
+        running_loss += loss.item() * batched_graph.num_graphs
         _, predicted = torch.max(outputs.data, 1)
         
-        # 累积结果到混淆矩阵
+        # --- 核心修改点 2：累积结果到混淆矩阵 ---
+        # 将张量移回CPU进行累积
         labels_cpu = labels.cpu()
         predicted_cpu = predicted.cpu()
         for t, p in zip(labels_cpu.view(-1), predicted_cpu.view(-1)):
-            if t < num_classes and p < num_classes:
-                confusion_matrix[t.long(), p.long()] += 1
+            confusion_matrix[t.long(), p.long()] += 1
 
-    # 在epoch结束后，进行一次性的性能计算
+    # --- 核心修改点 3：在epoch结束后，进行一次性的性能计算 ---
     total_samples = confusion_matrix.sum().item()
-    epoch_loss = running_loss / len(dataloader.dataset) if len(dataloader.dataset) > 0 else 0
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0.0
     
+    # 调用我们独立的指标计算函数
     epoch_metrics = calculate_metrics(confusion_matrix)
-    epoch_metrics['loss'] = epoch_loss
+    epoch_metrics['loss'] = epoch_loss # 将损失也加入字典
     
-    return epoch_metrics, confusion_matrix
-
+    return epoch_metrics, confusion_matrix 
 
 def evaluate(model, dataloader, loss_fn, device, num_classes):
-    """
-    一个完整的、适配新模型输出的评估函数。
-    """
-    model.eval()
+    model.eval() # 将模型设置为评估模式
     running_loss = 0.0
+    
+    # 初始化混淆矩阵
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
 
-    with torch.no_grad():
+    # 在评估时，我们完全不需要计算梯度
+    with torch.no_grad(): 
+        # 将tqdm的描述符修正为"Evaluating"
         for batched_graph in tqdm(dataloader, desc="Evaluating"):
             batched_graph.to(device)
             labels = batched_graph.y
-            
-            # ==================== 核心修改点：正确处理模型输出 ====================
-            #
-            # 模型依然返回两个值，但在评估时我们只关心第一个（logits）
-            #
-            outputs, _ = model(batched_graph)
-            #
-            # =================================================================
-
+            outputs = model(batched_graph)
             loss = loss_fn(outputs, labels)
 
             running_loss += loss.item() * batched_graph.num_graphs
             _, predicted = torch.max(outputs.data, 1)
 
+            # 累积结果到混淆矩阵
             labels_cpu = labels.cpu()
             predicted_cpu = predicted.cpu()
             for t, p in zip(labels_cpu.view(-1), predicted_cpu.view(-1)):
-                if t < num_classes and p < num_classes:
-                    confusion_matrix[t.long(), p.long()] += 1
+                confusion_matrix[t.long(), p.long()] += 1
                 
+    # 在epoch结束后，进行一次性的性能计算
     total_samples = confusion_matrix.sum().item()
-    epoch_loss = running_loss / len(dataloader.dataset) if len(dataloader.dataset) > 0 else 0
+    epoch_loss = running_loss / total_samples if total_samples > 0 else 0.0
     
+    # 调用我们独立的指标计算函数
     epoch_metrics = calculate_metrics(confusion_matrix)
     epoch_metrics['loss'] = epoch_loss
     
@@ -223,8 +114,9 @@ if __name__ == '__main__':
     
     config_path = os.path.join('.', 'Data', 'fields_embedding_configs_v1.yaml')
     vocab_path = os.path.join('.', 'Data', 'completed_categorical_vocabs.yaml') 
-    train_set_name = 'chief_block' 
-    # train_set_name = 'chief_block_v2' # 特征合并
+    # train_set_name = 'chief_block' 
+    # train_set_name = 'chief_block_v2' 
+    train_set_name = 'specific_classes_intersec' 
     val_set_name = 'validation_set' 
     test_set_name = 'test_set'
     chief_directory = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'train_test', 'blocks')
@@ -233,7 +125,9 @@ if __name__ == '__main__':
     train_df_path = os.path.join(chief_directory, train_set_name + '.csv') 
     val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
     test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
-    
+
+    target_classes = ['google', 'twitter']
+
     # --- 3. 加载并对齐数据集 ---
     print("\n[1/4] Loading datasets...")
     try:
@@ -244,6 +138,8 @@ if __name__ == '__main__':
         print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
         exit()
         
+    val_df = val_df[val_df['label'].isin(target_classes)] 
+    test_df = test_df[test_df['label'].isin(target_classes)]   
     print(f" - Train set (augmented): {len(train_df)} rows")
     print(f" - Validation set: {len(val_df)} rows")
     print(f" - Test set: {len(test_df)} rows")
@@ -358,29 +254,15 @@ if __name__ == '__main__':
 
         # 这里可以添加保存最佳模型的逻辑
         if val_metrics['f1_weighted'] > best_f1:
-            torch.save(pta_model.state_dict(), train_set_name + '_best_model.pth')
+            torch.save(pta_model.state_dict(), 'specific_best_model.pth')
             print("The best epoch parameters has been saved. ")
             best_f1 = val_metrics['f1_weighted']
     print("\nTraining complete!")
 
-    # ==================== 分析学到的特征重要性 ====================
-    print("\n" + "="*50)
-    print("###   Learned Feature Importance Report   ###")
-
-    importance_report = pta_model.get_feature_importance()
-
-    # to_string()可以打印所有行，确保能看到完整的报告
-    print(importance_report.to_string())
-
-    # 保存报告为CSV，以便后续分析
-    importance_report.to_csv(train_set_name + '_feature_importance_report.csv', index=False)
-    print("\nFeature importance report saved to 'feature_importance_report.csv'")
-    print("="*50)
-
     # --- 5. 最终测试 ---
     # test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
     # test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
-    pta_model.load_state_dict(torch.load(train_set_name + '_best_model.pth'))
+    pta_model.load_state_dict(torch.load('specific_best_model.pth'))
     pta_model.to(device)
     test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
     print(f"\nFinal Test Performance:")
@@ -428,5 +310,5 @@ if __name__ == '__main__':
     })
 
     results_df = pd.DataFrame(training_results)
-    results_df.to_csv('moe_pta_training_log.csv', index=False)
+    results_df.to_csv(train_set_name + '_training_log.csv', index=False)
     print("\nTraining log saved to 'moe_pta_training_log.csv'")

@@ -8,6 +8,7 @@ import yaml
 from typing import Dict, List, Set, Tuple, Any
 from collections import defaultdict
 from sklearn.model_selection import train_test_split
+from collections import Counter
 
 def get_file_path(dir_path: str, prefix: Optional[str] = None, postfix: Optional[str] = None): 
     """
@@ -1027,4 +1028,326 @@ def augment_main_block(
     print(f"\n数据补充成功！")
     print(f" - 原始 Main Block 样本数: {len(main_df)}")
     print(f" - 补充后总样本数: {len(augmented_df)}")
+    print(f" - 最终数据集已保存到: {output_path}")
+
+def get_top_n_features(df: pd.DataFrame, n: int, existing_schema: Set[str]) -> List[str]:
+    """从DataFrame中，找出Top N个最常见的、且不在现有Schema中的特征。"""
+    feature_counts = Counter()
+    meta_columns = {'index', 'label', 'label_id'}
+    
+    # 只统计非空值的特征
+    for col in df.columns:
+        if col not in meta_columns:
+            feature_counts[col] = df[col].notna().sum()
+            
+    # 找出不在现有Schema中的Top N特征
+    top_features = []
+    # .most_common() 返回 (feature, count) 元组的列表
+    for feature, count in feature_counts.most_common():
+        if feature not in existing_schema:
+            top_features.append(feature)
+        if len(top_features) == n:
+            break
+            
+    return top_features
+
+def augment_main_block_with_features(
+    block_dir: str, 
+    main_block_name: str, 
+    output_path: str, 
+    min_samples_threshold: int = 2000
+):
+    """
+    实现“动态特征空间扩展”策略的最终、最健壮版本。
+    基于单循环的、经过验证的逻辑。
+    """
+    print("="*50)
+    print("开始执行最终的“数据补充与特征扩展”策略...")
+    print("="*50)
+    main_block_path = os.path.join(block_dir, f"{main_block_name}.csv")
+    
+    # 1. 加载主Block，并确定其【初始】Schema
+    print(f"\n[步骤 1/4] 加载 Main Block '{main_block_name}'...")
+    main_df = pd.read_csv(main_block_path, dtype=str)
+    meta_columns = {'index', 'label', 'label_id'}
+    initial_main_schema = set(main_df.columns)
+    
+    # 2. 扫描所有Block，建立情报数据库
+    print("\n[步骤 2/4] 扫描所有Block，建立类别分布情报库...")
+    block_info = {}
+    all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+    for filename in tqdm(all_files, desc="Scanning Blocks"):
+        block_name = os.path.splitext(filename)[0]
+        block_path = os.path.join(block_dir, filename)
+        try:
+            df_label = pd.read_csv(block_path, dtype=str, usecols=['label'])
+            if not df_label.empty:
+                block_info[block_name] = df_label['label'].value_counts().to_dict()
+        except Exception:
+            pass # 忽略无法读取的文件
+
+    # 3. 找出需要补充的“靶向类别”
+    main_label_counts = main_df['label'].value_counts()
+    rare_classes_in_main = main_label_counts[main_label_counts < min_samples_threshold].index.tolist()
+    all_labels_in_db = set(l for stats in block_info.values() for l in stats)
+    missing_classes_from_main = list(all_labels_in_db - set(main_label_counts.index))
+    target_classes = rare_classes_in_main + missing_classes_from_main
+    
+    print(f"\n[步骤 3/4] 找到 {len(target_classes)} 个需要补充的类别...")
+
+    # ==================== 核心修改点：单循环 + 动态Schema ====================
+    
+    print("\n[步骤 4/4] 开始寻找补充数据并动态扩展Schema...")
+    
+    # a) 初始化
+    expanded_schema = set(initial_main_schema)
+    dfs_to_concat = [main_df] # 先把自己放进去
+    
+    # b) 开始单循环增强
+    for target_class in tqdm(target_classes, desc="Augmenting Classes"):
+        
+        # 收集该类别在所有其他Block中的所有数据
+        supplement_dfs = []
+        for donor_name, label_counts in block_info.items():
+            if donor_name == main_block_name or target_class not in label_counts:
+                continue
+            
+            # 只要这个Block有我们需要的类别，就直接加载并征用
+            donor_path = os.path.join(block_dir, f"{donor_name}.csv")
+            donor_df = pd.read_csv(donor_path, dtype=str)
+            supplement_dfs.append(donor_df[donor_df['label'] == target_class])
+        
+        # 安全检查
+        if not supplement_dfs:
+            print(f"\n  - 注意: 未能为类别 '{target_class}' 找到任何补充数据源。")
+            continue
+            
+        full_supplement_df = pd.concat(supplement_dfs, ignore_index=True)
+        
+        # 根据类别是否存在于Main Block，决定引入Top N个特征
+        n_top = 2 if target_class in missing_classes_from_main else 1
+        new_features = get_top_n_features(full_supplement_df, n=n_top, existing_schema=expanded_schema)
+        
+        if new_features:
+            print(f"\n  -> 为类别 '{target_class}' 引入新特征: {new_features}")
+            expanded_schema.update(new_features)
+            
+        # 将这个【未经对齐】的补充数据，暂时存起来
+        dfs_to_concat.append(full_supplement_df)
+        
+    # =======================================================================
+    
+    # 5. 使用最终扩展后的Schema，对所有收集到的DataFrame进行对齐并合并
+    final_schema_list = sorted(list(expanded_schema))
+    print(f"\nSchema扩展完成！最终特征数: {len(final_schema_list) - len(meta_columns)}")
+    print("正在对所有数据进行最终对齐与合并...")
+    
+    aligned_dfs = []
+    for i, df in enumerate(tqdm(dfs_to_concat, desc="Aligning all DataFrames")):
+        aligned_df = pd.DataFrame()
+        # 按照最终的Schema来构建
+        for col in final_schema_list:
+            if col in df.columns:
+                aligned_df[col] = df[col]
+            else:
+                # 只有特征列需要填充
+                if col not in meta_columns:
+                    aligned_df[col] = '0'
+        # 补回元数据列
+        for col in meta_columns:
+            if col in df.columns:
+                 aligned_df[col] = df[col]
+        aligned_dfs.append(aligned_df[final_schema_list]) # 确保列顺序
+
+    # 6. 一次性合并所有对齐后的DataFrame
+    augmented_df = pd.concat(aligned_dfs, ignore_index=True).fillna('0')
+    
+    # 7. 保存结果
+    augmented_df.to_csv(output_path, index=False)
+    print(f"\n数据补充与特征扩展成功！")
+    print(f" - 原始 Main Block 样本数: {main_df.shape[0]}")
+    print(f" - 增强后总样本数: {augmented_df.shape[0]}")
+    print(f" - 最终数据集已保存到: {output_path}")
+
+def create_specialist_dataset(
+    block_dir: str, 
+    chief_block_name: str, 
+    output_path: str,
+    target_classes: List[str]
+):
+    """
+    为一个或多个特定类别，创建一个【只包含其独有特征】的、用于验证实验的训练数据集。
+
+    :param block_dir: 包含所有【已合并】的Block CSV文件的目录。
+    :param chief_block_name: 作为基础参照的Chief Block的名称 (例如 '24')。
+    :param output_path: 保存专家训练集的CSV文件路径。
+    :param target_classes: 需要进行专门分析的目标类别列表 (例如 ['google', 'twitter'])。
+    """
+    print("="*50)
+    print("### 创建“独有特征专家模型”专用训练集 ###")
+    print(f"### 目标类别: {target_classes} ###")
+    print("="*50)
+    
+    chief_block_path = os.path.join(block_dir, f"{chief_block_name}.csv")
+    meta_columns = {'index', 'label', 'label_id'}
+    
+    # 1. 从所有Block中，收集目标类别的数据
+    print(f"\n[步骤 1/4] 正在从所有Block中收集 {', '.join(target_classes)} 的数据...")
+    supplement_dfs = []
+    all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+    for filename in tqdm(all_files, desc="Collecting specialist data"):
+        # 我们也需要从Chief Block自身收集目标类别的样本（如果存在的话）
+        # if os.path.splitext(filename)[0] == chief_block_name:
+        #     continue
+            
+        df = pd.read_csv(os.path.join(block_dir, filename), dtype=str)
+        specialist_data = df[df['label'].isin(target_classes)]
+        if not specialist_data.empty:
+            supplement_dfs.append(specialist_data)
+    
+    if not supplement_dfs:
+        print(f"错误: 未能找到任何关于 {target_classes} 的样本。")
+        return
+
+    specialist_df = pd.concat(supplement_dfs, ignore_index=True)
+    print(f" -> 数据收集完成，共找到 {len(specialist_df)} 个相关样本。")
+
+    # 2. 识别出“独有特征” (Exclusive Features)
+    print("\n[步骤 2/4] 正在识别独有特征集...")
+    try:
+        chief_df_header = pd.read_csv(chief_block_path, dtype=str, nrows=0)
+    except FileNotFoundError:
+        print(f"错误: Chief Block文件未找到 -> {chief_block_path}")
+        return
+        
+    chief_schema = set(chief_df_header.columns)
+    
+    # a) 找到专家数据中存在的所有特征
+    specialist_schema = set(specialist_df.columns)
+    
+    # b) 通过集合运算，得到“独有特征”
+    exclusive_features = sorted(list(specialist_schema - chief_schema))
+    
+    # 确保元数据列也被包含
+    final_columns = sorted(list(meta_columns.intersection(specialist_df.columns))) + exclusive_features
+    
+    print(f" -> 发现 {len(exclusive_features)} 个独有特征: {exclusive_features}")
+    if not exclusive_features:
+        print("警告: 未发现任何独有特征，无法创建专家数据集。")
+        return
+
+    # 3. 创建只包含独有特征和元数据的新DataFrame
+    print("\n[步骤 3/4] 正在创建只包含独有特征的数据集...")
+    
+    # 从专家数据中，只选取我们需要的列
+    # 使用 .reindex 来确保即使某些行在某些独有特征上没有值，列也会被创建
+    exclusive_df = specialist_df.reindex(columns=final_columns)
+    
+    # 对于独有特征列中的NaN值（代表这个样本虽然属于目标类别，但没有这个特定的独有特征），进行填充
+    for col in exclusive_features:
+        if exclusive_df[col].hasnans:
+            exclusive_df[col].fillna('0', inplace=True)
+
+    # 4. 保存结果
+    print("\n[步骤 4/4] 正在保存最终的专家训练集...")
+    exclusive_df.to_csv(output_path, index=False)
+    print(f"\n专家训练集创建成功！")
+    print(f" - 总样本数: {len(exclusive_df)}")
+    print(f" - 总特征数: {len(exclusive_features)}")
+    print(f" - 最终数据集已保存到: {output_path}")
+
+def create_specialist_dataset_intersect(
+    block_dir: str, 
+    chief_block_name: str, 
+    output_path: str,
+    target_classes: List[str]
+):
+    """
+    为一个或多个特定类别，创建一个【只包含其“共同的独有特征”】的、用于验证实验的训练数据集。
+
+    :param block_dir: 包含所有【已合并】的Block CSV文件的目录。
+    :param chief_block_name: 作为基础参照的Chief Block的名称 (例如 '24')。
+    :param output_path: 保存专家训练集的CSV文件路径。
+    :param target_classes: 需要进行专门分析的目标类别列表。
+    """
+    print("="*50)
+    print("### 创建“共同独有特征专家模型”专用训练集 ###")
+    print(f"### 目标类别: {target_classes} ###")
+    print("="*50)
+    
+    meta_columns = {'index', 'label', 'label_id'}
+    
+    # 1. 从所有Block中，收集目标类别的数据，并记录“捐献者”
+    print(f"\n[步骤 1/5] 正在从所有Block中收集 {', '.join(target_classes)} 的数据...")
+    supplement_dfs = []
+    donor_block_names = set() # 用来记录哪些block贡献了数据
+    all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+    
+    for filename in tqdm(all_files, desc="Collecting specialist data"):
+        df = pd.read_csv(os.path.join(block_dir, filename), dtype=str)
+        specialist_data = df[df['label'].isin(target_classes)]
+        if not specialist_data.empty:
+            supplement_dfs.append(specialist_data)
+            donor_block_names.add(os.path.splitext(filename)[0])
+    
+    if not supplement_dfs:
+        print(f"错误: 未能找到任何关于 {target_classes} 的样本。")
+        return
+
+    specialist_df = pd.concat(supplement_dfs, ignore_index=True)
+    print(f" -> 数据收集完成，共找到 {len(specialist_df)} 个相关样本。")
+    print(f" -> 数据来源于以下 {len(donor_block_names)} 个'捐献者'Block: {donor_block_names}")
+
+    # ==================== 核心修改点 开始 ====================
+    #
+    # 2. 识别出“共同的独有特征” (Common Exclusive Features)
+    #
+    print("\n[步骤 2/5] 正在计算“共同的独有特征”...")
+    try:
+        chief_df_header = pd.read_csv(os.path.join(block_dir, f"{chief_block_name}.csv"), dtype=str, nrows=0)
+        chief_schema = set(chief_df_header.columns)
+    except FileNotFoundError:
+        print(f"错误: Chief Block文件未找到 -> {chief_block_name}.csv")
+        return
+        
+    # a) 找到所有“捐献者”Block的Schema
+    donor_schemas = []
+    for donor_name in donor_block_names:
+        donor_header = pd.read_csv(os.path.join(block_dir, f"{donor_name}.csv"), dtype=str, nrows=0)
+        donor_schemas.append(set(donor_header.columns))
+
+    if not donor_schemas:
+        print("警告: 未找到任何捐献者Block的Schema。")
+        return
+
+    # b) 计算所有“捐献者”Schema的【交集】
+    common_donor_features = donor_schemas[0]
+    for schema in donor_schemas[1:]:
+        common_donor_features.intersection_update(schema)
+        
+    # c) 从交集中，减去Chief Block的特征，得到最终的“共同独有特征”
+    exclusive_features = sorted(list(common_donor_features - chief_schema))
+    
+    # ==================== 核心修改点 结束 ====================
+    
+    final_columns = sorted(list(meta_columns.intersection(specialist_df.columns))) + exclusive_features
+    
+    print(f" -> 计算完成，找到 {len(exclusive_features)} 个共同独有特征: {exclusive_features}")
+    if not exclusive_features:
+        print("警告: 未发现任何共同的独有特征，无法创建专家数据集。")
+        return
+
+    # 3. 创建只包含【共同独有特征】和元数据的新DataFrame
+    print("\n[步骤 3/5] 正在创建只包含独有特征的数据集...")
+    exclusive_df = specialist_df.reindex(columns=final_columns)
+    for col in exclusive_features:
+        if exclusive_df[col].hasnans:
+            exclusive_df[col].fillna('0', inplace=True)
+
+    # 4. 保存结果
+    print("\n[步骤 4/5] 正在保存最终的专家训练集...")
+    exclusive_df.to_csv(output_path, index=False)
+    print(f"\n专家训练集创建成功！")
+    print(f" - 总样本数: {len(exclusive_df)}")
+    print(f" - 总特征数: {len(exclusive_features)}")
     print(f" - 最终数据集已保存到: {output_path}")
