@@ -23,6 +23,8 @@ from utils.data_loader_ptga import GNNTrafficDataset
 from torch_geometric.loader import DataLoader
 from models.ProtocolTreeGAttention import ProtocolTreeGAttention
 from utils.metrics import calculate_metrics
+from utils.model_utils import diagnose_gate_weights_for_class
+import sys
 
 # def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes): # <-- 新增 num_classes 参数
 #     model.train()
@@ -320,113 +322,143 @@ if __name__ == '__main__':
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
 
+    DIAGNOSE = True
 
     # --- 4. 训练循环 ---
-    training_results = []
-    best_f1 = 0.0
-    for epoch in range(NUM_EPOCHS):
-        print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
-        
-        train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
-        val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
-        scheduler.step()
+    if not DIAGNOSE: 
+        training_results = []
+        best_f1 = 0.0
+        for epoch in range(NUM_EPOCHS):
+            print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
 
-        print(f"Epoch {epoch+1} Summary:")
-        print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (Weighted): {train_metrics['f1_weighted']:.4f}")
-        print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f} | Val F1 (Weighted): {val_metrics['f1_weighted']:.4f}")
-        print(f"Epoch {epoch+1} Summary (LR: {scheduler.get_last_lr()[0]:.1e}):")
+            train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
+            val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
+            scheduler.step()
+
+            print(f"Epoch {epoch+1} Summary:")
+            print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (Weighted): {train_metrics['f1_weighted']:.4f}")
+            print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f} | Val F1 (Weighted): {val_metrics['f1_weighted']:.4f}")
+            print(f"Epoch {epoch+1} Summary (LR: {scheduler.get_last_lr()[0]:.1e}):")
+
+            training_results.append({
+                'epoch': epoch + 1,
+                'train_loss': train_metrics['loss'],
+                'train_acc': train_metrics['accuracy'], 
+                'train_recall_macro': train_metrics['recall_macro'], 
+                'train_precision_macro': train_metrics['precision_macro'], 
+                'train_f1_macro': train_metrics['f1_macro'], 
+                'train_recall_weighted': train_metrics['recall_weighted'], 
+                'train_precision_weighted': train_metrics['precision_weighted'], 
+                'train_f1_weighted': train_metrics['f1_weighted'], 
+                'val_loss': val_metrics['loss'],
+                'val_acc': val_metrics['accuracy'], 
+                'val_recall_macro': val_metrics['recall_macro'], 
+                'val_precision_macro': val_metrics['precision_macro'], 
+                'val_f1_macro': val_metrics['f1_macro'], 
+                'val_recall_weighted': val_metrics['recall_weighted'], 
+                'val_precision_weighted': val_metrics['precision_weighted'], 
+                'val_f1_weighted': val_metrics['f1_weighted'], 
+            })
+
+            # 这里可以添加保存最佳模型的逻辑
+            if val_metrics['f1_weighted'] > best_f1:
+                torch.save(pta_model.state_dict(), train_set_name + '_best_model.pth')
+                print("The best epoch parameters has been saved. ")
+                best_f1 = val_metrics['f1_weighted']
+        print("\nTraining complete!")
+
+        # ==================== 分析学到的特征重要性 ====================
+        print("\n" + "="*50)
+        print("###   Learned Feature Importance Report   ###")
+
+        importance_report = pta_model.get_feature_importance()
+
+        # to_string()可以打印所有行，确保能看到完整的报告
+        print(importance_report.to_string())
+
+        # 保存报告为CSV，以便后续分析
+        importance_report.to_csv(train_set_name + '_feature_importance_report.csv', index=False)
+        print("\nFeature importance report saved to 'feature_importance_report.csv'")
+        print("="*50)
+
+        # --- 5. 最终测试 ---
+        # test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
+        # test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
+        pta_model.load_state_dict(torch.load(train_set_name + '_best_model.pth'))
+        pta_model.to(device)
+        test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
+        print(f"\nFinal Test Performance:")
+        print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Weighted): {test_metrics['f1_weighted']:.4f}")
+
+        # --- 7. 保存混淆矩阵到CSV ---
+        print("\nSaving confusion matrix...")
+
+        # a) 创建从整数索引回字符串标签的映射
+        #    我们需要之前创建的 label_to_int 字典
+        int_to_label = {i: label for label, i in label_to_int.items()}
+        class_names = [int_to_label[i] for i in range(num_classes)]
+
+        # b) 将PyTorch Tensor转换为带标签的Pandas DataFrame
+        confusion_matrix_df = pd.DataFrame(
+            test_confusion_matrix.cpu().numpy(), # 必须先移回CPU
+            index=class_names,
+            columns=class_names
+        )
+
+        # c) 保存为CSV文件
+        cm_output_path = train_set_name + '_final_test_confusion_matrix.csv'
+        confusion_matrix_df.to_csv(cm_output_path)
+
+        print(f"Confusion matrix saved to: {cm_output_path}")
 
         training_results.append({
-            'epoch': epoch + 1,
-            'train_loss': train_metrics['loss'],
-            'train_acc': train_metrics['accuracy'], 
-            'train_recall_macro': train_metrics['recall_macro'], 
-            'train_precision_macro': train_metrics['precision_macro'], 
-            'train_f1_macro': train_metrics['f1_macro'], 
-            'train_recall_weighted': train_metrics['recall_weighted'], 
-            'train_precision_weighted': train_metrics['precision_weighted'], 
-            'train_f1_weighted': train_metrics['f1_weighted'], 
-            'val_loss': val_metrics['loss'],
-            'val_acc': val_metrics['accuracy'], 
-            'val_recall_macro': val_metrics['recall_macro'], 
-            'val_precision_macro': val_metrics['precision_macro'], 
-            'val_f1_macro': val_metrics['f1_macro'], 
-            'val_recall_weighted': val_metrics['recall_weighted'], 
-            'val_precision_weighted': val_metrics['precision_weighted'], 
-            'val_f1_weighted': val_metrics['f1_weighted'], 
+            'epoch': 'final_test',
+            'train_loss': None,
+            'train_acc': None, 
+            'train_recall_macro': None, 
+            'train_precision_macro': None, 
+            'train_f1_macro': None, 
+            'train_recall_weighted': None, 
+            'train_precision_weighted': None, 
+            'train_f1_weighted': None, 
+            'val_loss': test_metrics['loss'],
+            'val_acc': test_metrics['accuracy'], 
+            'val_recall_macro': test_metrics['recall_macro'], 
+            'val_precision_macro': test_metrics['precision_macro'], 
+            'val_f1_macro': test_metrics['f1_macro'], 
+            'val_recall_weighted': test_metrics['recall_weighted'], 
+            'val_precision_weighted': test_metrics['precision_weighted'], 
+            'val_f1_weighted': test_metrics['f1_weighted']
         })
 
-        # 这里可以添加保存最佳模型的逻辑
-        if val_metrics['f1_weighted'] > best_f1:
-            torch.save(pta_model.state_dict(), train_set_name + '_best_model.pth')
-            print("The best epoch parameters has been saved. ")
-            best_f1 = val_metrics['f1_weighted']
-    print("\nTraining complete!")
+        results_df = pd.DataFrame(training_results)
+        results_df.to_csv('moe_pta_training_log.csv', index=False)
+        print("\nTraining log saved to 'moe_pta_training_log.csv'")
 
-    # ==================== 分析学到的特征重要性 ====================
-    print("\n" + "="*50)
-    print("###   Learned Feature Importance Report   ###")
+    elif DIAGNOSE: 
+         # --- 诊断模式 ---
+        print("\n" + "="*40)
+        print("###   运行模式：诊断 (DIAGNOSTIC MODE)   ###")
+        print("="*40)
+        
+        model_path = train_set_name + '_best_model.pth'
+        if not os.path.exists(model_path):
+            print(f"错误: 模型文件未找到 -> {model_path}")
+            print("请确保将训练好的 'best_model.pth' 文件放在当前目录下，或通过 --model_path 指定路径。")
+            sys.exit(1) # 退出程序
 
-    importance_report = pta_model.get_feature_importance()
+        # a) 加载已训练好的模型参数
+        print(f"正在从 {model_path} 加载模型参数...")
+        pta_model.load_state_dict(torch.load(model_path))
+        pta_model.eval()
 
-    # to_string()可以打印所有行，确保能看到完整的报告
-    print(importance_report.to_string())
-
-    # 保存报告为CSV，以便后续分析
-    importance_report.to_csv(train_set_name + '_feature_importance_report.csv', index=False)
-    print("\nFeature importance report saved to 'feature_importance_report.csv'")
-    print("="*50)
-
-    # --- 5. 最终测试 ---
-    # test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
-    # test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
-    pta_model.load_state_dict(torch.load(train_set_name + '_best_model.pth'))
-    pta_model.to(device)
-    test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
-    print(f"\nFinal Test Performance:")
-    print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Weighted): {test_metrics['f1_weighted']:.4f}")
-    
-    # --- 7. 保存混淆矩阵到CSV ---
-    print("\nSaving confusion matrix...")
-    
-    # a) 创建从整数索引回字符串标签的映射
-    #    我们需要之前创建的 label_to_int 字典
-    int_to_label = {i: label for label, i in label_to_int.items()}
-    class_names = [int_to_label[i] for i in range(num_classes)]
-
-    # b) 将PyTorch Tensor转换为带标签的Pandas DataFrame
-    confusion_matrix_df = pd.DataFrame(
-        test_confusion_matrix.cpu().numpy(), # 必须先移回CPU
-        index=class_names,
-        columns=class_names
-    )
-    
-    # c) 保存为CSV文件
-    cm_output_path = train_set_name + '_final_test_confusion_matrix.csv'
-    confusion_matrix_df.to_csv(cm_output_path)
-    
-    print(f"Confusion matrix saved to: {cm_output_path}")
-
-    training_results.append({
-        'epoch': 'final_test',
-        'train_loss': None,
-        'train_acc': None, 
-        'train_recall_macro': None, 
-        'train_precision_macro': None, 
-        'train_f1_macro': None, 
-        'train_recall_weighted': None, 
-        'train_precision_weighted': None, 
-        'train_f1_weighted': None, 
-        'val_loss': test_metrics['loss'],
-        'val_acc': test_metrics['accuracy'], 
-        'val_recall_macro': test_metrics['recall_macro'], 
-        'val_precision_macro': test_metrics['precision_macro'], 
-        'val_f1_macro': test_metrics['f1_macro'], 
-        'val_recall_weighted': test_metrics['recall_weighted'], 
-        'val_precision_weighted': test_metrics['precision_weighted'], 
-        'val_f1_weighted': test_metrics['f1_weighted']
-    })
-
-    results_df = pd.DataFrame(training_results)
-    results_df.to_csv('moe_pta_training_log.csv', index=False)
-    print("\nTraining log saved to 'moe_pta_training_log.csv'")
+        # ==================== 核心修改点：调用新的诊断函数 ====================
+        
+        # 诊断 'google', 'twitter', 和一个表现良好的 'tudou' 作为对比
+        diagnose_gate_weights_for_class(pta_model, val_dataset, 'google', label_to_int, device)
+        diagnose_gate_weights_for_class(pta_model, val_dataset, 'twitter', label_to_int, device)
+        diagnose_gate_weights_for_class(pta_model, val_dataset, 'tudou', label_to_int, device)
+        
+        # =======================================================================
+        print("="*80 + "\n")
+        print("诊断完成。")
