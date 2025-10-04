@@ -136,8 +136,8 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, 
         total_loss = classification_loss + alpha * mask_entropy_loss
         
         # ======================================================================
-        if i % 50 == 0: # 每50个batch打印一次
-            print(f"\n  Batch {i}: CE_Loss={classification_loss.item():.4f}, Ent_Loss={mask_entropy_loss.item():.4f}, Total_Loss={total_loss.item():.4f}")
+        # if i % 50 == 0: # 每50个batch打印一次
+        #     print(f"\n  Batch {i}: CE_Loss={classification_loss.item():.4f}, Ent_Loss={mask_entropy_loss.item():.4f}, Total_Loss={total_loss.item():.4f}")
         
         # 3. 使用【总损失】进行反向传播
         optimizer.zero_grad()
@@ -219,6 +219,8 @@ if __name__ == '__main__':
     NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
+    DROP_RATE = 0.5
+    WEIGHT_DECAY = 1e-5
 
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -250,34 +252,77 @@ if __name__ == '__main__':
     print(f" - Validation set: {len(val_df)} rows")
     print(f" - Test set: {len(test_df)} rows")
 
-    # a) 确定“主干Schema”，即模型期望的输入特征
-    chief_schema = [col for col in train_df.columns if col not in ['label', 'label_id']]
+    # # a) 确定“主干Schema”，即模型期望的输入特征
+    # chief_schema = [col for col in train_df.columns if col not in ['label', 'label_id']]
     
-    # b) 【关键】对验证集和测试集进行特征空间对齐
-    print("\n[2/4] Aligning feature space for validation and test sets...")
+    # # b) 【关键】对验证集和测试集进行特征空间对齐
+    # print("\n[2/4] Aligning feature space for validation and test sets...")
+    
+    # # 对齐验证集
+    # val_df_aligned = pd.DataFrame(columns=chief_schema)
+    # for col in chief_schema:
+    #     if col in val_df.columns:
+    #         val_df_aligned[col] = val_df[col]
+    #     else:
+    #         val_df_aligned[col] = '0' # 用'0'填充缺失的特征
+    # val_df_aligned['label'] = val_df['label'] # 补回标签列
+    
+    # # 对齐测试集
+    # test_df_aligned = pd.DataFrame(columns=chief_schema)
+    # for col in chief_schema:
+    #     if col in test_df.columns:
+    #         test_df_aligned[col] = test_df[col]
+    #     else:
+    #         test_df_aligned[col] = '0'
+    # test_df_aligned['label'] = test_df['label']
+
+    # print(" - Feature alignment complete.")
+
+    # ==================== 核心修改点：Schema统一与NaN填充 ====================
+    
+    print("\n[2/4] Unifying schema and padding NaN values...")
+    
+    # a) 确定“全局Schema”，即所有数据集中出现过的所有特征的【并集】
+    meta_columns = ['label', 'label_id']
+    train_features = set(train_df.columns) - set(meta_columns)
+    val_features = set(val_df.columns) - set(meta_columns)
+    test_features = set(test_df.columns) - set(meta_columns)
+    
+    universal_schema = sorted(list(train_features.union(val_features).union(test_features)))
+    print(f" - Universal schema created with {len(universal_schema)} features.")
+
+    # b) 【关键】对所有三个数据集，都进行特征对齐和NaN填充
+    #    我们使用 pandas.reindex 和 .fillna，这比for循环高效得多
+    
+    # 保存标签列，因为它们不参与对齐
+    train_labels = train_df['label']
+    val_labels = val_df['label']
+    test_labels = test_df['label']
+    
+    # 对齐训练集
+    train_df = train_df.reindex(columns=universal_schema).fillna('0')
+    train_df['label'] = train_labels
     
     # 对齐验证集
-    val_df_aligned = pd.DataFrame(columns=chief_schema)
-    for col in chief_schema:
-        if col in val_df.columns:
-            val_df_aligned[col] = val_df[col]
-        else:
-            val_df_aligned[col] = '0' # 用'0'填充缺失的特征
-    val_df_aligned['label'] = val_df['label'] # 补回标签列
+    val_df_aligned = val_df.reindex(columns=universal_schema).fillna('0')
+    val_df_aligned['label'] = val_labels
     
     # 对齐测试集
-    test_df_aligned = pd.DataFrame(columns=chief_schema)
-    for col in chief_schema:
-        if col in test_df.columns:
-            test_df_aligned[col] = test_df[col]
-        else:
-            test_df_aligned[col] = '0'
-    test_df_aligned['label'] = test_df['label']
+    test_df_aligned = test_df.reindex(columns=universal_schema).fillna('0')
+    test_df_aligned['label'] = test_labels
 
-    print(" - Feature alignment complete.")
     del val_df, test_df
 
+    # 在所有修改操作完成后，调用 .copy() 来消除内存碎片，解决警告
+    print("\nDe-fragmenting DataFrames for better performance...")
+    train_df = train_df.copy()
+    val_df_aligned = val_df_aligned.copy()
+    test_df_aligned = test_df_aligned.copy()
 
+    print(" - All datasets have been aligned and padded.")
+    
+    # =====================================================================
+    
     # c) 创建全局标签映射
     #    为了确保所有数据集的标签一致，我们基于训练集来创建映射
     print("\n[3/4] Creating label mapping...")
@@ -288,6 +333,8 @@ if __name__ == '__main__':
     train_df['label_id'] = train_df['label'].map(label_to_int)
     val_df_aligned['label_id'] = val_df_aligned['label'].map(label_to_int).fillna(-1).astype(int) # .fillna(-1)处理未见过的标签
     test_df_aligned['label_id'] = test_df_aligned['label'].map(label_to_int).fillna(-1).astype(int)
+
+
 
     # --- 4. 创建GNN Dataset和DataLoader ---
     print("\n[4/4] Creating GNN Datasets and DataLoaders...")
@@ -317,14 +364,22 @@ if __name__ == '__main__':
         field_embedder=field_embedder,
         num_classes=num_classes,
         node_fields_list=node_fields_for_model,
-        hidden_dim=GNN_HIDDEN_DIM
+        hidden_dim=GNN_HIDDEN_DIM, 
+        dropout_rate=DROP_RATE
     ).to(device)
     
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
+    optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7) 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='min',      # We want to minimize the validation loss
+        factor=0.5,      # Reduce LR by half
+        patience=5,      # Wait 5 epochs for improvement before reducing
+        verbose=True
+    )
 
-    DIAGNOSE = True
+    DIAGNOSE = False
 
     # --- 4. 训练循环 ---
     if not DIAGNOSE: 
@@ -335,7 +390,8 @@ if __name__ == '__main__':
 
             train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
             val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
-            scheduler.step()
+            # scheduler.step()
+            scheduler.step(val_metrics['loss'])
 
             print(f"Epoch {epoch+1} Summary:")
             print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (Weighted): {train_metrics['f1_weighted']:.4f}")

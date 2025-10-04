@@ -3,7 +3,8 @@ from utils.pcap_tools import pcap_to_csv
 from utils.pcap_tools import pcap_to_csv_v2 
 from tqdm import tqdm 
 
-pcap_directory_01 = os.path.join('..', 'TrafficData', 'dataset_29_d1')
+# pcap_directory_01 = os.path.join('..', 'TrafficData', 'dataset_29_d1')
+pcap_directory_01 = os.path.join('..', 'TrafficData', 'dataset_20_d2')
 output_directory_csv = os.path.join(pcap_directory_01 + '_csv') 
 test_pcap_path = os.path.join('.', 'Data', 'Test')
 test_pcap_udp_path = os.path.join('..', 'TrafficData', 'dataset_29_d1', 'kugou')
@@ -17,13 +18,21 @@ if os.path.exists(pcap_directory_01):
     
     # 筛选文件夹名称
     folders = [item for item in items if os.path.isdir(os.path.join(pcap_directory_01, item))]
-    
-    print("目录下的文件夹名称:")
-    for folder in tqdm(folders):
-        pcap_folder = os.path.join(pcap_directory_01, folder) 
-        output_folder = os.path.join(output_directory_csv, folder)
-        os.makedirs(output_folder, exist_ok=True) 
-        pcap_to_csv_v2(pcap_folder, output_folder) 
+    csvs = [item for item in items if item.endswith('.pcap')]
+    if folders: 
+        print("目录下的文件夹名称:")
+        for folder in tqdm(folders):
+            pcap_folder = os.path.join(pcap_directory_01, folder) 
+            output_folder = os.path.join(output_directory_csv, folder)
+            os.makedirs(output_folder, exist_ok=True) 
+            pcap_to_csv_v2(pcap_folder, output_folder) 
+    elif csvs: 
+        for csv in tqdm(csvs): 
+            pcap_folder = pcap_directory_01 
+            output_folder = output_directory_csv 
+            os.makedirs(output_folder, exist_ok=True) 
+            pcap_to_csv_v2(pcap_folder, output_folder)
+
 else:
     print(f"目录不存在: {pcap_directory_01}") 
 
