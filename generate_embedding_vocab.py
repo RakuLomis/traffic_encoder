@@ -4,7 +4,8 @@ from utils.dataframe_tools import generate_vocabulary
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
-csv_path = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label.csv')
+# csv_path = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label.csv')
+csv_path = os.path.join('..', 'TrafficData', 'dataset_20_d2_csv', 'dataset_20_d2.csv')
 
 with open(config_path, 'r') as f: 
     yaml_config = yaml.safe_load(f)['field_embedding_config']

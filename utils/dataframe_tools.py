@@ -933,6 +933,109 @@ def global_stratified_split(
     print(f" - 测试集已保存到: {test_path}")
     print("\n全局数据集分割步骤已成功完成！")
 
+def global_stratified_split_memory_optimized(
+    source_csv_path: str, 
+    output_dir: str, 
+    test_size: float = 0.1, 
+    validation_size: float = 0.1,
+    chunk_size: int = 100000 # 每次处理的行数
+):
+    """
+    【内存优化版】对一个超大的CSV文件进行全局的、分层的 train-validation-test 分割。
+    """
+    print("="*60)
+    print("###   开始执行【内存优化版】的全局数据集分割   ###")
+    print("="*60)
+    
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --- Pass 1: 扫描文件，只收集标签和行号 ---
+    print(f"\n[Pass 1/3] 正在扫描 {source_csv_path} 以收集标签索引...")
+    label_to_indices = defaultdict(list)
+    header = None
+    total_rows = 0
+    with pd.read_csv(source_csv_path, dtype=str, usecols=['label'], chunksize=chunk_size) as reader:
+        for chunk in tqdm(reader, desc="Scanning labels"):
+            if header is None:
+                # 获取完整的表头，以便后续写入
+                full_header_df = pd.read_csv(source_csv_path, dtype=str, nrows=0)
+                header = full_header_df.columns.tolist()
+
+            for idx, label in chunk['label'].items():
+                label_to_indices[label].append(idx)
+            total_rows += len(chunk)
+            
+    print(f" -> 扫描完成。共 {total_rows} 条记录，{len(label_to_indices)} 个唯一类别。")
+
+    # --- 在内存中，对【索引】进行分层抽样 ---
+    print("\n[Pass 2/3] 正在对索引进行分层抽样...")
+    train_indices, val_indices, test_indices = [], [], []
+
+    for label, indices in tqdm(label_to_indices.items(), desc="Splitting indices"):
+        # 第一次分割：分出测试集索引
+        try:
+            remaining_idx, test_idx = train_test_split(indices, test_size=test_size, random_state=42)
+        except ValueError: # 如果某个类别的样本太少，无法分割，则全部放入训练集
+            train_indices.extend(indices)
+            continue
+            
+        # 第二次分割：从剩余索引中分出验证集索引
+        val_split_ratio = validation_size / (1.0 - test_size)
+        try:
+            train_idx, val_idx = train_test_split(remaining_idx, test_size=val_split_ratio, random_state=42)
+        except ValueError:
+            train_indices.extend(remaining_idx)
+            test_indices.extend(test_idx)
+            continue
+
+        train_indices.extend(train_idx)
+        val_indices.extend(val_idx)
+        test_indices.extend(test_idx)
+
+    # 将索引列表转换为集合，以获得O(1)的查找速度
+    train_indices_set = set(train_indices)
+    val_indices_set = set(val_indices)
+    test_indices_set = set(test_indices)
+
+    print("\n分割完成！各数据集规模如下:")
+    print(f" - 训练集 (Train Set): {len(train_indices_set)} 条")
+    print(f" - 验证集 (Validation Set): {len(val_indices_set)} 条")
+    print(f" - 测试集 (Test Set): {len(test_indices_set)} 条")
+
+    # --- Pass 2: 逐块读取，并将数据写入对应的文件 ---
+    print(f"\n[Pass 3/3] 正在逐块读取并写入分割后的文件...")
+    
+    train_path = os.path.join(output_dir, 'train_set.csv')
+    val_path = os.path.join(output_dir, 'validation_set.csv')
+    test_path = os.path.join(output_dir, 'test_set.csv')
+
+    # 首先，为三个输出文件写入表头
+    pd.DataFrame(columns=header).to_csv(train_path, index=False)
+    pd.DataFrame(columns=header).to_csv(val_path, index=False)
+    pd.DataFrame(columns=header).to_csv(test_path, index=False)
+    
+    with pd.read_csv(source_csv_path, dtype=str, chunksize=chunk_size) as reader:
+        for chunk in tqdm(reader, desc="Writing split files"):
+            # 根据索引，筛选出属于每个集合的行
+            train_chunk = chunk[chunk.index.isin(train_indices_set)]
+            val_chunk = chunk[chunk.index.isin(val_indices_set)]
+            test_chunk = chunk[chunk.index.isin(test_indices_set)]
+            
+            # 以追加模式写入，不写表头
+            if not train_chunk.empty:
+                train_chunk.to_csv(train_path, mode='a', header=False, index=False)
+            if not val_chunk.empty:
+                val_chunk.to_csv(val_path, mode='a', header=False, index=False)
+            if not test_chunk.empty:
+                test_chunk.to_csv(test_path, mode='a', header=False, index=False)
+
+    print(f"\n文件写入完成！")
+    print(f" - 训练集已保存到: {train_path}")
+    print(f" - 验证集已保存到: {val_path}")
+    print(f" - 测试集已保存到: {test_path}")
+    print("\n全局数据集分割步骤已成功完成！")
+
+
 def augment_main_block(
     block_dir: str, 
     main_block_name: str, 
