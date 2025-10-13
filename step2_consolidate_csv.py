@@ -175,7 +175,7 @@ if __name__ == '__main__':
     #     help="保存最终整合后的总数据集的CSV文件路径。"
     # )
     # args = parser.parse_args()
-    input_dir = os.path.join('..', 'TrafficData', 'dataset_20_d2_csv') 
-    output_path = os.path.join(input_dir, 'dataset_20_d2.csv') 
-    consolidate_raw_csvs(input_dir, output_path)
+    input_dir = os.path.join('..', 'TrafficData', 'datasets_csv','dataset_20_d2') 
+    output_path = os.path.join('..','TrafficData', 'datasets_consolidate', 'dataset_20_d2.csv') 
+    consolidate_raw_csvs_memory_optimized(input_dir, output_path)
     # consolidate_raw_csvs_memory_optimized(input_dir, output_path)

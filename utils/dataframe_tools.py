@@ -9,6 +9,8 @@ from typing import Dict, List, Set, Tuple, Any
 from collections import defaultdict
 from sklearn.model_selection import train_test_split
 from collections import Counter
+import hashlib
+import json
 
 def get_file_path(dir_path: str, prefix: Optional[str] = None, postfix: Optional[str] = None): 
     """
@@ -735,6 +737,97 @@ def truncate_to_block_by_schema(source_csv_path: str, output_dir_path: str):
     print(f"Truncation succeeded! ")
 
 
+def truncate_to_block_by_schema_memory_optimized(
+    source_csv_path: str, 
+    output_dir_path: str, 
+    chunk_size: int = 100000
+):
+    """
+    【Memory-Optimized Version】
+    Groups a large CSV by its feature schema and saves each group to a separate file.
+    This version reads the source file in chunks to keep memory usage low and constant.
+
+    :param source_csv_path: Path to the large source CSV file.
+    :param output_dir_path: Directory to save the partitioned Block CSV files.
+    :param chunk_size: The number of rows to process in each chunk.
+    """
+    print("="*60)
+    print("### Starting Memory-Optimized Field Block Truncation ###")
+    print("="*60)
+
+    os.makedirs(output_dir_path, exist_ok=True)
+    
+    try:
+        # We use a 'with' statement for robust file handling
+        with pd.read_csv(source_csv_path, dtype=str, low_memory=False, chunksize=chunk_size) as reader:
+            
+            # Use tqdm to track progress over the entire file
+            # We need to calculate the total number of chunks first for tqdm
+            total_rows = sum(1 for row in open(source_csv_path)) - 1
+            
+            for chunk_df in tqdm(reader, total=(total_rows // chunk_size) + 1, desc="Processing Chunks"):
+                
+                # --- This logic is the same as before, but applied only to the chunk ---
+                meta_columns = ['index', 'label', 'label_id']
+                feature_columns = [col for col in chunk_df.columns if col not in meta_columns]
+                
+                notna_mask = chunk_df[feature_columns].notna()
+                
+                fingerprints = notna_mask.apply(
+                    lambda row: '|'.join(row.index[row]), 
+                    axis=1
+                )
+                
+                grouped = chunk_df.groupby(fingerprints)
+                # -------------------------------------------------------------------
+
+                for fingerprint, group_df in grouped:
+                    
+                    # Clean the group by dropping all-NaN columns specific to this group
+                    block_cleaned = group_df.dropna(axis=1, how='all')
+                    
+                    # --- File Handling Logic ---
+                    # Use a hash of the long fingerprint string for a clean, unique filename
+                    fp_hash = hashlib.md5(fingerprint.encode()).hexdigest()
+                    output_filename = f"block_{fp_hash}.csv"
+                    output_path = os.path.join(output_dir_path, output_filename)
+                    
+                    # Check if the file already exists to decide whether to write headers
+                    write_header = not os.path.exists(output_path)
+                    
+                    # Append the cleaned data to the correct file
+                    block_cleaned.to_csv(
+                        output_path, 
+                        mode='a', # 'a' stands for append
+                        header=write_header, 
+                        index=False
+                    )
+
+    except FileNotFoundError:
+        print(f"Source file not found: {source_csv_path}")
+        return
+        
+    print("\nTruncation succeeded!")
+    print("Post-processing: Renaming files to simple integers and creating a map...")
+
+    # --- Post-processing: Rename hashed files to 0.csv, 1.csv, etc. for consistency ---
+    mapping = {}
+    counter = 0
+    for filename in sorted(os.listdir(output_dir_path)):
+        if filename.startswith('block_') and filename.endswith('.csv'):
+            new_name = f"{counter}.csv"
+            mapping[filename] = new_name
+            os.rename(os.path.join(output_dir_path, filename), os.path.join(output_dir_path, new_name))
+            counter += 1
+    
+    # Save the mapping for future reference
+    map_path = os.path.join(output_dir_path, "fingerprint_to_id_map.json")
+    with open(map_path, 'w') as f:
+        json.dump(mapping, f, indent=4)
+        
+    print(f"Renaming complete. {counter} unique blocks were created.")
+    print(f"Filename mapping saved to: {map_path}")
+
 def generate_summary_tables(
     directory_path: str, 
     label_output_path: str, 
@@ -1130,6 +1223,117 @@ def augment_main_block(
     augmented_df.to_csv(output_path, index=False)
     print(f"\n数据补充成功！")
     print(f" - 原始 Main Block 样本数: {len(main_df)}")
+    print(f" - 补充后总样本数: {len(augmented_df)}")
+    print(f" - 最终数据集已保存到: {output_path}")
+
+def augment_main_block_v2(
+    block_dir: str, 
+    output_path: str, 
+    min_samples_threshold: int = 3000
+):
+    """
+    【全自动版】实现“靶向数据补充”策略。
+    自动发现样本量最大的Block作为Chief Block，然后用其他Block对其进行增强。
+
+    :param block_dir: 包含所有【已合并】的Block CSV文件的目录。
+    :param output_path: 保存增强后的数据集的CSV文件路径。
+    :param min_samples_threshold: 定义稀有类别的样本数阈值。
+    """
+    print("="*50)
+    print("开始执行【全自动】“最大化覆盖”的数据补充策略...")
+    print("="*50)
+    
+    # ==================== 核心修改点 1：自动发现Chief Block ====================
+    print("\n[步骤 1/5] 正在扫描所有Block以确定Chief Block (样本量最大)...")
+    
+    all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+    if not all_files:
+        print(f"错误: 在目录 {block_dir} 中未找到任何CSV文件。")
+        return
+
+    block_sample_counts = {}
+    for filename in tqdm(all_files, desc="Finding largest block"):
+        try:
+            # 通过快速计算行数来确定样本量，避免加载整个文件
+            row_count = sum(1 for row in open(os.path.join(block_dir, filename))) - 1
+            block_sample_counts[os.path.splitext(filename)[0]] = row_count
+        except Exception as e:
+            print(f"扫描文件 {filename} 时出错: {e}")
+            
+    if not block_sample_counts:
+        print("错误：未能成功扫描任何Block。")
+        return
+        
+    # 找到样本量最大的那个Block的名称
+    main_block_name = max(block_sample_counts, key=block_sample_counts.get)
+    print(f" -> 自动选定 '{main_block_name}' 作为Chief Block (样本数: {block_sample_counts[main_block_name]})。")
+    # =======================================================================
+    
+    main_block_path = os.path.join(block_dir, f"{main_block_name}.csv")
+    
+    # 2. 加载主Block，并确定其目标Schema
+    print(f"\n[步骤 2/5] 加载 Chief Block '{main_block_name}'...")
+    main_df = pd.read_csv(main_block_path, dtype=str)
+    main_df_columns = main_df.columns.tolist()
+    
+    # 3. 扫描所有Block，建立类别分布的“情报数据库”
+    print("\n[步骤 3/5] 扫描所有Block，建立类别分布情报库...")
+    block_info = {}
+    for filename in tqdm(all_files, desc="Scanning Blocks for labels"):
+        block_name = os.path.splitext(filename)[0]
+        block_path = os.path.join(block_dir, filename)
+        try:
+            df_label = pd.read_csv(block_path, dtype=str, usecols=['label'])
+            if not df_label.empty:
+                block_info[block_name] = df_label['label'].value_counts().to_dict()
+        except Exception as e:
+            print(f"\n扫描 {filename} 时出错: {e}")
+
+    # 4. 找出Main Block中需要补充的“靶向类别”
+    main_label_counts = main_df['label'].value_counts()
+    target_classes = main_label_counts[main_label_counts < min_samples_threshold].index.tolist()
+    
+    all_labels_in_db = set(l for stats in block_info.values() for l in stats)
+    missing_classes = list(all_labels_in_db - set(main_label_counts.index))
+    target_classes.extend(missing_classes)
+    
+    print(f"\n[步骤 4/5] 在 Chief Block 中找到 {len(target_classes)} 个需要补充的类别:")
+    print(sorted(target_classes))
+
+    # 5. 遍历靶向类别，寻找【所有】捐献者并合并数据
+    print(f"\n[步骤 5/5] 开始从所有其他Block中寻找并合并补充数据...")
+    dfs_to_concat = [main_df]
+    
+    for target_class in tqdm(target_classes, desc="Augmenting Classes"):
+        for donor_name, label_counts in block_info.items():
+            if donor_name == main_block_name or target_class not in label_counts:
+                continue
+            
+            donor_path = os.path.join(block_dir, f"{donor_name}.csv")
+            donor_df = pd.read_csv(donor_path, dtype=str)
+            supplement_df = donor_df[donor_df['label'] == target_class]
+            
+            # 特征空间对齐
+            aligned_df = pd.DataFrame()
+            for col in main_df_columns:
+                if col in supplement_df.columns:
+                    aligned_df[col] = supplement_df[col]
+                else:
+                    aligned_df[col] = '0'
+            
+            dfs_to_concat.append(aligned_df)
+
+    # 6. 将所有数据合并成最终的增强版DataFrame
+    print("\n正在合并所有数据...")
+    if len(dfs_to_concat) > 1:
+        augmented_df = pd.concat(dfs_to_concat, ignore_index=True)
+    else:
+        augmented_df = main_df
+    
+    # 7. 保存结果
+    augmented_df.to_csv(output_path, index=False)
+    print(f"\n数据补充成功！")
+    print(f" - 原始 Chief Block ('{main_block_name}') 样本数: {len(main_df)}")
     print(f" - 补充后总样本数: {len(augmented_df)}")
     print(f" - 最终数据集已保存到: {output_path}")
 

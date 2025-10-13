@@ -243,7 +243,11 @@ if __name__ == '__main__':
     # output_dir = os.path.join('..', 'TrafficData', 'dataset_20_d2_csv')
 
     # convert_pcap_to_raw_csv(input_dir, output_dir)
-    input_dir = os.path.join('..', 'TrafficData', 'datasets_raw','dataset_29_d1')
-    output_dir = os.path.join('..', 'TrafficData', 'datasets_csv','dataset_29_d1')
+    # input_dir = os.path.join('..', 'TrafficData', 'datasets_raw','dataset_29_d1')
+    # output_dir = os.path.join('..', 'TrafficData', 'datasets_csv','dataset_29_d1')
+
+    input_dir = os.path.join('..', 'TrafficData', 'datasets_raw','dataset_20_d2')
+    output_dir = os.path.join('..', 'TrafficData', 'datasets_csv','dataset_20_d2')
 
     convert_pcap_to_raw_csv_v2(input_dir, output_dir)
+    
