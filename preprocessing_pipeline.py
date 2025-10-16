@@ -103,3 +103,29 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
     print("\n" + "="*80)
     print("###   所有数据集已处理完毕。   ###")
     print("="*80)
+
+if __name__ == '__main__':
+    # parser = argparse.ArgumentParser(description="全自动数据预处理流水线，从pcap到最终增强版训练集。")
+    # parser.add_argument(
+    #     '-i', '--input_root', 
+    #     required=True, 
+    #     help="包含所有待处理数据集子目录的根目录 (例如 '../TrafficData/datasets_raw')。"
+    # )
+    # parser.add_argument(
+    #     '-o', '--output_root', 
+    #     required=True, 
+    #     help="用于存放所有预处理阶段输出的根目录 (例如 '../TrafficData')。"
+    # )
+    # parser.add_argument(
+    #     '--force',
+    #     action='store_true',
+    #     help="如果指定，将强制覆盖并重新生成所有已存在的文件和目录。"
+    # )
+    
+    # args = parser.parse_args()
+    # run_full_pipeline(args.input_root, args.output_root, args.force)
+
+    input_root = os.path.join('..', 'TrafficData', 'datasets_raw_add1') 
+    output_root = os.path.join('..', 'TrafficData', 'datasets_csv_add1')
+
+    run_full_pipeline(input_root, output_root)
