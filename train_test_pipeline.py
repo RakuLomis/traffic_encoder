@@ -25,6 +25,7 @@ from models.ProtocolTreeGAttention import ProtocolTreeGAttention
 from utils.metrics import calculate_metrics
 from utils.model_utils import diagnose_gate_weights_for_class
 import sys
+from transformers import get_linear_schedule_with_warmup
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, alpha=1e-3):
     """
@@ -58,7 +59,8 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, 
 
         # d) 计算加权总损失
         # ==================== 核心修改点：暂时禁用负熵正则化 ====================
-        alpha = 0.0 
+        # alpha = 0.0 
+        alpha = 1e-4
         total_loss = classification_loss + alpha * mask_entropy_loss
         
         # ======================================================================
@@ -142,9 +144,13 @@ if __name__ == '__main__':
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
     # LEARNING_RATE = 1e-4
+    # WEIGHT_DECAY = 1e-4
+    WEIGHT_DECAY = 1e-4
+    DROPOUT_RATE = 0.4
     NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
+
 
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -154,13 +160,9 @@ if __name__ == '__main__':
     train_dir = os.path.join(root_path, 'datasets_final')
     vocab_dir = os.path.join(root_path, 'categorical_vocabs')
     config_path = os.path.join('.', 'Data', 'fields_embedding_configs_v1.yaml')
-    # vocab_path = os.path.join('.', 'Data', 'completed_categorical_vocabs.yaml') 
-    # vocab_path = os.path.join('.', 'Data', 'Test','completed_categorical_vocabs.yaml') 
     vocab_path = os.path.join(vocab_dir, dataset_name + '_vocabs.yaml') 
     res_path = os.path.join('..', 'Res')
     train_set_name = dataset_name + '_chief_block_augmented'
-    # train_set_name = 'chief_block_dataset_20_d2' 
-    # train_set_name = 'chief_block_v2' # 特征合并
     val_set_name = 'validation_set' 
     test_set_name = 'test_set'
     chief_directory = train_dir
@@ -184,38 +186,51 @@ if __name__ == '__main__':
     print(f" - Validation set: {len(val_df)} rows")
     print(f" - Test set: {len(test_df)} rows")
 
-    # a) 确定“主干Schema”，即模型期望的输入特征
+    # # a) 确定“主干Schema”，即模型期望的输入特征
+    # chief_schema = [col for col in train_df.columns if col not in ['label', 'label_id']]
+    
+    # # b) 【关键】对验证集和测试集进行特征空间对齐
+    # print("\n[2/4] Aligning feature space for validation and test sets...")
+    
+    # # 对齐验证集
+    # val_df_aligned = pd.DataFrame(columns=chief_schema)
+    # for col in chief_schema:
+    #     if col in val_df.columns:
+    #         val_df_aligned[col] = val_df[col]
+    #     else:
+    #         val_df_aligned[col] = '0' # 用'0'填充缺失的特征
+    # val_df_aligned['label'] = val_df['label'] # 补回标签列
+    
+    # # 对齐测试集
+    # test_df_aligned = pd.DataFrame(columns=chief_schema)
+    # for col in chief_schema:
+    #     if col in test_df.columns:
+    #         test_df_aligned[col] = test_df[col]
+    #     else:
+    #         test_df_aligned[col] = '0'
+    # test_df_aligned['label'] = test_df['label']
+
+    # print(" - Feature alignment complete.")
+    # ==================== 代码优化：高效对齐 ====================
+    print("\n[2/4] Aligning feature space for validation and test sets...")
     chief_schema = [col for col in train_df.columns if col not in ['label', 'label_id']]
     
-    # b) 【关键】对验证集和测试集进行特征空间对齐
-    print("\n[2/4] Aligning feature space for validation and test sets...")
+    # 使用 reindex + fillna，一步到位，性能更高
+    val_df_aligned = val_df.reindex(columns=chief_schema, fill_value='0')
+    val_df_aligned['label'] = val_df['label']
     
-    # 对齐验证集
-    val_df_aligned = pd.DataFrame(columns=chief_schema)
-    for col in chief_schema:
-        if col in val_df.columns:
-            val_df_aligned[col] = val_df[col]
-        else:
-            val_df_aligned[col] = '0' # 用'0'填充缺失的特征
-    val_df_aligned['label'] = val_df['label'] # 补回标签列
-    
-    # 对齐测试集
-    test_df_aligned = pd.DataFrame(columns=chief_schema)
-    for col in chief_schema:
-        if col in test_df.columns:
-            test_df_aligned[col] = test_df[col]
-        else:
-            test_df_aligned[col] = '0'
+    test_df_aligned = test_df.reindex(columns=chief_schema, fill_value='0')
     test_df_aligned['label'] = test_df['label']
-
+    
     print(" - Feature alignment complete.")
+    # ==============================================================
     del val_df, test_df
 
 
     # c) 创建全局标签映射
     #    为了确保所有数据集的标签一致，我们基于训练集来创建映射
     print("\n[3/4] Creating label mapping...")
-    labels = train_df['label'].unique()
+    labels = train_df[F'label'].unique()
     label_to_int = {label: i for i, label in enumerate(labels)}
     num_classes = len(labels)
     
@@ -252,23 +267,32 @@ if __name__ == '__main__':
         num_classes=num_classes,
         node_fields_list=node_fields_for_model,
         hidden_dim=GNN_HIDDEN_DIM, 
-        dropout_rate=0.5 # change to 0.5 to against overfit
+        dropout_rate=DROPOUT_RATE # change to 0.5 to against overfit
     ).to(device)
 
     # ADD: Class Weighting
-    # 1. 计算每个类别的权重 (样本数越少，权重越高)
-    class_counts = train_df['label_id'].value_counts().sort_index().values
-    class_weights = 1. / torch.tensor(class_counts, dtype=torch.float)
-    class_weights = class_weights / class_weights.sum() * num_classes # 归一化
-    class_weights = class_weights.to(device)
+    # # 1. 计算每个类别的权重 (样本数越少，权重越高)
+    # class_counts = train_df['label_id'].value_counts().sort_index().values
+    # class_weights = 1. / torch.tensor(class_counts, dtype=torch.float)
+    # class_weights = class_weights / class_weights.sum() * num_classes # 归一化
+    # class_weights = class_weights.to(device)
 
-    # 2. 将权重传入损失函数
-    loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+    # # 2. 将权重传入损失函数
+    # loss_fn = nn.CrossEntropyLoss(weight=class_weights)
     
-    # loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss()
     
-    optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4) # add weight_decay
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7)
+    optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7) 
+
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        # mode='min',      # 监控验证集损失
+        mode='max', # 改成val_macrof1
+        factor=0.8,      # 每次衰减一半
+        patience=5,      # 容忍5个epoch没有改进
+        min_lr=1e-4      # 设置一个最小学习率
+    )
 
     DIAGNOSE = False
 
@@ -281,7 +305,9 @@ if __name__ == '__main__':
 
             train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
             val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
-            scheduler.step()
+            # scheduler.step()
+            # scheduler.step(val_metrics['loss']) 
+            scheduler.step(val_metrics['f1_macro']) 
 
             print(f"Epoch {epoch+1} Summary:")
             print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (Weighted): {train_metrics['f1_weighted']:.4f}")
@@ -309,10 +335,10 @@ if __name__ == '__main__':
             })
 
             # 这里可以添加保存最佳模型的逻辑
-            if val_metrics['f1_weighted'] > best_f1:
+            if val_metrics['f1_macro'] > best_f1:
                 torch.save(pta_model.state_dict(), os.path.join(res_path, train_set_name + '_best_model.pth'))
                 print("The best epoch parameters has been saved. ")
-                best_f1 = val_metrics['f1_weighted']
+                best_f1 = val_metrics['f1_macro']
         print("\nTraining complete!")
 
         # ==================== 分析学到的特征重要性 ====================
@@ -330,9 +356,7 @@ if __name__ == '__main__':
         print("="*50)
 
         # --- 5. 最终测试 ---
-        # test_dataset = GNNTrafficDataset(test_df, config_path, vocab_path)
-        # test_loader = DataLoader(test_dataset, BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True,)# collate_fn=gnn_collate_fn)
-        pta_model.load_state_dict(torch.load(os.path.join(res_path,train_set_name + '_best_model.pth')))
+        pta_model.load_state_dict(torch.load(os.path.join(res_path, train_set_name + '_best_model.pth')))
         pta_model.to(device)
         test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
         print(f"\nFinal Test Performance:")
@@ -381,7 +405,7 @@ if __name__ == '__main__':
 
         results_df = pd.DataFrame(training_results)
         results_df.to_csv(os.path.join(res_path,train_set_name + '_training_log.csv'), index=False)
-        print("\nTraining log saved to 'moe_pta_training_log.csv'")
+        print(f"\nTraining log saved to {train_set_name}_training_log.csv")
 
     elif DIAGNOSE: 
          # --- 诊断模式 ---
