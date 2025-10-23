@@ -26,6 +26,8 @@ from utils.metrics import calculate_metrics
 from utils.model_utils import diagnose_gate_weights_for_class
 import sys
 from transformers import get_linear_schedule_with_warmup
+from utils.loss_functions import FocalLoss
+import numpy as np
 
 def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, alpha=1e-3):
     """
@@ -142,15 +144,17 @@ if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 100
     BATCH_SIZE = 1024
-    LEARNING_RATE = 1e-4
+    LEARNING_RATE = 1e-3
     # LEARNING_RATE = 1e-4
     # WEIGHT_DECAY = 1e-4
     WEIGHT_DECAY = 5e-4
-    DROPOUT_RATE = 0.4
+    DROPOUT_RATE = 0.5
     NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
 
+    # FocalLoss的超参数
+    FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
 
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -281,18 +285,37 @@ if __name__ == '__main__':
     # loss_fn = nn.CrossEntropyLoss(weight=class_weights)
     
     # loss_fn = nn.CrossEntropyLoss()
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
     # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7) 
 
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     optimizer, 
+    #     # mode='min',      # 监控验证集损失
+    #     mode='max', # 改成val_macrof1
+    #     factor=0.7,      # 每次衰减一半
+    #     patience=5,      # 容忍5个epoch没有改进
+    #     min_lr=1e-5     # 设置一个最小学习率
+    # )
+
+    # a) 计算类别权重 (alpha)
+    class_counts = train_df['label_id'].value_counts().sort_index().values
+    class_weights = 1. / torch.tensor(np.maximum(class_counts, 1), dtype=torch.float)
+    # 对于FocalLoss，alpha通常被归一化到 (0, 1) 且和为1
+    alpha_weights = class_weights / class_weights.sum() 
+    alpha_weights = alpha_weights.to(device)
+
+    # b) 实例化 FocalLoss
+    loss_fn = FocalLoss(alpha=alpha_weights, gamma=FOCAL_GAMMA)
+    
+    # c) 调度器 (FocalLoss会使Loss值变小，监控F1-Macro更稳健)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
-        # mode='min',      # 监控验证集损失
-        mode='max', # 改成val_macrof1
-        factor=0.7,      # 每次衰减一半
-        patience=5,      # 容忍5个epoch没有改进
-        min_lr=1e-5     # 设置一个最小学习率
+        mode='max',      # 监控 F1-Macro
+        factor=0.8,
+        patience=5,
+        min_lr=1e-5      
     )
 
     DIAGNOSE = False

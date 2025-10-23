@@ -368,14 +368,62 @@ def pcap_to_pdml_bulk(pcap_path: str, output_xml_path: str) -> bool:
     print("  -> Bulk export to PDML/XML complete.")
     return True
 
-def is_field_valid(field_element: ET.Element, max_value_len: int = 64) -> bool:
+# def is_field_valid(field_element: ET.Element, max_value_len: int = 64) -> bool:
+#     """
+#     【核心规则函数】根据一系列规则，判断一个字段是否有效。
+#     您可以在这里轻松地添加、删除或修改规则。
+    
+#     :param field_element: 一个 <field> XML元素。
+#     :param max_value_len: 字段'value'属性的最大允许长度。
+#     :return: 如果字段有效则返回True，否则返回False。
+#     """
+#     # 规则1: 'name' 属性必须存在，作为我们的列名
+#     if 'name' not in field_element.attrib:
+#         return False
+
+#     # 规则2: 'hide' 属性值不能是 'yes'
+#     if field_element.get('hide') == 'yes':
+#         return False
+        
+#     # 规则3: 'value' 属性必须存在
+#     value = field_element.get('value')
+#     if value is None:
+#         return False
+        
+#     # 规则4: 'value' 的长度必须小于 max_value_len
+#     if len(value) >= max_value_len:
+#         return False
+        
+#     # 如果所有检查都通过，则该字段有效
+#     return True
+
+# def extract_fields_from_packet(packet_element: ET.Element) -> Dict[str, str]:
+#     """
+#     从一个PDML的 <packet> XML元素中，提取所有【有效】的扁平化字段。
+#     """
+#     packet_fields = {}
+#     for field in packet_element.findall('.//field'):
+#         if is_field_valid(field):
+#             name = field.get('name')
+#             value = field.get('value')
+#             packet_fields[name] = value
+            
+#     # 单独处理并添加frame.number
+#     geninfo = packet_element.find("proto[@name='geninfo']")
+#     if geninfo is not None:
+#         num_field = geninfo.find("field[@name='num']")
+#         if num_field is not None:
+#             packet_fields['frame.number'] = num_field.get('show')
+
+#     return packet_fields
+
+def is_field_valid(field_element: ET.Element) -> bool:
     """
-    【核心规则函数】根据一系列规则，判断一个字段是否有效。
-    您可以在这里轻松地添加、删除或修改规则。
+    【核心规则函数 - 已修正】
+    根据一系列规则，判断一个字段是否值得被【考虑】。
     
     :param field_element: 一个 <field> XML元素。
-    :param max_value_len: 字段'value'属性的最大允许长度。
-    :return: 如果字段有效则返回True，否则返回False。
+    :return: 如果字段值得被考虑则返回True，否则返回False。
     """
     # 规则1: 'name' 属性必须存在，作为我们的列名
     if 'name' not in field_element.attrib:
@@ -385,34 +433,52 @@ def is_field_valid(field_element: ET.Element, max_value_len: int = 64) -> bool:
     if field_element.get('hide') == 'yes':
         return False
         
-    # 规则3: 'value' 属性必须存在
-    value = field_element.get('value')
-    if value is None:
-        return False
-        
-    # 规则4: 'value' 的长度必须小于 max_value_len
-    if len(value) >= max_value_len:
-        return False
-        
-    # 如果所有检查都通过，则该字段有效
+    # 如果通过了基本检查，就值得被进一步考虑
     return True
 
-def extract_fields_from_packet(packet_element: ET.Element) -> Dict[str, str]:
+def extract_fields_from_packet(packet_element: ET.Element, max_value_len: int = 64) -> Dict[str, str]:
     """
+    【修正版】
     从一个PDML的 <packet> XML元素中，提取所有【有效】的扁平化字段。
+    实现了“value优先，show备选”的逻辑。
     """
     packet_fields = {}
     for field in packet_element.findall('.//field'):
+        
+        # 1. 先进行基本的“一票否决”检查
         if is_field_valid(field):
             name = field.get('name')
-            value = field.get('value')
-            packet_fields[name] = value
             
-    # 单独处理并添加frame.number
+            # ==================== 核心修改点：值获取逻辑 ====================
+            
+            # 2. 优先尝试获取 'value' (原始/十六进制值)
+            value_to_use = field.get('value')
+            
+            if value_to_use is None:
+                # 3. 如果 'value' 不存在, 回退到 'show' (可读值)
+                value_to_use = field.get('show')
+                
+            # =================================================================
+            
+            # 4. 对我们【最终选择】的值，进行最后的验证
+            
+            # 规则 3 (新): 必须成功获取到一个值 (既不是None)
+            if value_to_use is None:
+                continue
+                
+            # 规则 4 (新): 值的长度必须小于 max_value_len
+            if len(value_to_use) >= max_value_len:
+                continue
+
+            # 5. 如果所有检查都通过，则该字段有效
+            packet_fields[name] = value_to_use
+            
+    # 单独处理并添加frame.number (此逻辑保持不变)
     geninfo = packet_element.find("proto[@name='geninfo']")
     if geninfo is not None:
         num_field = geninfo.find("field[@name='num']")
         if num_field is not None:
+            # frame.number 也总是使用 'show' 属性
             packet_fields['frame.number'] = num_field.get('show')
 
     return packet_fields

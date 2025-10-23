@@ -125,7 +125,7 @@ if __name__ == '__main__':
     # args = parser.parse_args()
     # run_full_pipeline(args.input_root, args.output_root, args.force)
 
-    input_root = os.path.join('..', 'TrafficData', 'datasets_raw_add1') 
-    output_root = os.path.join('..', 'TrafficData', 'datasets_csv_add1')
+    input_root = os.path.join('..', 'TrafficData', 'datasets_raw_add2') 
+    output_root = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
 
     run_full_pipeline(input_root, output_root)
