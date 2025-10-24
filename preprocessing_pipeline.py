@@ -2,7 +2,7 @@ import os
 import argparse
 import shutil
 from typing import Dict 
-from utils.pcap_tools import convert_pcap_to_raw_csv_v2 
+from utils.pcap_tools import convert_pcap_to_raw_csv_v2, convert_pcap_to_raw_csv_memory_optimized
 from utils.dataframe_tools import consolidate_raw_csvs_memory_optimized
 from utils.dataframe_tools import global_stratified_split_memory_optimized
 from utils.dataframe_tools import truncate_to_block_by_schema, augment_main_block_v2
@@ -57,7 +57,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                 if force_overwrite and os.path.exists(paths['raw_csv_dir']):
                     print(f" -> [FORCE] 正在删除旧目录: {paths['raw_csv_dir']}")
                     shutil.rmtree(paths['raw_csv_dir'])
-                convert_pcap_to_raw_csv_v2(paths['pcap_dir'], paths['raw_csv_dir'])
+                # convert_pcap_to_raw_csv_v2(paths['pcap_dir'], paths['raw_csv_dir'])
+                convert_pcap_to_raw_csv_memory_optimized(paths['pcap_dir'], paths['raw_csv_dir'])
             print(" -> Step 1 完成。")
 
             # --- Step 2: Consolidate CSVs ---

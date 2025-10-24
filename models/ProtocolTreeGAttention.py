@@ -10,6 +10,7 @@ import pandas as pd
 class ProtocolTreeGAttention(nn.Module):
     def __init__(self, #config_path: str, vocab_path: str, 
                 num_classes: int, node_fields_list: List[str], field_embedder: FieldEmbedding, 
+                num_flow_features: int, 
                 hidden_dim: int = 128, num_heads: int = 4, dropout_rate: float = 0.3):
         super().__init__()
         
@@ -30,25 +31,46 @@ class ProtocolTreeGAttention(nn.Module):
         # --- 2. 创建GNN层和分类器 ---
         self.conv1 = GATConv(hidden_dim, hidden_dim, heads=num_heads, dropout=dropout_rate)
         self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim, heads=1, concat=False, dropout=dropout_rate)
-        # self.classifier = nn.Linear(hidden_dim, num_classes)
+
+        # ==================== 核心修改点 2：新增“流特征”嵌入器 ====================
+        # 这个MLP负责将流统计特征 (例如 [avg_len, std_len, pkt_count]) 
+        # 编码到一个与GNN输出兼容的维度 (例如 64)
+        flow_embed_dim = hidden_dim // 2 # 这是一个可调的超参数，64维是一个好起点
+        self.flow_stats_embedder = nn.Sequential(
+            nn.Linear(num_flow_features, 64),
+            nn.LeakyReLU(),
+            nn.Linear(64, flow_embed_dim)
+        )
+        # ========================================================================
+
+        # ==================== 核心修改点 3：修改“分类器”以接收融合后的特征 ====================
+        # 
+        # 我们的最终特征向量将是 GNN输出 和 流特征嵌入 拼接而成的
+        # GNN输出维度: hidden_dim
+        # 流特征输出维度: flow_embed_dim
+        # 总输入维度: hidden_dim + flow_embed_dim
+        #
+        combined_dim = hidden_dim + flow_embed_dim
+
+        self.classifier = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim), # 第一个线性层接收“加宽”的特征
+            nn.LeakyReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(hidden_dim, num_classes) # 第二个线性层输出最终logits
+        )
+
         # self.classifier = nn.Sequential(
+        #     # 第一个线性层
         #     nn.Linear(hidden_dim, hidden_dim // 2),
-        #     nn.ReLU(), # 可能造成了梯度消失
+        #     # “稳定器”：批量归一化
+        #     # nn.BatchNorm1d(hidden_dim),
+        #     # “防死亡”激活函数
+        #     nn.LeakyReLU(),
+        #     # Dropout层
         #     nn.Dropout(p=dropout_rate),
+        #     # 第二个线性层，输出最终的logits
         #     nn.Linear(hidden_dim // 2, num_classes)
         # )
-        self.classifier = nn.Sequential(
-            # 第一个线性层
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            # “稳定器”：批量归一化
-            # nn.BatchNorm1d(hidden_dim),
-            # “防死亡”激活函数
-            nn.LeakyReLU(),
-            # Dropout层
-            nn.Dropout(p=dropout_rate),
-            # 第二个线性层，输出最终的logits
-            nn.Linear(hidden_dim // 2, num_classes)
-        )
         # ==================== “急救”方案核心修改点 ====================
         
         # a) 【急救方案 1】修正掩码初始化，让门控默认“打开”
@@ -96,56 +118,6 @@ class ProtocolTreeGAttention(nn.Module):
         
         return aligned_vectors
 
-    # def forward(self, data) -> torch.Tensor:
-    # def forward_features(self, data) -> torch.Tensor:
-    #     # data 是一个由PyG DataLoader准备好的批处理图对象
-        
-    #     # --- 步骤一：初始嵌入 ---
-    #     batch_dict = {key: val for key, val in data if key not in ['edge_index', 'y', 'num_nodes', 'batch', 'ptr']}
-    #     embedded_vectors = self.field_embedder(batch_dict)
-        
-    #     # ==================== 核心修改点：向量化的对齐与组装 ====================
-        
-    #     # --- 步骤二：融合对齐 ---
-    #     aligned_vectors = self._align_fused(embedded_vectors, data.edge_index.device)
-        
-    #     # --- 步骤三：并行组装节点特征矩阵 x ---
-    #     node_feature_list = []
-    #     # 按照Dataset中定义的节点顺序进行组装
-    #     for field_name in self.node_fields:
-    #         # 使用 .get() 方法，如果字段不存在于对齐后的字典中（例如抽象节点），则返回None
-    #         vec = aligned_vectors.get(field_name)
-    #         if vec is not None:
-    #             node_feature_list.append(vec)
-    #         else:
-    #             # 为抽象节点或缺失的真实节点创建零向量占位符
-    #             zero_vec = torch.zeros(data.num_graphs, self.hidden_dim, device=data.edge_index.device)
-    #             node_feature_list.append(zero_vec)
-
-    #     # (batch_size, num_nodes, hidden_dim)
-    #     stacked_x = torch.stack(node_feature_list, dim=1)
-    #     # (batch_size * num_nodes, hidden_dim)
-    #     x = stacked_x.view(-1, self.hidden_dim)
-        
-    #     # ========================================================================
-
-    #     # --- 步骤四：GNN计算 ---
-    #     edge_index, batch_idx = data.edge_index, data.batch
-    #     x = F.dropout(x, p=self.dropout_rate, training=self.training)
-    #     x = self.conv1(x, edge_index)
-    #     x = F.elu(x)
-    #     x = self.conv2(x, edge_index)
-        
-    #     # --- 步骤五：全局池化和分类 ---
-    #     graph_embedding = global_mean_pool(x, batch_idx)
-    #     return graph_embedding
-    #     # logits = self.classifier(graph_embedding)
-        
-    #     # return logits
-    # def forward(self, data) -> torch.Tensor: 
-    #     graph_embedding = self.forward_features(data) 
-    #     logits = self.classifier(graph_embedding)
-    #     return logits
 
     def forward(self, data) -> torch.Tensor: 
         # data 是一个由PyG DataLoader准备好的批处理图对象
@@ -154,22 +126,6 @@ class ProtocolTreeGAttention(nn.Module):
         batch_dict = {key: val for key, val in data if key not in ['edge_index', 'y', 'num_nodes', 'batch', 'ptr']}
         embedded_vectors = self.field_embedder(batch_dict)
         
-        # --- b) 步骤二：对齐 & 构建节点特征矩阵 (无变化) ---
-        # aligned_vectors_list = []
-        # for field_name in self.node_fields:
-        #     if field_name in embedded_vectors:
-        #         vec = embedded_vectors[field_name]
-        #         # 检查是否存在对应的aligner
-        #         aligner_key = field_name.replace('.', '__')
-        #         if aligner_key in self.aligners:
-        #             aligner = self.aligners[aligner_key]
-        #             aligned_vectors_list.append(aligner(vec))
-        #         else: # 如果没有对齐层（例如，嵌入维度为0），则添加零向量
-        #             aligned_vectors_list.append(torch.zeros(data.num_graphs, self.hidden_dim, device=data.edge_index.device))
-        #     else:
-        #         # 为抽象节点或缺失的真实节点创建零向量占位符
-        #         zero_vec = torch.zeros(data.num_graphs, self.hidden_dim, device=data.edge_index.device)
-        #         aligned_vectors_list.append(zero_vec)
         aligned_vectors = self._align_fused(embedded_vectors, data.edge_index.device)
         
         node_feature_list = []
@@ -186,12 +142,6 @@ class ProtocolTreeGAttention(nn.Module):
         stacked_x = torch.stack(node_feature_list, dim=1)
         # stacked_x = torch.stack(aligned_vectors_list, dim=1)
         
-        # ==================== 核心修改点 2：应用特征掩码 ====================
-        #
-        # 在将节点特征送入GNN层之前，我们先用掩码对其进行加权
-        #
-        # a) 将我们学习的logits，通过sigmoid函数转换成0到1之间的“门控”权重
-        #    形状: [num_nodes]
         feature_gate = torch.sigmoid(self.feature_mask_logits)
         
         # b) 为了将掩码应用到批处理数据上，我们需要调整其形状以进行广播
@@ -223,8 +173,27 @@ class ProtocolTreeGAttention(nn.Module):
         
         # --- d) 步骤四：全局池化和分类 (无变化) ---
         graph_embedding = global_mean_pool(x, batch_idx)
-        logits = self.classifier(graph_embedding)
+
+        # ==================== 核心修改点 4：嵌入流特征并融合 ====================
         
+        # --- b) 步骤二：流级别“上下文”特征提取 ---
+        #    data.flow_stats 是由GNNTrafficDataset.__getitem__提供的张量
+        #    形状: [batch_size, num_flow_features]
+        flow_stats_input = data.flow_stats
+        
+        # flow_stats_embedding 是从【流上下文】中学到的“文章风格”
+        # 形状: [batch_size, flow_embed_dim]
+        flow_stats_embedding = self.flow_stats_embedder(flow_stats_input)
+        
+        # --- c) 步骤三：特征融合 ---
+        # 将“笔迹”和“文章风格”两种信息，在特征维度上拼接在一起
+        # 形状: [batch_size, hidden_dim + flow_embed_dim]
+        combined_features = torch.cat([graph_embedding, flow_stats_embedding], dim=1)
+        
+        # =======================================================================
+
+        # logits = self.classifier(graph_embedding)
+        logits = self.classifier(combined_features)
         return logits, feature_gate
 
     def get_feature_importance(self) -> pd.DataFrame:

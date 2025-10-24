@@ -5,10 +5,11 @@ import re
 import pandas as pd 
 from .dataframe_tools import filter_out_nan 
 import json 
-from typing import List, Dict
+from typing import List, Dict, TextIO, Any
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 import subprocess 
+import gc
 
 def packet_count(file, display_filter=None):
     """
@@ -483,6 +484,23 @@ def extract_fields_from_packet(packet_element: ET.Element, max_value_len: int = 
 
     return packet_fields
 
+# def extract_packets_from_pdml(xml_path: str) -> List[Dict[str, str]]:
+#     """
+#     【低内存版】从一个PDML/XML文件中，以流式、低内存的方式，提取所有有效的数据包。
+#     """
+#     packets_to_load = []
+#     try:
+#         context = ET.iterparse(xml_path, events=('end',))
+#         for _, elem in tqdm(context, desc=f"  -> Parsing {os.path.basename(xml_path)}"):
+#             if elem.tag == 'packet':
+#                 packet_fields = extract_fields_from_packet(elem)
+#                 if packet_fields:
+#                     packets_to_load.append(packet_fields)
+#                 elem.clear() # 释放内存
+#     except ET.ParseError as e:
+#         print(f"  -> XML解析错误: {e} in file {xml_path}")
+#     return packets_to_load
+
 # ==============================================================================
 # 2. 主功能函数
 # ==============================================================================
@@ -637,3 +655,235 @@ def convert_pcap_to_raw_csv_v2(pcap_dir: str, output_dir: str, debug: bool = Fal
         print(f" -> 文件已保存到: {output_csv_path}")
         
     print("\n[3/3] 所有pcap文件已处理完毕！")
+
+def convert_pcap_to_raw_csv_memory_optimized(pcap_dir: str, output_dir: str, debug: bool = False):
+    """
+    【最终内存优化版 Step 1】
+    智能发现、按标签分组、并【流式写入】CSV，内存占用极低。
+    """
+    print("="*60)
+    print("###   规范化的 PCAP to Labeled CSV 转换器 (内存优化版)   ###")
+    print("="*60)
+
+    # --- 步骤一：智能文件发现与分组 ---
+    print(f"\n[1/3] 正在从 {pcap_dir} 及其子目录中发现并分组pcap文件...")
+    pcap_groups = defaultdict(list)
+    for root, dirs, files in os.walk(pcap_dir):
+        for filename in files:
+            if filename.lower().endswith(('.pcap', '.pcapng')):
+                pcap_path = os.path.join(root, filename)
+                parent_dir_name = os.path.basename(root)
+                label = parent_dir_name if root != pcap_dir else os.path.splitext(filename)[0].split('_')[0]
+                pcap_groups[label].append(pcap_path)
+    
+    if not pcap_groups:
+        print(f"错误: 在 {pcap_dir} 中未找到任何pcap(ng)文件。")
+        return False # <-- 返回失败
+    print(f" -> 发现完成，共找到 {len(pcap_groups)} 个标签组。")
+
+    # --- 步骤二：按标签进行处理与合并 (实现流式写入) ---
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n[2/3] ---------------------------------------------")
+    print(f"[2/3] 正在按标签组，逐个处理pcap并【流式写入】CSV...")
+
+    for label, pcap_paths in tqdm(pcap_groups.items(), desc="Processing Labels"):
+        print(f"\n--- 正在处理 Label: '{label}' ({len(pcap_paths)}个pcap文件) ---")
+        
+        output_csv_path = os.path.join(output_dir, f"{label}.csv")
+        is_first_write = True # 标记是否是第一次写入该CSV
+
+        for pcap_path in pcap_paths:
+            temp_xml_path = os.path.join(output_dir, f"_temp_{os.path.basename(pcap_path)}.xml")
+            
+            # 1. 转换 Pcap -> XML
+            if not pcap_to_pdml_bulk(pcap_path, temp_xml_path):
+                if not debug and os.path.exists(temp_xml_path): os.remove(temp_xml_path)
+                continue # 如果tshark失败（例如文件损坏），跳过这个pcap
+                
+            if not os.path.exists(temp_xml_path) or os.path.getsize(temp_xml_path) == 0:
+                if not debug and os.path.exists(temp_xml_path): os.remove(temp_xml_path)
+                continue # 跳过空文件
+
+            # 2. 【低内存】从XML中提取一个pcap的数据
+            packets = extract_packets_from_pdml(temp_xml_path)
+            if not packets:
+                print(f"  -> 警告: 在 {os.path.basename(pcap_path)} 中未能提取出任何有效数据包。")
+                if not debug and os.path.exists(temp_xml_path): os.remove(temp_xml_path)
+                continue
+
+            # 3. 【低内存】立即将这批数据转换为DataFrame
+            df = pd.DataFrame(packets)
+            df['label'] = label # 统一打上正确的标签
+            
+            # 4. 【低内存】以追加模式，立即将数据写入文件
+            if is_first_write:
+                df.to_csv(output_csv_path, mode='w', header=True, index=False)
+                is_first_write = False
+            else:
+                # 确保后续追加的DataFrame的列与已存在的CSV文件一致
+                # 读取表头
+                header_list = pd.read_csv(output_csv_path, dtype=str, nrows=0).columns.tolist()
+                df = df.reindex(columns=header_list, fill_value='0') # 用'0'对齐
+                df.to_csv(output_csv_path, mode='a', header=False, index=False)
+                
+            print(f"  -> 已追加 {len(df)} 个数据包到 {label}.csv")
+
+            # 5. 【低内存】清理这个pcap的数据
+            del df, packets
+            gc.collect() 
+            
+            if not debug and os.path.exists(temp_xml_path):
+                os.remove(temp_xml_path)
+    
+    print("\n[3/3] 所有pcap文件已处理完毕！")
+    return True # <-- 返回成功
+
+def stream_xml_to_csv(
+    xml_path: str, 
+    output_csv_file: TextIO, 
+    label: str, 
+    is_first_write_for_label: bool,
+    chunk_size: int = 50000 # 每次在内存中处理的包数量
+):
+    """
+    【真正低内存版】
+    以流式解析XML，分块（chunk）转换为DataFrame，并追加（append）写入到
+    一个已经打开的CSV文件中。
+
+    :param xml_path: 临时的PDML/XML文件路径。
+    :param output_csv_file: 一个已打开的、用于写入CSV的文件句柄。
+    :param label: 要为这批数据打上的标签。
+    :param is_first_write_for_label: 这是否是为这个label写入的第一个pcap。
+    :param chunk_size: 批处理大小。
+    :return: (是否成功, 是否是第一次写入)
+    """
+    packets_chunk: List[Dict[str, str]] = []
+    
+    try:
+        context = ET.iterparse(xml_path, events=('end',))
+        
+        for _, elem in tqdm(context, desc=f"  -> Streaming {os.path.basename(xml_path)}"):
+            if elem.tag == 'packet':
+                packet_fields = extract_fields_from_packet(elem)
+                if packet_fields:
+                    packets_chunk.append(packet_fields)
+                
+                # 当累积的包达到批次大小时，就处理并写入
+                if len(packets_chunk) >= chunk_size:
+                    df_chunk = pd.DataFrame(packets_chunk)
+                    df_chunk['label'] = label
+                    
+                    if is_first_write_for_label:
+                        df_chunk.to_csv(output_csv_file, mode='w', header=True, index=False)
+                        is_first_write_for_label = False # 关键：只在第一次写入时写表头
+                    else:
+                        # 后续追加时，必须确保列一致
+                        header_list = pd.read_csv(output_csv_file.name, dtype=str, nrows=0).columns.tolist()
+                        df_chunk = df_chunk.reindex(columns=header_list, fill_value='0')
+                        df_chunk.to_csv(output_csv_file, mode='a', header=False, index=False)
+                    
+                    packets_chunk = [] # 清空批次列表
+                
+                elem.clear() # 释放XML元素的内存
+        
+        # 处理最后一个不满批次的“尾巴”数据
+        if packets_chunk:
+            df_chunk = pd.DataFrame(packets_chunk)
+            df_chunk['label'] = label
+            
+            if is_first_write_for_label:
+                df_chunk.to_csv(output_csv_file, mode='w', header=True, index=False)
+                is_first_write_for_label = False
+            else:
+                header_list = pd.read_csv(output_csv_file.name, dtype=str, nrows=0).columns.tolist()
+                df_chunk = df_chunk.reindex(columns=header_list, fill_value='0')
+                df_chunk.to_csv(output_csv_file, mode='a', header=False, index=False)
+            
+            del df_chunk # 显式清理
+            
+    except ET.ParseError as e:
+        print(f"  -> XML解析错误: {e} in file {xml_path}")
+        return False, is_first_write_for_label
+    
+    return True, is_first_write_for_label
+
+def convert_pcap_to_raw_csv_memory_optimized_v2(pcap_dir: str, output_dir: str, debug: bool = False):
+    """
+    【最终内存优化版 Step 1】
+    智能发现、按标签分组、并【逐块流式写入】CSV，内存占用极低。
+    """
+    print("="*60)
+    print("###   规范化的 PCAP to Labeled CSV 转换器 (最终内存优化版)   ###")
+    print("="*60)
+
+    # --- 步骤一：智能文件发现与分组 ---
+    print(f"\n[1/3] 正在从 {pcap_dir} 及其子目录中发现并分组pcap文件...")
+    pcap_groups = defaultdict(list)
+    for root, dirs, files in os.walk(pcap_dir):
+        for filename in files:
+            if filename.lower().endswith(('.pcap', '.pcapng')):
+                pcap_path = os.path.join(root, filename)
+                parent_dir_name = os.path.basename(root)
+                label = parent_dir_name if root != pcap_dir else os.path.splitext(filename)[0].split('_')[0]
+                pcap_groups[label].append(pcap_path)
+    
+    if not pcap_groups:
+        print(f"错误: 在 {pcap_dir} 中未找到任何pcap(ng)文件。")
+        return False
+    print(f" -> 发现完成，共找到 {len(pcap_groups)} 个标签组。")
+
+    # --- 步骤二：按标签进行处理与合并 (实现流式写入) ---
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n[2/3] 正在按标签组，逐个处理pcap并【流式写入】CSV...")
+
+    for label, pcap_paths in tqdm(pcap_groups.items(), desc="Processing Labels"):
+        print(f"\n--- HS 正在处理 Label: '{label}' ({len(pcap_paths)}个pcap文件) ---")
+        
+        output_csv_path = os.path.join(output_dir, f"{label}.csv")
+        is_first_write_for_label = True # 标记是否是第一次写入该CSV
+        
+        # 【关键】如果文件已存在且我们不是强制覆盖，则需要先读取表头
+        if os.path.exists(output_csv_path) and not debug: # (假设debug=force_overwrite)
+             print(f" -> 文件 {label}.csv 已存在，将跳过。") # 简单的跳过逻辑
+             continue # 跳过这个label
+        
+        # 在处理一个新label之前，先清空或创建它的CSV文件
+        # 我们在这里打开文件句柄，并将其传递给处理函数
+        try:
+            with open(output_csv_path, 'w') as output_csv_file:
+                for pcap_path in pcap_paths:
+                    temp_xml_path = os.path.join(output_dir, f"_temp_{os.path.basename(pcap_path)}.xml")
+                    
+                    if not pcap_to_pdml_bulk(pcap_path, temp_xml_path):
+                        if not debug and os.path.exists(temp_xml_path): os.remove(temp_xml_path)
+                        continue 
+                        
+                    if not os.path.exists(temp_xml_path) or os.path.getsize(temp_xml_path) == 0:
+                        if not debug and os.path.exists(temp_xml_path): os.remove(temp_xml_path)
+                        continue
+
+                    # 【关键】调用新的流式处理函数
+                    success, first_write_flag = stream_xml_to_csv(
+                        temp_xml_path, 
+                        output_csv_file, 
+                        label, 
+                        is_first_write_for_label
+                    )
+                    is_first_write_for_label = first_write_flag # 更新标志
+                    
+                    if not debug and os.path.exists(temp_xml_path):
+                        os.remove(temp_xml_path)
+                    
+                    gc.collect() # 在处理完一个pcap后，进行垃圾回收
+                        
+        except Exception as e:
+            print(f"  -> 写入文件 {output_csv_path} 时发生严重错误: {e}")
+            continue
+            
+        if is_first_write_for_label: # 意味着没有写入任何数据
+            print(f" -> 警告: 未能为标签 '{label}' 提取出任何有效的数据包。")
+        else:
+            print(f" -> 成功为标签 '{label}' 生成CSV文件: {output_csv_path}")
+            
+    print("\n[3/3] 所有pcap文件已处理完毕！")
+    return True

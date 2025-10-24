@@ -1226,47 +1226,172 @@ def augment_main_block(
     print(f" - 补充后总样本数: {len(augmented_df)}")
     print(f" - 最终数据集已保存到: {output_path}")
 
+def format_bytes(size_bytes: int) -> str:
+    """一个辅助函数，将字节数转换为可读的KB/MB/GB。"""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} {unit}"
+
+# def augment_main_block_v2(
+#     block_dir: str, 
+#     output_path: str, 
+#     min_samples_threshold: int = 3000
+# ):
+#     """
+#     【全自动版】实现“靶向数据补充”策略。
+#     自动发现样本量最大的Block作为Chief Block，然后用其他Block对其进行增强。
+
+#     :param block_dir: 包含所有【已合并】的Block CSV文件的目录。
+#     :param output_path: 保存增强后的数据集的CSV文件路径。
+#     :param min_samples_threshold: 定义稀有类别的样本数阈值。
+#     """
+#     print("="*50)
+#     print("开始执行【全自动】“最大化覆盖”的数据补充策略...")
+#     print("="*50)
+    
+#     # ==================== 核心修改点 1：自动发现Chief Block ====================
+#     print("\n[步骤 1/5] 正在扫描所有Block以确定Chief Block (样本量最大)...")
+    
+#     all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+#     if not all_files:
+#         print(f"错误: 在目录 {block_dir} 中未找到任何CSV文件。")
+#         return
+
+#     block_sample_counts = {}
+#     for filename in tqdm(all_files, desc="Finding largest block"):
+#         try:
+#             # 通过快速计算行数来确定样本量，避免加载整个文件
+#             row_count = sum(1 for row in open(os.path.join(block_dir, filename))) - 1
+#             block_sample_counts[os.path.splitext(filename)[0]] = row_count
+#         except Exception as e:
+#             print(f"扫描文件 {filename} 时出错: {e}")
+            
+#     if not block_sample_counts:
+#         print("错误：未能成功扫描任何Block。")
+#         return
+        
+#     # 找到样本量最大的那个Block的名称
+#     main_block_name = max(block_sample_counts, key=block_sample_counts.get)
+#     print(f" -> 自动选定 '{main_block_name}' 作为Chief Block (样本数: {block_sample_counts[main_block_name]})。")
+#     # =======================================================================
+    
+#     main_block_path = os.path.join(block_dir, f"{main_block_name}.csv")
+    
+#     # 2. 加载主Block，并确定其目标Schema
+#     print(f"\n[步骤 2/5] 加载 Chief Block '{main_block_name}'...")
+#     main_df = pd.read_csv(main_block_path, dtype=str)
+#     main_df_columns = main_df.columns.tolist()
+    
+#     # 3. 扫描所有Block，建立类别分布的“情报数据库”
+#     print("\n[步骤 3/5] 扫描所有Block，建立类别分布情报库...")
+#     block_info = {}
+#     for filename in tqdm(all_files, desc="Scanning Blocks for labels"):
+#         block_name = os.path.splitext(filename)[0]
+#         block_path = os.path.join(block_dir, filename)
+#         try:
+#             df_label = pd.read_csv(block_path, dtype=str, usecols=['label'])
+#             if not df_label.empty:
+#                 block_info[block_name] = df_label['label'].value_counts().to_dict()
+#         except Exception as e:
+#             print(f"\n扫描 {filename} 时出错: {e}")
+
+#     # 4. 找出Main Block中需要补充的“靶向类别”
+#     main_label_counts = main_df['label'].value_counts()
+#     target_classes = main_label_counts[main_label_counts < min_samples_threshold].index.tolist()
+    
+#     all_labels_in_db = set(l for stats in block_info.values() for l in stats)
+#     missing_classes = list(all_labels_in_db - set(main_label_counts.index))
+#     target_classes.extend(missing_classes)
+    
+#     print(f"\n[步骤 4/5] 在 Chief Block 中找到 {len(target_classes)} 个需要补充的类别:")
+#     print(sorted(target_classes))
+
+#     # 5. 遍历靶向类别，寻找【所有】捐献者并合并数据
+#     print(f"\n[步骤 5/5] 开始从所有其他Block中寻找并合并补充数据...")
+#     dfs_to_concat = [main_df]
+    
+#     for target_class in tqdm(target_classes, desc="Augmenting Classes"):
+#         for donor_name, label_counts in block_info.items():
+#             if donor_name == main_block_name or target_class not in label_counts:
+#                 continue
+            
+#             donor_path = os.path.join(block_dir, f"{donor_name}.csv")
+#             donor_df = pd.read_csv(donor_path, dtype=str)
+#             supplement_df = donor_df[donor_df['label'] == target_class]
+            
+#             # 特征空间对齐
+#             aligned_df = pd.DataFrame()
+#             for col in main_df_columns:
+#                 if col in supplement_df.columns:
+#                     aligned_df[col] = supplement_df[col]
+#                 else:
+#                     aligned_df[col] = '0'
+            
+#             dfs_to_concat.append(aligned_df)
+
+#     # 6. 将所有数据合并成最终的增强版DataFrame
+#     print("\n正在合并所有数据...")
+#     if len(dfs_to_concat) > 1:
+#         augmented_df = pd.concat(dfs_to_concat, ignore_index=True)
+#     else:
+#         augmented_df = main_df
+    
+#     # 7. 保存结果
+#     augmented_df.to_csv(output_path, index=False)
+#     print(f"\n数据补充成功！")
+#     print(f" - 原始 Chief Block ('{main_block_name}') 样本数: {len(main_df)}")
+#     print(f" - 补充后总样本数: {len(augmented_df)}")
+#     print(f" - 最终数据集已保存到: {output_path}")
+
 def augment_main_block_v2(
     block_dir: str, 
     output_path: str, 
     min_samples_threshold: int = 3000
 ):
     """
-    【全自动版】实现“靶向数据补充”策略。
-    自动发现样本量最大的Block作为Chief Block，然后用其他Block对其进行增强。
+    【全自动版 v2】实现“靶向数据补充”策略。
+    自动发现【文件大小最大】的Block作为Chief Block，然后用其他Block对其进行增强。
 
     :param block_dir: 包含所有【已合并】的Block CSV文件的目录。
     :param output_path: 保存增强后的数据集的CSV文件路径。
     :param min_samples_threshold: 定义稀有类别的样本数阈值。
     """
     print("="*50)
-    print("开始执行【全自动】“最大化覆盖”的数据补充策略...")
+    print("开始执行【全自动，按文件大小】的数据补充策略...")
     print("="*50)
     
-    # ==================== 核心修改点 1：自动发现Chief Block ====================
-    print("\n[步骤 1/5] 正在扫描所有Block以确定Chief Block (样本量最大)...")
+    # ==================== 核心修改点：按“文件大小”自动发现Chief Block ====================
+    print("\n[步骤 1/5] 正在扫描所有Block以确定Chief Block (文件大小最大)...")
     
     all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
     if not all_files:
         print(f"错误: 在目录 {block_dir} 中未找到任何CSV文件。")
         return
 
-    block_sample_counts = {}
+    block_file_sizes = {}
     for filename in tqdm(all_files, desc="Finding largest block"):
         try:
-            # 通过快速计算行数来确定样本量，避免加载整个文件
-            row_count = sum(1 for row in open(os.path.join(block_dir, filename))) - 1
-            block_sample_counts[os.path.splitext(filename)[0]] = row_count
+            # 【关键改动】使用 os.path.getsize 来获取文件的字节大小
+            file_path = os.path.join(block_dir, filename)
+            file_size = os.path.getsize(file_path)
+            block_file_sizes[os.path.splitext(filename)[0]] = file_size
         except Exception as e:
             print(f"扫描文件 {filename} 时出错: {e}")
             
-    if not block_sample_counts:
+    if not block_file_sizes:
         print("错误：未能成功扫描任何Block。")
         return
         
-    # 找到样本量最大的那个Block的名称
-    main_block_name = max(block_sample_counts, key=block_sample_counts.get)
-    print(f" -> 自动选定 '{main_block_name}' 作为Chief Block (样本数: {block_sample_counts[main_block_name]})。")
+    # 找到文件大小最大的那个Block的名称
+    main_block_name = max(block_file_sizes, key=block_file_sizes.get)
+    
+    # 【关键改动】更新打印信息，显示文件大小
+    max_size_formatted = format_bytes(block_file_sizes[main_block_name])
+    print(f" -> 自动选定 '{main_block_name}' 作为Chief Block (文件大小: {max_size_formatted})。")
     # =======================================================================
     
     main_block_path = os.path.join(block_dir, f"{main_block_name}.csv")
@@ -1279,17 +1404,18 @@ def augment_main_block_v2(
     # 3. 扫描所有Block，建立类别分布的“情报数据库”
     print("\n[步骤 3/5] 扫描所有Block，建立类别分布情报库...")
     block_info = {}
-    for filename in tqdm(all_files, desc="Scanning Blocks for labels"):
-        block_name = os.path.splitext(filename)[0]
-        block_path = os.path.join(block_dir, filename)
+    # 我们可以在这里复用 block_file_sizes 字典的键，避免再次列出文件
+    for block_name in tqdm(block_file_sizes.keys(), desc="Scanning Blocks for labels"):
+        block_path = os.path.join(block_dir, f"{block_name}.csv")
         try:
             df_label = pd.read_csv(block_path, dtype=str, usecols=['label'])
             if not df_label.empty:
                 block_info[block_name] = df_label['label'].value_counts().to_dict()
         except Exception as e:
-            print(f"\n扫描 {filename} 时出错: {e}")
+            print(f"\n扫描 {block_name}.csv 时出错: {e}")
 
     # 4. 找出Main Block中需要补充的“靶向类别”
+    # ... (此步骤及后续所有步骤，与您之前的版本完全相同，无需修改)
     main_label_counts = main_df['label'].value_counts()
     target_classes = main_label_counts[main_label_counts < min_samples_threshold].index.tolist()
     

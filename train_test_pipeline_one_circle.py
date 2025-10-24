@@ -29,6 +29,8 @@ from transformers import get_linear_schedule_with_warmup
 from utils.loss_functions import FocalLoss
 import numpy as np
 import random 
+from torch.optim import RAdam
+import copy
 
 def set_seed(seed_value: int):
     """
@@ -58,7 +60,10 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, alpha=1e-3):
+def train_one_epoch(model, dataloader, # loss_fn, 
+                    optimizer, device, num_classes, 
+                    dynamic_weights: torch.Tensor, 
+                    alpha=1e-4):
     """
     一个完整的、带有负熵正则化的训练函数。
 
@@ -70,18 +75,26 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, 
     # 初始化混淆矩阵，用于计算详细指标
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
 
+    # 【关键】在函数内部创建最基础的损失函数
+    # reduction='none' 意味着它会为batch中的每个样本都返回一个损失值
+    base_loss_fn = nn.CrossEntropyLoss(reduction='none')
+
     for i, batched_graph in enumerate(tqdm(dataloader, desc="Training")):
         # 1. 将数据移动到GPU
         batched_graph.to(device)
         labels = batched_graph.y
         
-        # ==================== 核心修改点 1：接收gate并计算总损失 ====================
-        
-        # a) 模型现在返回两个输出：预测logits和特征门控权重
         outputs, gate = model(batched_graph)
+
+        # 1. 计算【基础】分类损失 (形状: [B])
+        classification_loss_per_sample = base_loss_fn(outputs, labels)
+
+        # 2. 【核心】应用动态权重
+        #    根据每个样本的真实标签，从 dynamic_weights 中获取对应的权重
+        sample_weights = dynamic_weights[labels]
+        #    计算加权后的批次平均损失
+        classification_loss = (classification_loss_per_sample * sample_weights).mean()
         
-        # b) 计算主任务的交叉熵损失
-        classification_loss = loss_fn(outputs, labels)
 
         # c) 计算负熵正则化损失，鼓励gate权重保持在0.5附近，避免过早饱和
         #    我们希望最大化熵，即最小化负熵
@@ -91,7 +104,7 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, 
         # d) 计算加权总损失
         # ==================== 核心修改点：暂时禁用负熵正则化 ====================
         # alpha = 0.0 
-        alpha = 1e-4
+        # alpha = 1e-4
         total_loss = classification_loss + alpha * mask_entropy_loss
         
         # ======================================================================
@@ -106,6 +119,11 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         optimizer.step()
+
+        # ==================== 核心修改点：按Step更新 ====================
+        # OneCycleLR需要在每个batch(step)之后被调用
+        # scheduler.step()
+        # =============================================================
 
         # 5. 统计指标时，我们只关心【主任务的损失】
         running_loss += classification_loss.item() * batched_graph.num_graphs
@@ -128,13 +146,18 @@ def train_one_epoch(model, dataloader, loss_fn, optimizer, device, num_classes, 
     return epoch_metrics, confusion_matrix
 
 
-def evaluate(model, dataloader, loss_fn, device, num_classes):
+def evaluate(model, dataloader, # loss_fn, 
+             device, num_classes):
     """
     一个完整的、适配新模型输出的评估函数。
     """
     model.eval()
     running_loss = 0.0
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
+
+    # 损失函数现在只在评估时用于报告，不在内部计算
+    eval_loss_fn = nn.CrossEntropyLoss()
+    running_loss = 0.0
 
     with torch.no_grad():
         for batched_graph in tqdm(dataloader, desc="Evaluating"):
@@ -149,7 +172,8 @@ def evaluate(model, dataloader, loss_fn, device, num_classes):
             #
             # =================================================================
 
-            loss = loss_fn(outputs, labels)
+            # loss = loss_fn(outputs, labels)
+            loss = eval_loss_fn(outputs, labels) # <-- 只用于报告
 
             running_loss += loss.item() * batched_graph.num_graphs
             _, predicted = torch.max(outputs.data, 1)
@@ -165,8 +189,17 @@ def evaluate(model, dataloader, loss_fn, device, num_classes):
     
     epoch_metrics = calculate_metrics(confusion_matrix)
     epoch_metrics['loss'] = epoch_loss
+
+    # 2. 【关键】单独计算并返回“每类F1分数”
+    tp = confusion_matrix.diag()
+    fp = confusion_matrix.sum(dim=0) - tp
+    fn = confusion_matrix.sum(dim=1) - tp
+    epsilon = 1e-8
+    precision = tp / (tp + fp + epsilon)
+    recall = tp / (tp + fn + epsilon)
+    per_class_f1 = 2 * (precision * recall) / (precision + recall + epsilon)
     
-    return epoch_metrics, confusion_matrix
+    return epoch_metrics, confusion_matrix, per_class_f1
 
 # =====================================================================
 if __name__ == '__main__':
@@ -176,18 +209,22 @@ if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 100
     BATCH_SIZE = 1024
-    # LEARNING_RATE = 1e-3
-    LEARNING_RATE = 5e-4
+    LEARNING_RATE = 1e-3
+    # LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-4
     # WEIGHT_DECAY = 5e-4
-    DROPOUT_RATE = 0.7
+    MAX_LEARNING_RATE = 1e-3
+    DROPOUT_RATE = 0.45
     NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
+    PATIENCE = 5
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
 
+    ROLLBACK_PATIENCE = 10
+    MIN_LR_FOR_TRAINING = 1e-6
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
     dataset_name = 'ISCX-VPN'
@@ -413,59 +450,65 @@ if __name__ == '__main__':
     # # 2. 将权重传入损失函数
     # loss_fn = nn.CrossEntropyLoss(weight=class_weights)
     
-    loss_fn = nn.CrossEntropyLoss()
+    # loss_fn = nn.CrossEntropyLoss()
     # loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
-    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.7) 
+    # optimizer = RAdam(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #     optimizer, 
-    #     # mode='min',      # 监控验证集损失
-    #     mode='max', # 改成val_macrof1
-    #     factor=0.7,      # 每次衰减一半
-    #     patience=5,      # 容忍5个epoch没有改进
-    #     min_lr=1e-5     # 设置一个最小学习率
-    # )
+    # # ==============================================================
 
-    # # a) 计算类别权重 (alpha)
-    # class_counts = train_df['label_id'].value_counts().sort_index().values
-    # class_weights = 1. / torch.tensor(np.maximum(class_counts, 1), dtype=torch.float)
-    # # 对于FocalLoss，alpha通常被归一化到 (0, 1) 且和为1
-    # alpha_weights = class_weights / class_weights.sum() 
-    # alpha_weights = alpha_weights.to(device)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.8, patience=5, min_lr=1e-4) # 监控f1_macro
 
-    # # b) 实例化 FocalLoss
-    # loss_fn = FocalLoss(alpha=alpha_weights, gamma=FOCAL_GAMMA)
-    
-    # c) 调度器 (FocalLoss会使Loss值变小，监控F1-Macro更稳健)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='max',      # 监控 F1-Macro
-        factor=0.8,
-        patience=5,
-        min_lr=5e-5      
-    )
+    # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0
+    dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
 
     DIAGNOSE = False
-
+    stop_training = False
     # --- 4. 训练循环 ---
     if not DIAGNOSE: 
         training_results = []
         best_f1 = 0.0
-        for epoch in range(NUM_EPOCHS):
+        best_val_f1_macro = 0.0 
+        epochs_since_best = 0 
+        best_epoch = -1
+        best_model_state = None # 在内存中保存最佳模型
+        for epoch in range(NUM_EPOCHS): 
+            if stop_training:
+                print("Learning rate too low. Stopping training early.")
+                break
+
             print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
 
-            train_metrics, _ = train_one_epoch(pta_model, train_loader, loss_fn, optimizer, device, num_classes)
-            val_metrics, _ = evaluate(pta_model, val_loader, loss_fn, device, num_classes)
+            train_metrics, _ = train_one_epoch(pta_model, train_loader, # loss_fn, 
+                                               optimizer, # scheduler, 
+                                               device, num_classes, 
+                                               dynamic_weights=dynamic_weights)
+            val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
+                                      device, num_classes)
             # scheduler.step()
             # scheduler.step(val_metrics['loss']) 
-            scheduler.step(val_metrics['f1_macro']) 
+            # scheduler.step(val_metrics['f1_macro']) 
+
+            # 3. 【关键】动态更新损失权重
+            #    这是一个简单的启发式规则：权重 = (1 - F1)^2
+            #    F1越低，权重越高
+            beta = 2.0 
+            new_weights = (1.0 - val_per_class_f1)**beta
+            # 归一化，防止权重爆炸
+            new_weights = new_weights / new_weights.mean() 
+            dynamic_weights = new_weights.to(device)
+            
+            # scheduler.step(val_metrics['f1_macro']) 
+
 
             print(f"Epoch {epoch+1} Summary:")
             print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (macro): {train_metrics['f1_macro']:.4f}")
             print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f} | Val F1 (macro): {val_metrics['f1_macro']:.4f}")
-            print(f"Epoch {epoch+1} Summary (LR: {scheduler.get_last_lr()[0]:.1e}):")
+
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch+1} Summary (Current LR: {current_lr:.1e}):")
+            # print(f"Epoch {epoch+1} Summary (LR: {scheduler.get_last_lr()[0]:.1e}):")
 
             training_results.append({
                 'epoch': epoch + 1,
@@ -488,10 +531,59 @@ if __name__ == '__main__':
             })
 
             # 这里可以添加保存最佳模型的逻辑
-            if val_metrics['f1_macro'] > best_f1:
+            # if val_metrics['f1_macro'] > best_f1:
+            #     torch.save(pta_model.state_dict(), os.path.join(res_path, train_set_name + '_best_model.pth'))
+            #     print("The best epoch parameters has been saved. ")
+            #     best_f1 = val_metrics['f1_macro']
+
+            current_val_f1_macro = val_metrics['f1_macro']
+            if current_val_f1_macro > best_val_f1_macro:
+                # --- 发现新高点 ---
+                print(f" -> Validation Macro F1 improved from {best_val_f1_macro:.4f} to {current_val_f1_macro:.4f}. Saving state...")
+                best_val_f1_macro = current_val_f1_macro
+                best_epoch = epoch + 1
+                # 【保存】使用深拷贝将最佳状态保存到内存
+                best_model_state = copy.deepcopy(pta_model.state_dict())
                 torch.save(pta_model.state_dict(), os.path.join(res_path, train_set_name + '_best_model.pth'))
-                print("The best epoch parameters has been saved. ")
-                best_f1 = val_metrics['f1_macro']
+                epochs_since_best = 0
+            else:
+                # --- 未发现新高点 ---
+                epochs_since_best += 1
+                print(f" -> Validation Macro F1 did not improve for {epochs_since_best} epoch(s). Best was {best_val_f1_macro:.4f} at epoch {best_epoch}.")
+
+                # # --- 触发回滚与早停 ---
+                # if epochs_since_best >= PATIENCE:
+                #     print(f"\n!!! Performance has not improved for {PATIENCE} epochs. Rolling back to best model from epoch {best_epoch}. !!!")
+                #     rollback_times += 1
+                #     # 【回滚】
+                #     if best_model_state:
+                #         pta_model.load_state_dict(best_model_state)
+                #     if rollback_times >= 3: 
+                #         break 
+
+                if epochs_since_best >= ROLLBACK_PATIENCE:
+                    print(f"\n!!! Performance has not improved for {ROLLBACK_PATIENCE} epochs. Rolling back to best model from epoch {best_epoch}. !!!")
+
+                    if best_model_state:
+                        # 1. 【回滚】
+                        pta_model.load_state_dict(best_model_state)
+
+                        # 2. 【手动降LR】
+                        print("   -> Aggressively reducing current learning rate by half...")
+                        new_lr = optimizer.param_groups[0]['lr'] * 0.5
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = new_lr
+
+                        # 3. 【重置计数器】
+                        epochs_since_best = 0
+
+                        # 4. 【增加早停条件】
+                        if new_lr < MIN_LR_FOR_TRAINING:
+                            print(f"   -> Learning rate ({new_lr:.1e}) has fallen below minimum. Triggering final early stop.")
+                            stop_training = True # 在下一个epoch开始时停止
+                    else:
+                        print("   -> Warning: No best model state found. Stopping training.")
+                        break # 如果从未保存过最佳状态就触发回滚，直接停止
         print("\nTraining complete!")
 
         # ==================== 分析学到的特征重要性 ====================
@@ -511,7 +603,9 @@ if __name__ == '__main__':
         # --- 5. 最终测试 ---
         pta_model.load_state_dict(torch.load(os.path.join(res_path, train_set_name + '_best_model.pth')))
         pta_model.to(device)
-        test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, loss_fn, device, num_classes)
+        test_metrics, test_confusion_matrix, _ = evaluate(pta_model, test_loader, 
+                                                    #    loss_fn, 
+                                                       device, num_classes)
         print(f"\nFinal Test Performance:")
         print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Weighted): {test_metrics['f1_weighted']:.4f}")
 
