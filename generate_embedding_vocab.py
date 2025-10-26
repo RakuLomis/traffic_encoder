@@ -1,17 +1,24 @@
 import os 
 import yaml
-from utils.dataframe_tools import generate_vocabulary 
+from utils.dataframe_tools import generate_vocabulary , generate_vocabulary_memory_optimized
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TARGET = 'train_set.csv'
 STEP = 'datasets_split'
 dataset_name = 'ISCX-VPN'
+dataset_name2 = 'ISCX-TOR-Acctivity' 
+dataset_name3 = 'ISCX-TOR-Application'
 root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
 config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
 # csv_path = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label.csv')
 # csv_path = os.path.join('..', 'TrafficData', 'dataset_20_d2_csv', 'dataset_20_d2.csv') 
-csv_path = os.path.join(root_path, STEP, dataset_name, TARGET)
-output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name + '_vocabs.yaml')
+# csv_path = os.path.join(root_path, STEP, dataset_name, TARGET)
+# csv_path = os.path.join(root_path, STEP, dataset_name2, TARGET)
+csv_path = os.path.join(root_path, STEP, dataset_name3, TARGET)
+# output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name + '_vocabs.yaml')
+# output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name + '_vocabs_test.yaml')
+# output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name2 + '_vocabs.yaml')
+output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name3 + '_vocabs.yaml')
 
 with open(config_path, 'r') as f: 
     yaml_config = yaml.safe_load(f)['field_embedding_config']
@@ -25,4 +32,4 @@ target_categorical_fields = [item for item in categorical_fields if item not in 
 print(target_categorical_fields)
 
 # vocab_reflect = generate_vocabulary(csv_path, target_categorical_fields, os.path.join('.', 'Data', 'Test', 'completed_categorical_vocabs.yaml'))
-generate_vocabulary(csv_path, target_categorical_fields, output_path)
+generate_vocabulary_memory_optimized(csv_path, target_categorical_fields, output_path)

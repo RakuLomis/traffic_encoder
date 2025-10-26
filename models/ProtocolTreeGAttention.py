@@ -10,7 +10,7 @@ import pandas as pd
 class ProtocolTreeGAttention(nn.Module):
     def __init__(self, #config_path: str, vocab_path: str, 
                 num_classes: int, node_fields_list: List[str], field_embedder: FieldEmbedding, 
-                num_flow_features: int, 
+                num_flow_features: int = 0, use_flow_features: bool = False, 
                 hidden_dim: int = 128, num_heads: int = 4, dropout_rate: float = 0.3):
         super().__init__()
         
@@ -19,6 +19,7 @@ class ProtocolTreeGAttention(nn.Module):
         self.hidden_dim = hidden_dim
         self.dropout_rate = dropout_rate
         self.node_fields = node_fields_list # 接收从Dataset传来的、当前Block的节点列表
+        self.use_flow_features = use_flow_features
         
         # --- 1. 创建“融合”的对齐层 (Fused Aligners) ---
         self.aligners = nn.ModuleDict()
@@ -32,25 +33,46 @@ class ProtocolTreeGAttention(nn.Module):
         self.conv1 = GATConv(hidden_dim, hidden_dim, heads=num_heads, dropout=dropout_rate)
         self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim, heads=1, concat=False, dropout=dropout_rate)
 
-        # ==================== 核心修改点 2：新增“流特征”嵌入器 ====================
-        # 这个MLP负责将流统计特征 (例如 [avg_len, std_len, pkt_count]) 
-        # 编码到一个与GNN输出兼容的维度 (例如 64)
-        flow_embed_dim = hidden_dim // 2 # 这是一个可调的超参数，64维是一个好起点
-        self.flow_stats_embedder = nn.Sequential(
-            nn.Linear(num_flow_features, 64),
-            nn.LeakyReLU(),
-            nn.Linear(64, flow_embed_dim)
-        )
-        # ========================================================================
+        if self.use_flow_features:
+            # --- 如果“开关”打开 ---
+            if num_flow_features <= 0:
+                raise ValueError("num_flow_features 必须大于0，当 use_flow_features=True 时。")
+            
+            # a) 创建“流特征”嵌入器
+            flow_embed_dim = hidden_dim // 2 # 64
+            self.flow_stats_embedder = nn.Sequential(
+                nn.Linear(num_flow_features, 64),
+                nn.LeakyReLU(),
+                nn.Linear(64, flow_embed_dim)
+            )
+            # b) 计算融合后的维度
+            combined_dim = hidden_dim + flow_embed_dim
+            
+        else:
+            # --- 如果“开关”关闭 ---
+            self.flow_stats_embedder = None
+            # b) 维度保持不变
+            combined_dim = hidden_dim
 
-        # ==================== 核心修改点 3：修改“分类器”以接收融合后的特征 ====================
-        # 
-        # 我们的最终特征向量将是 GNN输出 和 流特征嵌入 拼接而成的
-        # GNN输出维度: hidden_dim
-        # 流特征输出维度: flow_embed_dim
-        # 总输入维度: hidden_dim + flow_embed_dim
-        #
-        combined_dim = hidden_dim + flow_embed_dim
+        # # ==================== 核心修改点 2：新增“流特征”嵌入器 ====================
+        # # 这个MLP负责将流统计特征 (例如 [avg_len, std_len, pkt_count]) 
+        # # 编码到一个与GNN输出兼容的维度 (例如 64)
+        # flow_embed_dim = hidden_dim // 2 # 这是一个可调的超参数，64维是一个好起点
+        # self.flow_stats_embedder = nn.Sequential(
+        #     nn.Linear(num_flow_features, 64),
+        #     nn.LeakyReLU(),
+        #     nn.Linear(64, flow_embed_dim)
+        # )
+        # # ========================================================================
+
+        # # ==================== 核心修改点 3：修改“分类器”以接收融合后的特征 ====================
+        # # 
+        # # 我们的最终特征向量将是 GNN输出 和 流特征嵌入 拼接而成的
+        # # GNN输出维度: hidden_dim
+        # # 流特征输出维度: flow_embed_dim
+        # # 总输入维度: hidden_dim + flow_embed_dim
+        # #
+        # combined_dim = hidden_dim + flow_embed_dim
 
         self.classifier = nn.Sequential(
             nn.Linear(combined_dim, hidden_dim), # 第一个线性层接收“加宽”的特征
@@ -174,26 +196,40 @@ class ProtocolTreeGAttention(nn.Module):
         # --- d) 步骤四：全局池化和分类 (无变化) ---
         graph_embedding = global_mean_pool(x, batch_idx)
 
-        # ==================== 核心修改点 4：嵌入流特征并融合 ====================
+        if self.use_flow_features:
+            # --- 如果“开关”打开，则执行融合 ---
+            if not hasattr(data, 'flow_stats'):
+                raise ValueError("模型处于 use_flow_features=True 模式, 但GNNTrafficDataset未提供 'data.flow_stats'。")
+                
+            flow_stats_input = data.flow_stats
+            flow_stats_embedding = self.flow_stats_embedder(flow_stats_input)
+            
+            final_features = torch.cat([graph_embedding, flow_stats_embedding], dim=1)
         
-        # --- b) 步骤二：流级别“上下文”特征提取 ---
-        #    data.flow_stats 是由GNNTrafficDataset.__getitem__提供的张量
-        #    形状: [batch_size, num_flow_features]
-        flow_stats_input = data.flow_stats
+        else:
+            # --- 如果“开关”关闭，则直接使用GNN的输出 ---
+            final_features = graph_embedding
+
+        # # ==================== 核心修改点 4：嵌入流特征并融合 ====================
         
-        # flow_stats_embedding 是从【流上下文】中学到的“文章风格”
-        # 形状: [batch_size, flow_embed_dim]
-        flow_stats_embedding = self.flow_stats_embedder(flow_stats_input)
+        # # --- b) 步骤二：流级别“上下文”特征提取 ---
+        # #    data.flow_stats 是由GNNTrafficDataset.__getitem__提供的张量
+        # #    形状: [batch_size, num_flow_features]
+        # flow_stats_input = data.flow_stats
         
-        # --- c) 步骤三：特征融合 ---
-        # 将“笔迹”和“文章风格”两种信息，在特征维度上拼接在一起
-        # 形状: [batch_size, hidden_dim + flow_embed_dim]
-        combined_features = torch.cat([graph_embedding, flow_stats_embedding], dim=1)
+        # # flow_stats_embedding 是从【流上下文】中学到的“文章风格”
+        # # 形状: [batch_size, flow_embed_dim]
+        # flow_stats_embedding = self.flow_stats_embedder(flow_stats_input)
+        
+        # # --- c) 步骤三：特征融合 ---
+        # # 将“笔迹”和“文章风格”两种信息，在特征维度上拼接在一起
+        # # 形状: [batch_size, hidden_dim + flow_embed_dim]
+        # combined_features = torch.cat([graph_embedding, flow_stats_embedding], dim=1)
         
         # =======================================================================
 
         # logits = self.classifier(graph_embedding)
-        logits = self.classifier(combined_features)
+        logits = self.classifier(final_features)
         return logits, feature_gate
 
     def get_feature_importance(self) -> pd.DataFrame:

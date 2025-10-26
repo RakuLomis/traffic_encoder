@@ -2,11 +2,13 @@ import os
 import argparse
 import shutil
 from typing import Dict 
-from utils.pcap_tools import convert_pcap_to_raw_csv_v2, convert_pcap_to_raw_csv_memory_optimized
+from utils.pcap_tools import convert_pcap_to_raw_csv_v2, convert_pcap_to_raw_csv_memory_optimized, convert_pcap_to_raw_csv_memory_optimized_v2
+from utils.pcap_tools import convert_pcap_to_raw_csv_memory_optimized_v4, convert_pcap_to_raw_csv_memory_optimized_v3
 from utils.dataframe_tools import consolidate_raw_csvs_memory_optimized
 from utils.dataframe_tools import global_stratified_split_memory_optimized
-from utils.dataframe_tools import truncate_to_block_by_schema, augment_main_block_v2
+from utils.dataframe_tools import truncate_to_block_by_schema, augment_main_block_v2, augment_main_block_top_k
 from utils.pruning_and_merge import merge_field_blocks_tree_similarity 
+from utils.pcap_tools_enhance import convert_pcap_to_raw_csv
 
 def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: bool = False):
     """
@@ -43,7 +45,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
             "split_dir": os.path.join(output_root, 'datasets_split', dataset_name), # train, val, test数据集划分
             "truncated_blocks_dir": os.path.join(output_root, 'datasets_fbt', 'truncation', dataset_name), # truncate成小block
             "merged_blocks_dir": os.path.join(output_root, 'datasets_fbt', 'merger', dataset_name), # 第一次合并
-            "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_augmented.csv") # chief block
+            # "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_augmented.csv") # chief block
+            "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_topk_augmented.csv") # chief block
         }
 
         # b) 依次执行流水线的每一步
@@ -58,7 +61,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                     print(f" -> [FORCE] 正在删除旧目录: {paths['raw_csv_dir']}")
                     shutil.rmtree(paths['raw_csv_dir'])
                 # convert_pcap_to_raw_csv_v2(paths['pcap_dir'], paths['raw_csv_dir'])
-                convert_pcap_to_raw_csv_memory_optimized(paths['pcap_dir'], paths['raw_csv_dir'])
+                # convert_pcap_to_raw_csv_memory_optimized_v3(paths['pcap_dir'], paths['raw_csv_dir'])
+                convert_pcap_to_raw_csv(paths['pcap_dir'], paths['raw_csv_dir'])
             print(" -> Step 1 完成。")
 
             # --- Step 2: Consolidate CSVs ---
@@ -90,7 +94,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                 # 3.4: 主干增强
                 print("\n  -> Sub-step 3.4: Chief Block Augmentation...")
                 os.makedirs(os.path.dirname(paths['augmented_train_set']), exist_ok=True)
-                augment_main_block_v2(paths['merged_blocks_dir'], paths['augmented_train_set'])
+                # augment_main_block_v2(paths['merged_blocks_dir'], paths['augmented_train_set'])
+                augment_main_block_top_k(paths['merged_blocks_dir'], paths['augmented_train_set'])
             print(" -> Step 3 完成。")
             
             print(f"\n### 数据集 '{dataset_name}' 已成功处理完毕！###")

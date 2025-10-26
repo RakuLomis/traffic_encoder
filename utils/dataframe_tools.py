@@ -554,6 +554,112 @@ def generate_vocabulary(csv_path, categorical_fields, output_path):
     print("Vocabulary generation complete!")
     return master_vocab
 
+# 1. 定义一个强制使用单引号风格的字符串表示器
+def quoted_str_presenter(dumper, data):
+    """
+    这个表示器会强制将所有字符串用单引号括起来。
+    """
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style="'")
+
+# 2. 创建一个我们自己的 Dumper 类
+class QuotedDumper(yaml.Dumper):
+    pass
+
+# 3. 将我们的强制规则只添加到我们自己的 Dumper 类上
+QuotedDumper.add_representer(str, quoted_str_presenter)
+
+# ==============================================================================
+# 2. 【核心修改点】内存优化版的词典生成函数
+# ==============================================================================
+
+def generate_vocabulary_memory_optimized(
+    csv_path: str, 
+    categorical_fields: List[str], 
+    output_path: str, 
+    chunk_size: int = 100000 # 每次只从CSV读取10万行
+):
+    """
+    【内存优化版】
+    从一个【巨大】的CSV文件中，为指定的分类字段生成词典映射。
+    使用“分块读取”策略，以保持恒定且低的内存占用。
+    """
+    print(f"Starting memory-optimized vocabulary generation from: {csv_path}")
+    
+    # --- 步骤 1: 预检查，并确定需要读取的列 ---
+    try:
+        # 只读表头，快速检查
+        df_header = pd.read_csv(csv_path, dtype=str, nrows=0)
+    except FileNotFoundError:
+        print(f"错误: 源文件未找到 -> {csv_path}")
+        return None
+    except Exception as e:
+        print(f"读取 {csv_path} 表头时出错: {e}")
+        return None
+        
+    # 筛选出文件中真正存在的、我们关心的列
+    columns_to_read = [col for col in categorical_fields if col in df_header.columns]
+    if not columns_to_read:
+        print(f"警告: 在 {csv_path} 中未找到任何指定的分类字段。")
+        return None
+    
+    # --- 步骤 2: 初始化“唯一值”收集器 ---
+    # 我们使用一个字典，键是字段名，值是一个集合 (set)
+    # 集合 (set) 会自动处理重复值，内存效率很高
+    master_unique_values = defaultdict(set)
+
+    print(f"Reading file in chunks of {chunk_size} rows...")
+    
+    # 计算总行数以便显示Tqdm进度条 (这是一个快速的近似方法)
+    try:
+        total_rows = sum(1 for row in open(csv_path, 'r', encoding='utf-8')) - 1
+        num_chunks = (total_rows // chunk_size) + 1
+    except Exception:
+        num_chunks = None # 如果文件过大或编码有问题，则不显示总进度
+
+    # --- 步骤 3: 分块读取并收集唯一值 ---
+    with pd.read_csv(csv_path, dtype=str, usecols=columns_to_read, chunksize=chunk_size) as reader:
+        for chunk_df in tqdm(reader, total=num_chunks, desc="Processing Chunks"):
+            for field in columns_to_read:
+                # 1. 从当前块中获取非空、唯一的值
+                # 2. 将这些值更新到我们的主集合中
+                master_unique_values[field].update(chunk_df[field].dropna().unique())
+
+    print(f"\nUnique value collection complete. Found {len(master_unique_values)} fields.")
+
+    # --- 步骤 4: 处理收集到的值并构建词典 (逻辑与您之前相同) ---
+    master_vocab = {}
+    for field in tqdm(master_unique_values.keys(), desc="Building vocabs"):
+        unique_values_set = master_unique_values[field]
+        
+        # 我们使用一个更健壮的方式来处理str/int混合
+        unique_str_values = sorted([
+            f'{int(float(v)):x}' if v.replace('.','',1).isdigit() else str(v).lower().replace('0x','')
+            for v in unique_values_set
+        ])
+        
+        vocab_map = {val: i for i, val in enumerate(unique_str_values)}
+        vocab_map['__OOV__'] = len(vocab_map) # OOV索引为0
+        
+        # 将索引值+1，使0号索引保留给OOV
+        vocab_map = {val: i+1 for i, val in enumerate(unique_str_values)}
+        vocab_map['__OOV__'] = 0
+        
+        master_vocab[field] = vocab_map
+
+    # --- 步骤 5: 保存YAML文件 (使用您自定义的Dumper，逻辑不变) ---
+    print(f"\nSaving master vocabulary to: {output_path}")
+    with open(output_path, 'w') as f:
+        yaml.dump(
+            master_vocab, 
+            f, 
+            Dumper=QuotedDumper, 
+            default_flow_style=False, 
+            sort_keys=False
+        ) 
+        
+    print("Vocabulary generation complete!")
+    return master_vocab
+
 def label_and_merge_csvs(root_directory: str, output_directory: str, need_label=False): 
     """
     遍历根目录下的所有子文件夹，将子文件夹名作为标签添加到每个CSV文件中，
@@ -1460,6 +1566,134 @@ def augment_main_block_v2(
     augmented_df.to_csv(output_path, index=False)
     print(f"\n数据补充成功！")
     print(f" - 原始 Chief Block ('{main_block_name}') 样本数: {len(main_df)}")
+    print(f" - 补充后总样本数: {len(augmented_df)}")
+    print(f" - 最终数据集已保存到: {output_path}")
+
+def augment_main_block_top_k(
+    block_dir: str, 
+    output_path: str, 
+    min_samples_threshold: int = 3000,
+    top_k: int = 3 # <-- 【新】K值，默认为3
+):
+    """
+    【全自动版 v3 - Top-K合并】
+    自动发现【文件大小 Top-K】的Block，将它们合并成一个“超级Chief Block”，
+    然后再用其他Block对其进行增强。
+    """
+    print("="*50)
+    print(f"开始执行【Top-{top_k}合并】的数据补充策略...")
+    print("="*50)
+    
+    # --- 步骤 1：扫描所有Block，并按文件大小排序 ---
+    print(f"\n[步骤 1/6] 正在扫描所有Block以确定Top-{top_k} Chief Blocks...")
+    
+    all_files = [f for f in os.listdir(block_dir) if f.lower().endswith('.csv')]
+    if not all_files:
+        print(f"错误: 在目录 {block_dir} 中未找到任何CSV文件。")
+        return
+
+    block_file_sizes = {}
+    for filename in tqdm(all_files, desc="Finding largest blocks"):
+        try:
+            file_path = os.path.join(block_dir, filename)
+            file_size = os.path.getsize(file_path)
+            block_file_sizes[os.path.splitext(filename)[0]] = file_size
+        except Exception as e:
+            print(f"扫描文件 {filename} 时出错: {e}")
+            
+    if not block_file_sizes:
+        print("错误：未能成功扫描任何Block。")
+        return
+        
+    # 【关键】对所有Block按文件大小进行降序排序
+    sorted_blocks = sorted(block_file_sizes.items(), key=lambda item: item[1], reverse=True)
+    
+    # 选出Top-K个
+    top_k_blocks = sorted_blocks[:top_k]
+    top_k_names = [name for name, size in top_k_blocks]
+    
+    print(f" -> 自动选定 Top-{len(top_k_blocks)} Block(s) 作为Chief Block：")
+    for name, size in top_k_blocks:
+        print(f"    - '{name}' (文件大小: {format_bytes(size)})")
+
+    # --- 步骤 2：加载并合并Top-K Block，创建“超级Chief Block” ---
+    print(f"\n[步骤 2/6] 正在加载并合并Top-{len(top_k_blocks)} Block(s)...")
+    
+    dfs_to_merge = []
+    for block_name in top_k_names:
+        block_path = os.path.join(block_dir, f"{block_name}.csv")
+        dfs_to_merge.append(pd.read_csv(block_path, dtype=str))
+        
+    # 【关键】使用concat取所有特征的“并集”，并用'0'填充
+    #       这会创建出我们需要的、Schema最全的“超级Chief Block”
+    main_df = pd.concat(dfs_to_merge, ignore_index=True, sort=False).fillna('0')
+    main_df_columns = main_df.columns.tolist() # 这就是我们的“超级Schema”
+    
+    print(f" -> “超级Chief Block”创建成功。")
+    print(f" -> 原始 Top-K 样本数: {len(main_df)}")
+    print(f" -> 最终特征（节点）数: {len(main_df_columns) - 2}") # 减去label和label_id
+    
+
+    # 3. 扫描所有Block，建立类别分布的“情报数据库”
+    print("\n[步骤 3/6] 扫描所有Block，建立类别分布情报库...")
+    block_info = {}
+    # 我们可以在这里复用 block_file_sizes 字典的键，避免再次列出文件
+    for block_name in tqdm(block_file_sizes.keys(), desc="Scanning Blocks for labels"):
+        block_path = os.path.join(block_dir, f"{block_name}.csv")
+        try:
+            df_label = pd.read_csv(block_path, dtype=str, usecols=['label'])
+            if not df_label.empty:
+                block_info[block_name] = df_label['label'].value_counts().to_dict()
+        except Exception as e:
+            print(f"\n扫描 {block_name}.csv 时出错: {e}")
+
+    
+    # --- 步骤 4：找出Main Block中需要补充的“靶向类别” ---
+    # (这个逻辑与之前完全相同)
+    main_label_counts = main_df['label'].value_counts()
+    target_classes = main_label_counts[main_label_counts < min_samples_threshold].index.tolist()
+    all_labels_in_db = set(l for stats in block_info.values() for l in stats)
+    missing_classes = list(all_labels_in_db - set(main_label_counts.index))
+    target_classes.extend(missing_classes)
+    
+    print(f"\n[步骤 4/6] 在 “超级Chief Block” 中找到 {len(target_classes)} 个需要补充的类别:")
+    print(sorted(target_classes))
+
+    # --- 步骤 5：遍历靶向类别，寻找【所有】捐献者并合并数据 ---
+    print(f"\n[步骤 5/6] 开始从所有其他Block中寻找并合并补充数据...")
+    dfs_to_concat = [main_df] # 这一次，我们从“超级Chief Block”开始
+    
+    for target_class in tqdm(target_classes, desc="Augmenting Classes"):
+        for donor_name, label_counts in block_info.items():
+            # 【关键】确保我们不会从Top-K Block中重复添加数据
+            if donor_name in top_k_names or target_class not in label_counts:
+                continue
+            
+            donor_path = os.path.join(block_dir, f"{donor_name}.csv")
+            donor_df = pd.read_csv(donor_path, dtype=str)
+            supplement_df = donor_df[donor_df['label'] == target_class]
+            
+            # 特征空间对齐 (使用“超级Schema”)
+            aligned_df = pd.DataFrame()
+            for col in main_df_columns:
+                if col in supplement_df.columns:
+                    aligned_df[col] = supplement_df[col]
+                else:
+                    aligned_df[col] = '0'
+            
+            dfs_to_concat.append(aligned_df)
+
+    # 6. 将所有数据合并成最终的增强版DataFrame
+    print("\n正在合并所有数据...")
+    if len(dfs_to_concat) > 1:
+        augmented_df = pd.concat(dfs_to_concat, ignore_index=True)
+    else:
+        augmented_df = main_df
+    
+    # 7. 保存结果
+    augmented_df.to_csv(output_path, index=False)
+    print(f"\n数据补充成功！")
+    print(f" - 原始 Chief Block ('{top_k_names}') 样本数: {len(main_df)}")
     print(f" - 补充后总样本数: {len(augmented_df)}")
     print(f" - 最终数据集已保存到: {output_path}")
 
