@@ -1148,24 +1148,56 @@ def global_stratified_split_memory_optimized(
     
     os.makedirs(output_dir, exist_ok=True)
 
-    # --- Pass 1: 扫描文件，只收集标签和行号 ---
+    # # --- Pass 1: 扫描文件，只收集标签和行号 ---
+    # print(f"\n[Pass 1/3] 正在扫描 {source_csv_path} 以收集标签索引...")
+    # label_to_indices = defaultdict(list)
+    # header = None
+    # total_rows = 0
+    # with pd.read_csv(source_csv_path, dtype=str, usecols=['label'], chunksize=chunk_size) as reader:
+    #     for chunk in tqdm(reader, desc="Scanning labels"):
+    #         if header is None:
+    #             # 获取完整的表头，以便后续写入
+    #             full_header_df = pd.read_csv(source_csv_path, dtype=str, nrows=0)
+    #             header = full_header_df.columns.tolist()
+
+    #         for idx, label in chunk['label'].items():
+    #             label_to_indices[label].append(idx)
+    #         total_rows += len(chunk)
+            
+    # print(f" -> 扫描完成。共 {total_rows} 条记录，{len(label_to_indices)} 个唯一类别。")
+
+# --- Pass 1: 扫描文件，只收集标签和行号 ---
     print(f"\n[Pass 1/3] 正在扫描 {source_csv_path} 以收集标签索引...")
     label_to_indices = defaultdict(list)
     header = None
     total_rows = 0
+    valid_rows_processed = 0 # <-- [新增] 
+     
     with pd.read_csv(source_csv_path, dtype=str, usecols=['label'], chunksize=chunk_size) as reader:
         for chunk in tqdm(reader, desc="Scanning labels"):
             if header is None:
-                # 获取完整的表头，以便后续写入
+                # 获取完整的表头
                 full_header_df = pd.read_csv(source_csv_path, dtype=str, nrows=0)
                 header = full_header_df.columns.tolist()
+                if 'label' not in header:
+                    raise ValueError("错误：源CSV文件中未找到 'label' 列。")
 
-            for idx, label in chunk['label'].items():
+            # [!! 核心修复 !!]
+            # 1. 找到那些 'label' 列的值 *不是* 'label' 的有效行
+            #    这会一次性过滤掉所有混入的表头行
+            clean_chunk = chunk[chunk['label'] != 'label']
+            # 2. 只遍历“干净”的行
+            for idx, label in clean_chunk['label'].items():
                 label_to_indices[label].append(idx)
-            total_rows += len(chunk)
-            
-    print(f" -> 扫描完成。共 {total_rows} 条记录，{len(label_to_indices)} 个唯一类别。")
 
+            # 3. 更新统计
+            valid_rows_processed += len(clean_chunk)
+            total_rows += len(chunk) # total_rows 仍然跟踪读取的总行数
+
+    # [修改] 更新打印信息
+    print(f" -> 扫描完成。共 {total_rows} 条记录被读取，其中 {valid_rows_processed} 条是有效数据。")
+    print(f" -> 发现 {len(label_to_indices)} 个唯一类别")
+          
     # --- 在内存中，对【索引】进行分层抽样 ---
     print("\n[Pass 2/3] 正在对索引进行分层抽样...")
     train_indices, val_indices, test_indices = [], [], []

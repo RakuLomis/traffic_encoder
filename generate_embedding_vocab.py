@@ -12,12 +12,15 @@ root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
 config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
 # csv_path = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label.csv')
 # csv_path = os.path.join('..', 'TrafficData', 'dataset_20_d2_csv', 'dataset_20_d2.csv') 
+
 # csv_path = os.path.join(root_path, STEP, dataset_name, TARGET)
-# csv_path = os.path.join(root_path, STEP, dataset_name2, TARGET)
-csv_path = os.path.join(root_path, STEP, dataset_name3, TARGET)
 # output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name + '_vocabs.yaml')
-# output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name + '_vocabs_test.yaml')
+
+# csv_path = os.path.join(root_path, STEP, dataset_name2, TARGET)
 # output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name2 + '_vocabs.yaml')
+
+
+csv_path = os.path.join(root_path, STEP, dataset_name3, TARGET)
 output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name3 + '_vocabs.yaml')
 
 with open(config_path, 'r') as f: 

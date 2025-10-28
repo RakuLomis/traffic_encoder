@@ -10,6 +10,8 @@ from utils.dataframe_tools import truncate_to_block_by_schema, augment_main_bloc
 from utils.pruning_and_merge import merge_field_blocks_tree_similarity 
 from utils.pcap_tools_enhance import convert_pcap_to_raw_csv
 
+NEED_CHIEF_BLOCK = False
+
 def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: bool = False):
     """
     执行完整的数据预处理流水线，从pcap到最终的增强版训练集。
@@ -45,8 +47,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
             "split_dir": os.path.join(output_root, 'datasets_split', dataset_name), # train, val, test数据集划分
             "truncated_blocks_dir": os.path.join(output_root, 'datasets_fbt', 'truncation', dataset_name), # truncate成小block
             "merged_blocks_dir": os.path.join(output_root, 'datasets_fbt', 'merger', dataset_name), # 第一次合并
-            # "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_augmented.csv") # chief block
-            "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_topk_augmented.csv") # chief block
+            "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_augmented.csv") # chief block
+            # "augmented_train_set": os.path.join(output_root, 'datasets_final', f"{dataset_name}_chief_block_topk_augmented.csv") # chief block
         }
 
         # b) 依次执行流水线的每一步
@@ -82,20 +84,21 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                 print("\n  -> Sub-step 3.1: Global Stratified Split...")
                 global_stratified_split_memory_optimized(paths['consolidated_csv'], paths['split_dir'])
                 
-                # 3.2: FBT切块
-                print("\n  -> Sub-step 3.2: Field Block Truncation...")
-                train_set_path = os.path.join(paths['split_dir'], 'train_set.csv')
-                truncate_to_block_by_schema(train_set_path, paths['truncated_blocks_dir'])
-                
-                # 3.3: 结构化合并
-                print("\n  -> Sub-step 3.3: Structurally-aware Merging...")
-                merge_field_blocks_tree_similarity(paths['truncated_blocks_dir'], paths['merged_blocks_dir'], similarity_threshold=0.8)
+                if NEED_CHIEF_BLOCK: 
+                    # 3.2: FBT切块
+                    print("\n  -> Sub-step 3.2: Field Block Truncation...")
+                    train_set_path = os.path.join(paths['split_dir'], 'train_set.csv')
+                    truncate_to_block_by_schema(train_set_path, paths['truncated_blocks_dir'])
 
-                # 3.4: 主干增强
-                print("\n  -> Sub-step 3.4: Chief Block Augmentation...")
-                os.makedirs(os.path.dirname(paths['augmented_train_set']), exist_ok=True)
-                # augment_main_block_v2(paths['merged_blocks_dir'], paths['augmented_train_set'])
-                augment_main_block_top_k(paths['merged_blocks_dir'], paths['augmented_train_set'])
+                    # 3.3: 结构化合并
+                    print("\n  -> Sub-step 3.3: Structurally-aware Merging...")
+                    merge_field_blocks_tree_similarity(paths['truncated_blocks_dir'], paths['merged_blocks_dir'], similarity_threshold=0.8)
+
+                    # 3.4: 主干增强
+                    print("\n  -> Sub-step 3.4: Chief Block Augmentation...")
+                    os.makedirs(os.path.dirname(paths['augmented_train_set']), exist_ok=True)
+                    # augment_main_block_v2(paths['merged_blocks_dir'], paths['augmented_train_set'])
+                    augment_main_block_top_k(paths['merged_blocks_dir'], paths['augmented_train_set'])
             print(" -> Step 3 完成。")
             
             print(f"\n### 数据集 '{dataset_name}' 已成功处理完毕！###")

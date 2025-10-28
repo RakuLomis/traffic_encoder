@@ -104,20 +104,38 @@ class FieldEmbedding(nn.Module):
 
             if field_type == 'categorical':
                 embedding_dim = field_config['embedding_dim']
-                # layer = nn.Embedding(field_config['vocab_size'], embedding_dim)
-                # output_dim = embedding_dim
-                # ==================== 核心修改点 开始 ====================
                 # 从加载的词典中动态计算 vocab_size
                 if field_name in self.vocab_maps:
-                    # vocab_size 就是该字段对应字典的长度
-                    vocab_size = len(self.vocab_maps[field_name])
-                    layer = nn.Embedding(vocab_size, embedding_dim)
+                    # # vocab_size 就是该字段对应字典的长度
+                    # vocab_size = len(self.vocab_maps[field_name])
+                    # layer = nn.Embedding(vocab_size, embedding_dim)
+                    # output_dim = embedding_dim
+                    vocab_map = self.vocab_maps[field_name]
+                    # --- [!! 关键修复 !!] ---
+
+                    # [错误逻辑] vocab_size = len(vocab_map) 
+
+                    # [正确逻辑]
+                    if not vocab_map: # 安全检查，防止词汇表为空
+                        print(f"\n警告：分类字段 '{field_name}' 的词汇表为空，将跳过。")
+                        continue
+
+                    # 1. 找到词汇表中所有索引（值）中的最大值
+                    max_index = max(vocab_map.values())
+
+                    # 2. 嵌入层的大小必须是 (最大索引 + 1)
+                    vocab_size = max_index + 1
+                    # --- [!! 修复结束 !!] --- 
+
+                    # 假设你的 __OOV__ 索引是 0，你可以将 0 设为 padding_idx
+                    # 这可以让模型学会“忽略”OOV值，并可能提高性能
+                    padding_idx = 0 if 0 in vocab_map.values() else None                    
+                    layer = nn.Embedding(vocab_size, embedding_dim, padding_idx=padding_idx)
                     output_dim = embedding_dim
                 else:
                     # 如果一个分类字段在词典文件中找不到，打印警告并跳过
                     print(f"\n警告：分类字段 '{field_name}' 在词典文件 '{vocab_path}' 中未找到，将跳过此字段。")
                     continue # 跳过当前循环的剩余部分
-                # ==================== 核心修改点 结束 ====================
                 
             elif field_type == 'numerical':
                 embedding_dim = field_config['embedding_dim']
@@ -155,104 +173,6 @@ class FieldEmbedding(nn.Module):
                 self.total_embedding_dim += output_dim
                 # --------------------------------------------        
 
-        # # Replace '.' by '__'
-        # self.field_to_key_map = {name: name.replace('.', '__') for name in self.config.keys()}
-
-        # # 2. 遍历配置，动态创建嵌入层
-        # for field_name, field_config in tqdm(self.config.items(), desc="Creating embedding layer. "):
-        #     layer_key = self.field_to_key_map[field_name]
-        #     field_type = field_config['type']
-            
-        #     layer = None
-        #     output_dim = 0
-
-        #     if field_type == 'categorical':
-        #         vocab_size = field_config['vocab_size']
-        #         embedding_dim = field_config['embedding_dim']
-        #         layer = nn.Embedding(vocab_size, embedding_dim)
-        #         output_dim = embedding_dim
-                
-        #     elif field_type == 'numerical':
-        #         embedding_dim = field_config['embedding_dim']
-        #         layer = nn.Linear(1, embedding_dim)
-        #         output_dim = embedding_dim
-
-        #     elif field_type == 'address_ipv4':
-        #         embedding_dim = field_config['embedding_dim_per_octet']
-        #         aggregation = field_config['aggregation']
-        #         layer = _AddressEmbedding(4, embedding_dim, aggregation)
-        #         output_dim = embedding_dim
-
-        #     elif field_type == 'address_mac':
-        #         embedding_dim = field_config['embedding_dim_per_octet']
-        #         aggregation = field_config['aggregation']
-        #         layer = _AddressEmbedding(6, embedding_dim, aggregation)
-        #         output_dim = embedding_dim
-            
-        #     if layer is not None:
-        #         self.embedding_layers[layer_key] = layer
-        #         self.total_embedding_dim += output_dim
-    
-    # def forward(self, batch_data_dict):
-    #     """
-    #     前向传播。
-    #     :param batch_data_dict: 一个字典，键是字段名，值是对应的批处理数据张量。
-    #                             e.g., {'ip.src': tensor, 'tcp.port': tensor, ...}
-    #     :return: 一个拼接了所有字段嵌入向量的大的特征张量。
-    #     """
-    #     embedded_outputs = []
-        
-    #     # 按照ModuleDict中层的顺序进行迭代，保证每次拼接的顺序一致
-    #     for field_name, layer_key in tqdm(self.field_to_key_map.items(), desc="Forwarding. "):
-    #         # 检查批处理数据中是否存在该字段
-    #         if field_name in batch_data_dict and layer_key in self.embedding_layers:
-    #             # 获取对应的数据张量
-    #             input_tensor = batch_data_dict[field_name]
-    #             layer = self.embedding_layers[layer_key] 
-
-    #             # ==================== 调试代码块 开始 ====================
-    #             # 在执行嵌入前，检查索引是否在有效范围内
-    #             if isinstance(layer, nn.Embedding):
-    #                 # 获取输入张量中的最大值
-    #                 max_index_in_batch = input_tensor.max()
-    #                 # 获取该层的词典大小
-    #                 configured_vocab_size = layer.num_embeddings
-                    
-    #                 if max_index_in_batch >= configured_vocab_size:
-    #                     print("\n" + "="*60)
-    #                     print(f"!!! ERROR DETECTED: Index out of range for field: '{field_name}' !!!")
-    #                     print(f"    Max index value found in your data: {max_index_in_batch}")
-    #                     print(f"    Vocab size configured in your YAML: {configured_vocab_size}")
-    #                     print(f"    (Remember: valid indices are from 0 to vocab_size - 1)")
-    #                     print("    SOLUTION: Please increase the 'vocab_size' for this field in your f2v.yaml file.")
-    #                     print("="*60 + "\n")
-    #                     # 主动抛出错误，并附带清晰的说明
-    #                     raise IndexError(f"For field '{field_name}', input index {max_index_in_batch} "
-    #                                      f"is out of range for vocab_size {configured_vocab_size}.")
-    #             # ==================== 调试代码块 结束 ====================
-
-    #             # --- 新增的修正逻辑 ---
-    #             # 检查输入是否为地址类型且是一个列表（default_collate的特殊情况）
-    #             if isinstance(layer, _AddressEmbedding) and isinstance(input_tensor, list):
-    #                 # 如果是，使用torch.stack进行重组
-    #                 input_tensor = torch.stack(input_tensor, dim=1)
-    #             # --- 修正逻辑结束 ---
-                
-    #             # 特别处理数值型输入，需要确保其形状为 (batch_size, 1)
-    #             if isinstance(layer, nn.Linear):
-    #                 input_tensor = input_tensor.view(-1, 1).float()
-
-    #             embedded_vector = layer(input_tensor)
-    #             embedded_outputs.append(embedded_vector)
-    #         else:
-    #             # 如果某个字段在批数据中缺失，可以考虑填充一个零向量或采取其他策略
-    #             # 这里简单地打印一个警告
-    #             print(f"Warning: Field '{field_name}' not found in the input batch data.")
-
-    #     # 4. 沿最后一个维度拼接所有嵌入向量
-    #     # 输出形状 (batch_size, total_embedding_dim)
-    #     return torch.cat(embedded_outputs, dim=-1) 
-    # ==================== 核心修改点：重构 forward 方法 ====================
     def forward(self, batch_data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """
         前向传播。
@@ -261,10 +181,6 @@ class FieldEmbedding(nn.Module):
         :param batch_data_dict: 输入的原始数据字典。
         :return: 一个字典，键是字段名，值是对应的嵌入向量张量。
         """
-        # if not hasattr(self, '_printed_device_info'):
-        #     print(f"  [Inside FieldEmbedding] Module is on: {next(self.parameters()).device}")
-        #     print(f"  [Inside FieldEmbedding] Received data is on: {next(iter(batch_data_dict.values())).device}")
-        #     self._printed_device_info = True # 设置标志 
         embedded_vectors_dict = {}
         # 遍历输入批次中的字段
         for field_name, input_tensor in batch_data_dict.items():
@@ -280,11 +196,6 @@ class FieldEmbedding(nn.Module):
                     target_device = next(layer.parameters()).device
                     input_tensor = torch.tensor(input_tensor, dtype=torch.long, device=target_device)
                 
-                # if isinstance(layer, nn.Linear):
-                #     input_tensor = input_tensor.view(-input_tensor.size(0), 1).float()
-                # --- CORE FIX ---
-                # For numerical features, reshape the tensor to (batch_size, 1)
-                # The correct argument is -1, not -input_tensor.size(0)
                 if isinstance(layer, nn.Linear):
                     input_tensor = input_tensor.view(-1, 1).float()
                 # --- END FIX ---
@@ -294,38 +205,3 @@ class FieldEmbedding(nn.Module):
                 embedded_vectors_dict[field_name] = layer(input_tensor)
 
         return embedded_vectors_dict
-        # """
-        # 前向传播。
-        # 这个版本修正了对地址字段的处理，使其与PyG DataLoader兼容。
-        # """
-        # embedded_vectors_dict = {}
-        
-        # # 按照预计算的顺序进行迭代，以保证一致性
-        # for field_name in self.field_processing_order:
-        #     if field_name not in batch_data_dict:
-        #         continue
-                
-        #     layer_key = self.field_to_key_map.get(field_name)
-        #     if not layer_key or layer_key not in self.embedding_layers:
-        #         continue
-            
-        #     input_tensor = batch_data_dict[field_name]
-        #     layer = self.embedding_layers[layer_key]
-            
-        #     # ==================== 核心修改点 开始 ====================
-            
-        #     # 检查输入是否为地址类型且是一个列表
-        #     if isinstance(layer, _AddressEmbedding) and isinstance(input_tensor, list):
-        #         # 使用 torch.tensor 将 list of lists 直接转换为一个 2D Tensor
-        #         input_tensor = torch.tensor(input_tensor, dtype=torch.long, device=self.device)
-            
-        #     # ==================== 核心修改点 结束 ====================
-            
-        #     # 特别处理数值型输入
-        #     if isinstance(layer, nn.Linear):
-        #         input_tensor = input_tensor.view(-1, 1).float()
-
-        #     embedded_vector = layer(input_tensor)
-        #     embedded_vectors_dict[field_name] = embedded_vector
-            
-        # return embedded_vectors_dict
