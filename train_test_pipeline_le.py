@@ -66,13 +66,16 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
+
+
 def train_one_epoch(
     model: nn.Module, 
     dataloader: DataLoader, 
     optimizer: torch.optim.Optimizer, 
     device: torch.device, 
     num_classes: int, 
-    dynamic_weights: torch.Tensor,  # <-- 动态权重
+    # dynamic_weights: torch.Tensor,  # <-- 动态权重
+    loss_fn: nn.Module, # for focal_loss
     alpha: float = 1e-4               # <-- 掩码的正则化系数
 ) -> (Dict, torch.Tensor): # type: ignore 
     """
@@ -86,7 +89,7 @@ def train_one_epoch(
     
     # 【关键】在函数内部创建最基础的损失函数
     # reduction='none' 意味着它会为batch中的每个样本都返回一个损失值
-    base_loss_fn = nn.CrossEntropyLoss(reduction='none')
+    # base_loss_fn = nn.CrossEntropyLoss(reduction='none')
 
     for i, batch_dict in enumerate(tqdm(dataloader, desc="Training")):
         # # 1. 【新】将整个“批处理字典”移动到GPU
@@ -107,6 +110,19 @@ def train_one_epoch(
         # 2. 【新】从一个“基础”图（例如'eth'）中获取标签
         #    (因为所有子图的'y'都是一样的)
         labels = batch_dict['eth'].y 
+
+        # ==================== 【!! 核心修改：屏蔽SNI !!】 ====================
+        # 定义你想要屏蔽的“作弊”特征
+        FIELD_TO_IGNORE = 'tls.handshake.extensions_server_name'
+        
+        # 检查 'tls_handshake' 专家是否在批次中，并且该批次是否具有该属性
+        if 'tls_handshake' in batch_dict and hasattr(batch_dict['tls_handshake'], FIELD_TO_IGNORE):
+            try:
+                # 从 PyG 的 Batch 对象上删除该属性
+                delattr(batch_dict['tls_handshake'], FIELD_TO_IGNORE)
+            except AttributeError:
+                pass # 以防万一，虽然 hasattr 已经检查过了
+        # =====================================================================
         
         # 3. 【新】模型现在接收字典，并返回 logits 和 门控字典
         #    outputs = logits
@@ -114,13 +130,14 @@ def train_one_epoch(
         outputs, gates_dict = model(batch_dict)
         
         # 4. 计算【基础】分类损失 (形状: [B])
-        classification_loss_per_sample = base_loss_fn(outputs, labels)
+        # classification_loss_per_sample = base_loss_fn(outputs, labels)
 
-        # 5. 【核心】应用动态权重
-        #    根据每个样本的真实标签，从 dynamic_weights 中获取对应的权重
-        sample_weights = dynamic_weights[labels]
-        #    计算加权后的批次平均损失
-        classification_loss = (classification_loss_per_sample * sample_weights).mean()
+        # # 5. 【核心】应用动态权重
+        # #    根据每个样本的真实标签，从 dynamic_weights 中获取对应的权重
+        # sample_weights = dynamic_weights[labels]
+        # #    计算加权后的批次平均损失
+        # classification_loss = (classification_loss_per_sample * sample_weights).mean()
+        classification_loss = loss_fn(outputs, labels)
         
         # 6. 【新】计算所有专家掩码的总正则化损失
         total_mask_entropy_loss = 0.0
@@ -179,8 +196,9 @@ def evaluate(
     model: nn.Module, 
     dataloader: DataLoader, 
     device: torch.device, 
-    num_classes: int
-) -> Tuple[Dict, torch.Tensor, torch.Tensor]:
+    num_classes: int, 
+    loss_fn: nn.Module
+) -> Tuple[Dict, torch.Tensor]:  #, torch.Tensor]:
     """
     【终极架构版】
     为“分层语义MoE”模型（HierarchicalMoE）定制的评估函数。
@@ -192,7 +210,7 @@ def evaluate(
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
     
     # 我们在内部创建一个简单的损失函数，只用于【报告】损失值
-    base_loss_fn = nn.CrossEntropyLoss()
+    # base_loss_fn = nn.CrossEntropyLoss()
 
     for batch_dict in tqdm(dataloader, desc="Evaluating"):
         # ==================== 核心修改点：分别移动值 ====================
@@ -209,13 +227,29 @@ def evaluate(
         
         # 2. 【新】从一个“基础”图（例如'eth'）中获取标签
         labels = batch_dict['eth'].y 
+
+        # ==================== 【!! 核心修改：屏蔽SNI !!】 ====================
+        # 定义你想要屏蔽的“作弊”特征
+        FIELD_TO_IGNORE = 'tls.handshake.extensions_server_name'
+        
+        # 检查 'tls_handshake' 专家是否在批次中，并且该批次是否具有该属性
+        if 'tls_handshake' in batch_dict and hasattr(batch_dict['tls_handshake'], FIELD_TO_IGNORE):
+            try:
+                # 从 PyG 的 Batch 对象上删除该属性
+                delattr(batch_dict['tls_handshake'], FIELD_TO_IGNORE)
+            except AttributeError:
+                pass # 以防万一，虽然 hasattr 已经检查过了
+        # =====================================================================
         
         # 3. 【新】模型返回两个值，评估时我们只关心第一个（logits）
         outputs, _ = model(batch_dict) # 忽略 gates_dict
         
-        # 4. 计算并累积损失（仅用于报告）
-        loss = base_loss_fn(outputs, labels)
-        running_loss += loss.item() * labels.size(0) # 使用 labels.size(0) 作为批次大小
+        # # 4. 计算并累积损失（仅用于报告）
+        # loss = base_loss_fn(outputs, labels)
+        # running_loss += loss.item() * labels.size(0) # 使用 labels.size(0) 作为批次大小
+        # 4. 【修改】计算并累积损失
+        loss = loss_fn(outputs, labels) # <-- 使用传入的 loss_fn
+        running_loss += loss.item() * labels.size(0)
         
         # 5. 计算预测
         _, predicted = torch.max(outputs.data, 1)
@@ -236,20 +270,20 @@ def evaluate(
     epoch_metrics = calculate_metrics(cm_cpu) # 假设 calculate_metrics 接收一个 tensor
     epoch_metrics['loss'] = epoch_loss
     
-    # 3. 【关键新增】计算并返回“每类F1分数”张量
-    tp = confusion_matrix.diag()
-    fp = confusion_matrix.sum(dim=0) - tp
-    fn = confusion_matrix.sum(dim=1) - tp
-    epsilon = 1e-8 # 防止除以零
+    # # 3. 【关键新增】计算并返回“每类F1分数”张量
+    # tp = confusion_matrix.diag()
+    # fp = confusion_matrix.sum(dim=0) - tp
+    # fn = confusion_matrix.sum(dim=1) - tp
+    # epsilon = 1e-8 # 防止除以零
     
-    precision = tp / (tp + fp + epsilon)
-    recall = tp / (tp + fn + epsilon)
+    # precision = tp / (tp + fp + epsilon)
+    # recall = tp / (tp + fn + epsilon)
     
-    # per_class_f1 是一个在GPU/CPU上的张量，形状为 [num_classes]
-    per_class_f1 = 2 * (precision * recall) / (precision + recall + epsilon)
+    # # per_class_f1 是一个在GPU/CPU上的张量，形状为 [num_classes]
+    # per_class_f1 = 2 * (precision * recall) / (precision + recall + epsilon)
     
     # 确保返回的是在CPU上的张量，以便主循环使用
-    return epoch_metrics, cm_cpu, per_class_f1.cpu()
+    return epoch_metrics, cm_cpu, # per_class_f1.cpu()
 
 
 # =====================================================================
@@ -441,6 +475,34 @@ if __name__ == '__main__':
     val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path)
     test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\nUsing device: {device}")
+
+    # ================== 【!! 核心修改：定义FocalLoss !!】 ==================
+    
+    print("Calculating static class weights (alpha) for FocalLoss...")
+    # 1. 从训练集(train_df)中，计算每个类别的样本数
+    class_counts = train_df['label_id'].value_counts().sort_index().values
+    
+    # 2. 计算权重：使用“总样本数 / (类别数 * 类别样本数)”
+    #    这会给样本少的类别（如Google, Twitter）更高的权重
+    class_weights = torch.tensor(class_counts, dtype=torch.float)
+    total_samples = class_weights.sum()
+    class_weights = total_samples / (num_classes * class_weights)
+    
+    # 3. 将权重tensor移动到GPU
+    alpha_weights = class_weights.to(device)
+    
+    print(f" -> FocalLoss Alpha (weights): {alpha_weights.cpu().numpy().round(2)}")
+
+    # 4. 实例化 FocalLoss，传入计算好的 alpha 和超参数 gamma
+    loss_fn = FocalLoss(alpha=alpha_weights, gamma=FOCAL_GAMMA).to(device)
+
+    # 5. 【删除】我们不再需要旧的 dynamic_weights
+    # dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
+    
+    # =====================================================================
+
     del train_df, val_df_aligned, test_df_aligned
     gc.collect()
     
@@ -459,8 +521,7 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker)
     
     # --- 5. 初始化模型、损失函数和优化器 ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\nUsing device: {device}")
+    
     
     field_embedder = FieldEmbedding(config_path, vocab_path)
     field_embedder.to(device)
@@ -479,7 +540,8 @@ if __name__ == '__main__':
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
 
     # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0
-    dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
+    # dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
+
 
     DIAGNOSE = True
     stop_training = False
@@ -500,10 +562,12 @@ if __name__ == '__main__':
 
             train_metrics, _ = train_one_epoch(pta_model, train_loader, # loss_fn, 
                                                optimizer, # scheduler, 
-                                               device, num_classes, 
-                                               dynamic_weights=dynamic_weights)
-            val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
-                                      device, num_classes)
+                                               device, num_classes, loss_fn)
+                                            #    dynamic_weights=dynamic_weights)
+            # val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
+            #                           device, num_classes)
+            val_metrics, _ = evaluate(pta_model, val_loader, # loss_fn, 
+                                      device, num_classes, loss_fn)
             
             # beta = 2.0 
             # new_weights = (1.0 - val_per_class_f1)**beta
@@ -511,20 +575,20 @@ if __name__ == '__main__':
             # new_weights = new_weights / new_weights.mean() 
             # dynamic_weights = new_weights.to(device)
 
-            beta = 1.0 # <-- 可以使用一个较温和的beta，比如1.0
-            new_weights = (1.0 - val_per_class_f1.cpu())**beta # 确保在CPU上计算
-            new_weights = new_weights / new_weights.mean() # 归一化
+            # beta = 1.0 # <-- 可以使用一个较温和的beta，比如1.0
+            # new_weights = (1.0 - val_per_class_f1.cpu())**beta # 确保在CPU上计算
+            # new_weights = new_weights / new_weights.mean() # 归一化
 
-            # --- [!! 核心修复 !!] ---
-            # 不要直接替换，使用EMA（指数移动平均）进行平滑更新
-            # 0.9 是“旧权重”的惯性，0.1 是“新权重”的更新力度
-            momentum = 0.9 
-            dynamic_weights_cpu = dynamic_weights.cpu() # 移动到CPU
+            # # --- [!! 核心修复 !!] ---
+            # # 不要直接替换，使用EMA（指数移动平均）进行平滑更新
+            # # 0.9 是“旧权重”的惯性，0.1 是“新权重”的更新力度
+            # momentum = 0.9 
+            # dynamic_weights_cpu = dynamic_weights.cpu() # 移动到CPU
 
-            updated_weights = (momentum * dynamic_weights_cpu) + ((1 - momentum) * new_weights)
+            # updated_weights = (momentum * dynamic_weights_cpu) + ((1 - momentum) * new_weights)
 
-            # 将新权重移回GPU
-            dynamic_weights = updated_weights.to(device)
+            # # 将新权重移回GPU
+            # dynamic_weights = updated_weights.to(device)
             # --- [!! 修复结束 !!] ---
 
             print(f"Epoch {epoch+1} Summary:")
@@ -563,7 +627,7 @@ if __name__ == '__main__':
                 best_epoch = epoch + 1
                 # 【保存】使用深拷贝将最佳状态保存到内存
                 best_model_state = copy.deepcopy(pta_model.state_dict())
-                torch.save(pta_model.state_dict(), os.path.join(res_path, train_set_name + '_best_model.pth'))
+                torch.save(pta_model.state_dict(), os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_model.pth'))
                 epochs_since_best = 0
             else:
                 # --- 未发现新高点 ---
@@ -623,18 +687,16 @@ if __name__ == '__main__':
         combined_report_df = pd.concat(all_reports_list).reset_index(drop=True)
 
         # 保存报告为CSV
-        report_output_path = os.path.join(res_path, train_set_name + '_feature_importance_report.csv')
+        report_output_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_feature_importance_report.csv')
         combined_report_df.to_csv(report_output_path, index=False)
 
         print(f"\nCombined feature importance report saved to: {report_output_path}")
         print("="*50)
 
         # --- 5. 最终测试 ---
-        pta_model.load_state_dict(torch.load(os.path.join(res_path, train_set_name + '_best_model.pth')))
+        pta_model.load_state_dict(torch.load(os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_model.pth')))
         pta_model.to(device)
-        test_metrics, test_confusion_matrix, _ = evaluate(pta_model, test_loader, 
-                                                    #    loss_fn, 
-                                                       device, num_classes)
+        test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, device, num_classes, loss_fn)
         print(f"\nFinal Test Performance:")
         print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Macro): {test_metrics['f1_macro']:.4f}")
 
@@ -654,7 +716,7 @@ if __name__ == '__main__':
         )
 
         # c) 保存为CSV文件
-        cm_output_path = os.path.join(res_path, train_set_name + '_final_test_confusion_matrix.csv')
+        cm_output_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_final_test_confusion_matrix.csv')
         confusion_matrix_df.to_csv(cm_output_path)
 
         print(f"Confusion matrix saved to: {cm_output_path}")
@@ -680,11 +742,11 @@ if __name__ == '__main__':
         })
 
         results_df = pd.DataFrame(training_results)
-        results_df.to_csv(os.path.join(res_path,train_set_name + '_training_log.csv'), index=False)
+        results_df.to_csv(os.path.join(res_path,dataset_name + '_' + train_set_name + '_training_log.csv'), index=False)
         print(f"\nTraining log saved to {train_set_name}_training_log.csv")
 
     elif DIAGNOSE: 
-        best_model_path = os.path.join(res_path, train_set_name + '_best_model.pth') 
+        best_model_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_model.pth') 
         if not os.path.exists(best_model_path):
             print(f"错误: 找不到已保存的模型文件: {best_model_path}")
             print("请确保 'train_set_name' 变量与你训练时的设置一致。")
@@ -692,9 +754,8 @@ if __name__ == '__main__':
         pta_model.load_state_dict(torch.load(best_model_path, map_location=device))
         # pta_model.to(device)
         pta_model.eval()
-        test_metrics, test_confusion_matrix, _ = evaluate(pta_model, test_loader, 
-                                                    #    loss_fn, 
-                                                       device, num_classes)
+        test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, 
+                                                           device, num_classes, loss_fn)
         print(f"\nFinal Test Performance:")
         print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Macro): {test_metrics['f1_macro']:.4f}")
 
@@ -714,7 +775,7 @@ if __name__ == '__main__':
         )
 
         # c) 保存为CSV文件
-        cm_output_path = os.path.join(res_path, train_set_name + '_final_test_confusion_matrix.csv')
+        cm_output_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_final_test_confusion_matrix.csv')
         confusion_matrix_df.to_csv(cm_output_path)
 
         print(f"Confusion matrix saved to: {cm_output_path}")
