@@ -218,7 +218,7 @@ class HierarchicalMoE(nn.Module):
         self.num_experts = len(self.experts)
         num_tokens = self.num_experts
         if self.use_flow_features:
-            num_tokens += 1
+            num_tokens += 1
     
         # 1 (CLS) + N (GNN) + 1 (Flow)
         total_seq_len = 1 + num_tokens 
@@ -278,15 +278,6 @@ class HierarchicalMoE(nn.Module):
                 raise ValueError("模型处于 use_flow_features=True 模式, 但GNNTrafficDataset未提供 'data.flow_stats'。")
             
             flow_stats_input = batch_dict['flow_stats'].to(next(self.parameters()).device)
-
-            flow_stats_input = torch.nan_to_num(flow_stats_input, nan=0.0, posinf=0.0, neginf=0.0)
-            # --- 【!! 核心修复 !!】 ---
-            # DataLoader collate added an extra dimension (dim 1).
-            # We need to remove it before passing to the embedder.
-            if flow_stats_input.dim() == 3 and flow_stats_input.shape[1] == 1:
-                flow_stats_input = flow_stats_input.squeeze(1) # [B, 1, num_features] -> [B, num_features]
-            # --- [!! 修复结束 !!] ---
-
             flow_embedding = self.flow_stats_embedder(flow_stats_input)
             expert_embeddings.append(flow_embedding)
         
@@ -299,28 +290,32 @@ class HierarchicalMoE(nn.Module):
         # # 【重要】返回logits，以及【所有】专家的门控，以便计算总正则化损失
         # return logits, all_gates
 
-        # --- c) 【!! 核心修改：智能融合 (V2) !!】 ---
-        # 1. 堆叠: [B, N_experts_total, D]
+        # --- c) 【!! 核心修改：智能融合 !!】 ---
+    
+        # 1. 将所有专家意见堆叠成一个序列: [B, N_experts, D]
+        #    (假设 N_experts = 6 GNN + 1 Flow)
         expert_seq = torch.stack(expert_embeddings, dim=1)
-        # 2. 准备 [CLS] Token: [B, 1, D]
+
+        # 2. 准备 [CLS] Token
+        #    将其扩展到批次大小: [B, 1, D]
         B = expert_seq.shape[0]
         cls_tokens = self.cls_token.expand(B, -1, -1)
-         # 3. 拼接: [B, 1 + N_experts_total, D]
-        full_seq = torch.cat([cls_tokens, expert_seq], dim=1) 
-        # 4. 【新】添加“专家类型/位置”编码
-        #我们广播 self.positional_embedding 到整个批次
-        full_seq = full_seq + self.positional_embedding
-        # 5. 【新】在送入 Transformer 之前，对整个序列进行规范化
-        # 这将解决“耳语 vs 大喊”的数值尺度问题
-        full_seq = self.input_norm(full_seq)
-        # 6. 通过 Transformer 运行 (不变)
-        attn_output = self.agg_attention(full_seq)
-        # 7. 只取出 [CLS] Token (不变)
-        final_embedding = attn_output[:, 0, :]
-        # --- d) 分类 (不变) ---
+
+        # 3. 将 [CLS] Token 拼接到序列的开头
+        full_seq = torch.cat([cls_tokens, expert_seq], dim=1) # 形状: [B, 1 + N_experts, D]
+
+        # 4. 通过 Transformer 运行
+        #    Attention 机制会在这里学习 GNN 和 Flow 之间的关系
+        attn_output = self.agg_attention(full_seq) # 形状: [B, 1 + N_experts, D]
+
+        # 5. 只取出第一个 Token ([CLS]) 的输出
+        #    它现在融合了所有专家的信息
+        final_embedding = attn_output[:, 0, :] # 形状: [B, D]
+
+        # --- d) 分类 ---
         logits = self.agg_classifier(final_embedding)
-        
-        return logits, all_gates  
+
+        return logits, all_gates    
     
     def get_feature_importance(self) -> Dict[str, pd.DataFrame]:
         """

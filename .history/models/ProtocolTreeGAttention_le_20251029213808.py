@@ -278,8 +278,6 @@ class HierarchicalMoE(nn.Module):
                 raise ValueError("模型处于 use_flow_features=True 模式, 但GNNTrafficDataset未提供 'data.flow_stats'。")
             
             flow_stats_input = batch_dict['flow_stats'].to(next(self.parameters()).device)
-
-            flow_stats_input = torch.nan_to_num(flow_stats_input, nan=0.0, posinf=0.0, neginf=0.0)
             # --- 【!! 核心修复 !!】 ---
             # DataLoader collate added an extra dimension (dim 1).
             # We need to remove it before passing to the embedder.

@@ -302,10 +302,8 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    DIAGNOSE = False
-    stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -473,9 +471,9 @@ if __name__ == '__main__':
     print("\n[4/4] Creating GNN Datasets and DataLoaders...")
     
     # a) 实例化 GNNTrafficDataset
-    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN)
-    val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN)
-    test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN)
+    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path)
+    val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path)
+    test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
@@ -544,6 +542,9 @@ if __name__ == '__main__':
     # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0
     # dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
 
+
+    DIAGNOSE = True
+    stop_training = False
     # --- 4. 训练循环 ---
     if not DIAGNOSE: 
         training_results = []
