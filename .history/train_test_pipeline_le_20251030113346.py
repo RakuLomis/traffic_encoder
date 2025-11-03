@@ -38,20 +38,6 @@ import gc
 # os.environ['CUDA_LAUNCH_BLOCKING'] = "1" 
 # os.environ['TORCH_USE_CUDA_DSA'] = "1"
 
-TORCH_LONG_MAX = torch.iinfo(torch.long).max
-def robust_hex_to_int(x):
-    """将十六进制字符串安全转换为整数，处理NaN和错误。"""
-    if not pd.notna(x): return 0
-    try:
-        # 确保是字符串, 去掉可能的'.0' (如果被误读为float)
-        val_str = str(x).split('.')[0]
-        # 假定'0x'前缀可能存在也可能不存在
-        val_str = val_str.lower().replace('0x','')
-        if not val_str: return 0 # 空字符串
-        return min(int(val_str, 16), TORCH_LONG_MAX)
-    except ValueError:
-        return 0 # 无法转换 (例如, "eth.dst.lg")
-
 def set_seed(seed_value: int):
     """
     为了可复现性，设置一个全局种子。
@@ -306,9 +292,9 @@ if __name__ == '__main__':
     set_seed(SEED)
 
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 150
+    NUM_EPOCHS = 100
     BATCH_SIZE = 1024
-    LEARNING_RATE = 1e-3
+    LEARNING_RATE = 1e-4
     WEIGHT_DECAY = 1e-4
     MAX_LEARNING_RATE = 1e-3
     DROPOUT_RATE = 0.45
@@ -319,12 +305,12 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
 
-    ROLLBACK_PATIENCE = NUM_EPOCHS // 10
+    ROLLBACK_PATIENCE = 10
     MIN_LR_FOR_TRAINING = 1e-6
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -390,131 +376,83 @@ if __name__ == '__main__':
         # a) 定义流特征名称
         flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
 
-        # b) 【!! 关键修复：在 groupby 之前转换 Hex (使用临时列) !!】
-        print(" -> [Hex Fix] Converting 'ip.len' and 'tcp.stream' to temporary decimal columns for flow calc...")
-        
-        # --- 1. 转换 (仅限 train_df，因为我们只从它学习) ---
-        #     我们创建 *新* 的临时列，而不是覆盖旧的
-        train_df['ip.len_temp_dec'] = train_df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
-        train_df['tcp.stream_temp_dec'] = train_df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
-        print(" -> Temporary decimal columns created in train_df.")
+        # b) 确保训练集的统计列是数值型的
+        print(" -> Converting stats columns in Train set to numeric...")
+        train_df['ip.len'] = pd.to_numeric(train_df['ip.len'], errors='coerce').fillna(0)
+        train_df['tcp.stream'] = pd.to_numeric(train_df['tcp.stream'], errors='coerce').fillna(0)
 
-        # c) 【关键】从 *临时* 列中学习“知识”
-        print(" -> Learning per-flow statistics ONLY from Train set (using temp decimal values)...")
-        # (现在 groupby 正在对 *真实* 的十进制包长进行操作)
-        train_flow_avg_len = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].mean()
-        train_flow_std_len = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].std().fillna(0)
-        train_flow_pkt_count = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].count()
+        # c) 【关键】从训练集中学习“知识”
+        print(" -> Learning per-flow statistics from Train set...")
+        train_flow_avg_len = train_df.groupby('tcp.stream')['ip.len'].mean()
+        train_flow_std_len = train_df.groupby('tcp.stream')['ip.len'].std().fillna(0)
+        train_flow_pkt_count = train_df.groupby('tcp.stream')['ip.len'].count()
 
-        # d) 【关键】计算“全局默认值” (从训练集中学到)
-        train_global_avg_len = float(train_flow_avg_len.mean())
-        train_global_std_len = float(train_flow_std_len.mean())
-        train_global_pkt_count = int(train_flow_pkt_count.mean())
-        
-        # 【健壮性修复：检查全局值是否为 NaN/Inf】
-        if np.isnan(train_global_avg_len) or np.isinf(train_global_avg_len): train_global_avg_len = 0.0
-        if np.isnan(train_global_std_len) or np.isinf(train_global_std_len): train_global_std_len = 0.0
-        if np.isnan(train_global_pkt_count) or np.isinf(train_global_pkt_count): train_global_pkt_count = 0
-        
+        # d) 【关键】计算用于填充“新流”的“全局默认值” (从训练集中学到)
+        train_global_avg_len = train_flow_avg_len.mean()
+        train_global_std_len = train_flow_std_len.mean()
+        train_global_pkt_count = train_flow_pkt_count.mean()
+
         print(f" -> Learned global defaults: AvgLen={train_global_avg_len:.2f}, StdLen={train_global_std_len:.2f}, PktCount={train_global_pkt_count:.2f}")
-    
 
         # e) 将“知识”应用（广播）回训练集
-        # print(" -> Applying learned stats back to Train set...")
-        # train_df['flow_avg_len'] = train_df['tcp.stream'].map(train_flow_avg_len)
-        # train_df['flow_std_len'] = train_df['tcp.stream'].map(train_flow_std_len)
-        # train_df['flow_pkt_count'] = train_df['tcp.stream'].map(train_flow_pkt_count)
+        print(" -> Applying learned stats back to Train set...")
+        train_df['flow_avg_len'] = train_df['tcp.stream'].map(train_flow_avg_len)
+        train_df['flow_std_len'] = train_df['tcp.stream'].map(train_flow_std_len)
+        train_df['flow_pkt_count'] = train_df['tcp.stream'].map(train_flow_pkt_count)
+        # 填充训练集自身可能出现的（例如只有一个包的流）的NaN
+        # train_df['flow_std_len'].fillna(train_global_std_len, inplace=True)
+        train_df['flow_std_len'] = train_df['flow_std_len'].fillna(train_global_std_len)
 
 
         if OPEN_WORLD:
-            for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-                if df.empty: continue
-                print(f"   -> Processing {df_name} set...")
+            # --- 方案A: 模拟现实世界 (无数据泄露) ---
+            print(" -> [OPEN_WORLD MODE] Applying stats learned from Train set to Val/Test sets...")
 
-                # 【重要】我们 map 用的 key 必须是十进制的 tcp.stream
-                # 我们需要为所有 df 创建临时 stream 列
-                if 'tcp.stream_temp_dec' not in df.columns: # 避免重复转换 train_df
-                    df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+            for df in [val_df_aligned, test_df_aligned]:
+                df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
+                df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0)
 
-                # 使用 temp stream key 和全局默认值来map
-                df['flow_avg_len'] = df['tcp.stream_temp_dec'].map(train_flow_avg_len).fillna(train_global_avg_len)
-                df['flow_std_len'] = df['tcp.stream_temp_dec'].map(train_flow_std_len).fillna(train_global_std_len)
-                df['flow_pkt_count'] = df['tcp.stream_temp_dec'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
+            # 应用 .map() 并使用 .fillna() 填充“新流”
+            val_df_aligned['flow_avg_len'] = val_df_aligned['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
+            val_df_aligned['flow_std_len'] = val_df_aligned['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
+            val_df_aligned['flow_pkt_count'] = val_df_aligned['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
 
-            # f) 【!! 关键清理 !!】删除所有临时列
-            print(" -> Cleaning up temporary decimal columns...")
-            for df in [train_df, val_df_aligned, test_df_aligned]:
-                if 'ip.len_temp_dec' in df.columns:
-                    df.drop(columns=['ip.len_temp_dec'], inplace=True)
-                if 'tcp.stream_temp_dec' in df.columns:
-                    df.drop(columns=['tcp.stream_temp_dec'], inplace=True)
+            test_df_aligned['flow_avg_len'] = test_df_aligned['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
+            test_df_aligned['flow_std_len'] = test_df_aligned['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
+            test_df_aligned['flow_pkt_count'] = test_df_aligned['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
 
-        # g) 【最终清理】确保所有新添加的 *流特征* 列是干净的 (nan/inf -> 0)
-        print(" -> Final cleanup of *new* flow features (nan/inf -> 0.0)...")
-        for df in [train_df, val_df_aligned, test_df_aligned]:
-            if df.empty: continue
-            for col in flow_feature_names: # 只清理我们刚添加的列
-                col_data_numeric = pd.to_numeric(df[col], errors='coerce')
-                col_data_np = col_data_numeric.values
-                col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
-                if col == 'flow_pkt_count':
-                    df[col] = col_data_cleaned.astype(np.int32)
-                else:
-                    df[col] = col_data_cleaned.astype(np.float32)
-                # --- 方案A: 模拟现实世界 (无数据泄露) ---
-                # print(" -> [OPEN_WORLD MODE] Applying stats learned from Train set to Val/Test sets...")
+        else:
+            # --- 方案B: 您的“理想情况”实验 (有数据泄露) ---
+            print(" -> [CLOSED_WORLD MODE] Calculating and applying stats directly from Val/Test sets...")
 
-                # for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-                #     if df.empty: continue
-                #     print(f"   -> Processing {df_name} set...")
-                #     # 应用 .map() 并使用训练集的【全局默认值】填充“新流”
-                #     df['flow_avg_len'] = df['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
-                #     df['flow_std_len'] = df['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
-                #     df['flow_pkt_count'] = df['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
-        # else:
-        #     # --- 方案B: 您的“理想情况”实验 (有数据泄露) ---
-        #     print(" -> [CLOSED_WORLD MODE] Calculating and applying stats directly from Val/Test sets...")
+            # 迭代并【就地修改】验证集和测试集
+            for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
+                print(f" -> Calculating stats directly from {df_name} set...")
+                if df.empty:
+                    continue
 
-        #     # 迭代并【就地修改】验证集和测试集
-        #     for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-        #         print(f" -> Calculating stats directly from {df_name} set...")
-        #         if df.empty:
-        #             continue
+                # 1. 转换数值
+                df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
+                df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0) 
 
-        #         # 1. 转换数值
-        #         df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
-        #         df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0) 
+                # 2. 【关键】计算此DataFrame【自身】的统计数据
+                df_flow_avg_len = df.groupby('tcp.stream')['ip.len'].mean()
+                df_flow_std_len = df.groupby('tcp.stream')['ip.len'].std().fillna(0)
+                df_flow_pkt_count = df.groupby('tcp.stream')['ip.len'].count()
 
-        #         # 2. 【关键】计算此DataFrame【自身】的统计数据
-        #         df_flow_avg_len = df.groupby('tcp.stream')['ip.len'].mean()
-        #         df_flow_std_len = df.groupby('tcp.stream')['ip.len'].std().fillna(0)
-        #         df_flow_pkt_count = df.groupby('tcp.stream')['ip.len'].count()
+                # 3. 计算此DataFrame【自身】的全局平均值
+                df_global_avg_len = df_flow_avg_len.mean()
+                df_global_std_len = df_flow_std_len.mean()
+                df_global_pkt_count = df_flow_pkt_count.mean() 
 
-        #         # 3. 计算此DataFrame【自身】的全局平均值
-        #         df_global_avg_len = df_flow_avg_len.mean()
-        #         df_global_std_len = df_flow_std_len.mean()
-        #         df_global_pkt_count = df_flow_pkt_count.mean() 
+                # 4. 【关键】将【自身】的统计数据map回自身
+                df['flow_avg_len'] = df['tcp.stream'].map(df_flow_avg_len)
+                df['flow_std_len'] = df['tcp.stream'].map(df_flow_std_len)
+                df['flow_pkt_count'] = df['tcp.stream'].map(df_flow_pkt_count)
 
-        #         # 4. 【关键】将【自身】的统计数据map回自身
-        #         df['flow_avg_len'] = df['tcp.stream'].map(df_flow_avg_len)
-        #         df['flow_std_len'] = df['tcp.stream'].map(df_flow_std_len)
-        #         df['flow_pkt_count'] = df['tcp.stream'].map(df_flow_pkt_count)
-
-        #         # 5. 填充可能产生的NaN (例如只有一个包的流，其std为NaN)
-        #         # df['flow_std_len'].fillna(df_global_std_len, inplace=True)
-        #         df['flow_std_len'] = df['flow_std_len'].fillna(df_global_std_len)
-        # # g) 【最终清理】确保所有新列都是干净的 (nan/inf -> 0)
-        # print(" -> Final cleanup of flow features (nan/inf -> 0.0)...")
-        # for df in [train_df, val_df_aligned, test_df_aligned]:
-        #      if df.empty: continue
-        #      for col in flow_feature_names:
-        #          col_data_numeric = pd.to_numeric(df[col], errors='coerce')
-        #          col_data_np = col_data_numeric.values
-        #          col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
-        #          if col == 'flow_pkt_count':
-        #              df[col] = col_data_cleaned.astype(np.int32)
-        #          else:
-        #              df[col] = col_data_cleaned.astype(np.float32)
+                # 5. 填充可能产生的NaN (例如只有一个包的流，其std为NaN)
+                # df['flow_std_len'].fillna(df_global_std_len, inplace=True)
+                df['flow_std_len'] = df['flow_std_len'].fillna(df_global_std_len)
 
         print(" -> Flow-level features successfully engineered for all datasets.")
 
@@ -522,7 +460,7 @@ if __name__ == '__main__':
     # c) 创建全局标签映射
     #    为了确保所有数据集的标签一致，我们基于训练集来创建映射
     print("\n[3/4] Creating label mapping...")
-    labels = train_df['label'].unique() # ?
+    labels = train_df[F'label'].unique()
     label_to_int = {label: i for i, label in enumerate(labels)}
     num_classes = len(labels)
 
@@ -603,15 +541,6 @@ if __name__ == '__main__':
 
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max',      # 我们的目标是最大化 F1
-        factor=0.6,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
-        patience=3,      # 【关键】如果 Val F1 在 5 个 epoch 内没有创下新高...
-        verbose=True,     # ... 打印一条消息并降低 LR
-        min_lr=1e-5   # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)
-    )
-
     # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0
     # dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
 
@@ -690,8 +619,6 @@ if __name__ == '__main__':
             })
 
             current_val_f1_macro = val_metrics['f1_macro']
-            scheduler.step(current_val_f1_macro)
-
             if current_val_f1_macro > best_val_f1_macro:
                 # --- 发现新高点 ---
                 print(f" -> Validation Macro F1 improved from {best_val_f1_macro:.4f} to {current_val_f1_macro:.4f}. Saving state...")
@@ -713,28 +640,22 @@ if __name__ == '__main__':
                         # 1. 【回滚】
                         pta_model.load_state_dict(best_model_state)
 
-                        # # 2. 【手动降LR】
-                        # print("   -> Aggressively reducing current learning rate by half...")
-                        # new_lr = optimizer.param_groups[0]['lr'] * 0.5
-                        # for param_group in optimizer.param_groups:
-                        #     param_group['lr'] = new_lr
+                        # 2. 【手动降LR】
+                        print("   -> Aggressively reducing current learning rate by half...")
+                        new_lr = optimizer.param_groups[0]['lr'] * 0.5
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = new_lr
 
                         # 3. 【重置计数器】
                         epochs_since_best = 0
 
-                        # # 4. 【增加早停条件】
-                        # if new_lr < MIN_LR_FOR_TRAINING:
-                        #     print(f"   -> Learning rate ({new_lr:.1e}) has fallen below minimum. Triggering final early stop.")
-                        #     stop_training = True # 在下一个epoch开始时停止
+                        # 4. 【增加早停条件】
+                        if new_lr < MIN_LR_FOR_TRAINING:
+                            print(f"   -> Learning rate ({new_lr:.1e}) has fallen below minimum. Triggering final early stop.")
+                            stop_training = True # 在下一个epoch开始时停止
                     else:
                         print("   -> Warning: No best model state found. Stopping training.")
                         break # 如果从未保存过最佳状态就触发回滚，直接停止
-                # 5. 【修改】早停逻辑现在只检查LR
-                current_lr = optimizer.param_groups[0]['lr']
-                if current_lr < MIN_LR_FOR_TRAINING:
-                    print(f"Learning rate ({current_lr:.1e}) has fallen below minimum. Triggering final early stop.")
-                    stop_training = True # 在下一个epoch开始时停止
-
         print("\nTraining complete!")
 
         # ==================== 分析学到的特征重要性 ====================
@@ -824,8 +745,7 @@ if __name__ == '__main__':
         print(f"\nTraining log saved to {train_set_name}_training_log.csv")
 
     elif DIAGNOSE: 
-        d_res_dir = ''
-        best_model_path = os.path.join(res_path, d_res_dir,dataset_name + '_' + train_set_name + '_best_model.pth') 
+        best_model_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_model.pth') 
         if not os.path.exists(best_model_path):
             print(f"错误: 找不到已保存的模型文件: {best_model_path}")
             print("请确保 'train_set_name' 变量与你训练时的设置一致。")

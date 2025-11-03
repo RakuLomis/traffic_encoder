@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GATConv, global_mean_pool
 from models.FieldEmbedding import FieldEmbedding
 from collections import defaultdict
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple
 import pandas as pd
 from torch_geometric.data import Data
 
@@ -213,11 +213,14 @@ class HierarchicalMoE(nn.Module):
         # a. 为 *所有* GNN 专家的拼接输出创建一个 LayerNorm
         self.gnn_output_norm = nn.LayerNorm(total_gnn_dim)
         
+        # b. (可选，但推荐) 为流专家的输出也创建一个 LayerNorm
+        if self.use_flow_features:
+            self.flow_output_norm = nn.LayerNorm(flow_embed_dim)
 
         # --- 4. 创建最终的“聚合器” (一个简单的MLP) ---
         print(f" -> Initializing aggregator (input dim: {total_embedding_dim})")
         self.aggregator = nn.Sequential(
-            # nn.LayerNorm(total_embedding_dim), 
+            nn.LayerNorm(total_embedding_dim), 
             nn.Linear(total_embedding_dim, hidden_dim * 2), # 放大
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_rate),
@@ -225,101 +228,52 @@ class HierarchicalMoE(nn.Module):
         )
 
 
-    # def forward(self, batch_dict: Dict[str, Data]) -> torch.Tensor: 
-    #     """
-    #     前向传播：分解 -> 专家处理 -> 融合 -> 分类
-    #     """
-    #     expert_embeddings = []
-    #     all_gates = {} # 用于收集所有门控，以便计算正则化损失
+    def forward(self, batch_dict: Dict[str, Data]) -> torch.Tensor: 
+        """
+        前向传播：分解 -> 专家处理 -> 融合 -> 分类
+        """
+        expert_embeddings = []
+        all_gates = {} # 用于收集所有门控，以便计算正则化损失
 
-    #     # --- a) “语义分解”与专家处理 ---
-    #     for expert_name, expert_model in self.experts.items():
-    #         # 从批处理字典中，获取这位专家的数据
-    #         # data_for_this_expert = batch_dict[expert_name] # 这在DataLoader v1.x中有效
-            
-    #         # 【健壮性】PyG DataLoader会把字典“压平”，我们需要在设备上重新组装
-    #         data_for_this_expert = batch_dict[expert_name].to(next(self.parameters()).device)
-            
-    #         # 【关键】调用专家模型，得到嵌入和门控
-    #         embedding, gate = expert_model(data_for_this_expert)
-    #         expert_embeddings.append(embedding)
-    #         all_gates[expert_name] = gate
-
-            
-    #     # --- b) 【可选】提取流特征 ---
-    #     flow_embedding = None # 初始化
-    #     if self.use_flow_features:
-    #         if 'flow_stats' not in batch_dict:
-    #             raise ValueError("模型处于 use_flow_features=True 模式, 但GNNTrafficDataset未提供 'data.flow_stats'。")
-            
-    #         flow_stats_input = batch_dict['flow_stats'].to(next(self.parameters()).device)
-
-    #         flow_stats_input = torch.nan_to_num(flow_stats_input, nan=0.0, posinf=0.0, neginf=0.0)
-    #         # --- 【!! 核心修复 !!】 ---
-    #         # DataLoader collate added an extra dimension (dim 1).
-    #         # We need to remove it before passing to the embedder.
-    #         if flow_stats_input.dim() == 3 and flow_stats_input.shape[1] == 1:
-    #             flow_stats_input = flow_stats_input.squeeze(1) # [B, 1, num_features] -> [B, num_features]
-    #         # --- [!! 修复结束 !!] ---
-
-    #         flow_embedding = self.flow_stats_embedder(flow_stats_input)
-    #         expert_embeddings.append(flow_embedding)
-        
-    #     # --- c) “最终决策” (融合) ---
-    #     combined_embedding = torch.cat(expert_embeddings, dim=1)
-        
-    #     # --- d) 分类 ---
-    #     logits = self.aggregator(combined_embedding)
-        
-    #     # 【重要】返回logits，以及【所有】专家的门控，以便计算总正则化损失
-    #     return logits, all_gates
-
-    def forward(self, batch_dict: Dict[str, Any]) -> torch.Tensor:
-        gnn_embeddings = [] # <-- 【修改】只收集 GNN
-        all_gates = {} 
-        
-        # --- a) GNN 专家处理 ---
+        # --- a) “语义分解”与专家处理 ---
         for expert_name, expert_model in self.experts.items():
-            if expert_name not in batch_dict: continue
-            data_for_this_expert = batch_dict[expert_name]
+            # 从批处理字典中，获取这位专家的数据
+            # data_for_this_expert = batch_dict[expert_name] # 这在DataLoader v1.x中有效
+            
+            # 【健壮性】PyG DataLoader会把字典“压平”，我们需要在设备上重新组装
+            data_for_this_expert = batch_dict[expert_name].to(next(self.parameters()).device)
+            
+            # 【关键】调用专家模型，得到嵌入和门控
             embedding, gate = expert_model(data_for_this_expert)
-            gnn_embeddings.append(embedding) # <-- 只添加 GNN 嵌入
+            expert_embeddings.append(embedding)
             all_gates[expert_name] = gate
             
-        if not gnn_embeddings:
-             raise ValueError("没有任何 GNN 专家输出了嵌入向量！")
-
-        # --- 【!! 核心修改：独立归一化 !!】 ---
-        
-        # 1. 拼接 *所有* GNN 专家，并归一化
-        gnn_combined = torch.cat(gnn_embeddings, dim=1) # [B, total_gnn_dim]
-        gnn_normed = self.gnn_output_norm(gnn_combined) # [B, total_gnn_dim]
-        
-        # 2. 准备最终要拼接的列表
-        final_embeddings_list = [gnn_normed]
-            
-        # 3. 【条件】处理流特征
+        # --- b) 【可选】提取流特征 ---
+        flow_embedding = None # 初始化
         if self.use_flow_features:
-            if 'flow_stats' not in batch_dict: raise ValueError("...")
+            if 'flow_stats' not in batch_dict:
+                raise ValueError("模型处于 use_flow_features=True 模式, 但GNNTrafficDataset未提供 'data.flow_stats'。")
             
-            flow_stats_input = batch_dict['flow_stats']
+            flow_stats_input = batch_dict['flow_stats'].to(next(self.parameters()).device)
+
+            flow_stats_input = torch.nan_to_num(flow_stats_input, nan=0.0, posinf=0.0, neginf=0.0)
+            # --- 【!! 核心修复 !!】 ---
+            # DataLoader collate added an extra dimension (dim 1).
+            # We need to remove it before passing to the embedder.
             if flow_stats_input.dim() == 3 and flow_stats_input.shape[1] == 1:
-                flow_stats_input = flow_stats_input.squeeze(1)
-            
-            flow_embedding = self.flow_stats_embedder(flow_stats_input) # [B, flow_embed_dim]
-            
-            # 独立归一化流特征
-            flow_normed = self.flow_output_norm(flow_embedding) # [B, flow_embed_dim]
-            
-            final_embeddings_list.append(flow_normed) # 添加到列表
+                flow_stats_input = flow_stats_input.squeeze(1) # [B, 1, num_features] -> [B, num_features]
+            # --- [!! 修复结束 !!] ---
+
+            flow_embedding = self.flow_stats_embedder(flow_stats_input)
+            expert_embeddings.append(flow_embedding)
         
-        # --- c) 最终拼接 ---
-        # (现在拼接的是两个“音量相同”的向量)
-        combined_embedding = torch.cat(final_embeddings_list, dim=1) 
+        # --- c) “最终决策” (融合) ---
+        combined_embedding = torch.cat(expert_embeddings, dim=1)
         
         # --- d) 分类 ---
-        logits = self.aggregator(combined_embedding) 
+        logits = self.aggregator(combined_embedding)
         
+        # 【重要】返回logits，以及【所有】专家的门控，以便计算总正则化损失
         return logits, all_gates
     
     def get_feature_importance(self) -> Dict[str, pd.DataFrame]:

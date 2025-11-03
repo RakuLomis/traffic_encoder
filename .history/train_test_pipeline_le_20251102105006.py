@@ -606,7 +606,7 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='max',      # 我们的目标是最大化 F1
-        factor=0.6,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
+        factor=0.5,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
         patience=3,      # 【关键】如果 Val F1 在 5 个 epoch 内没有创下新高...
         verbose=True,     # ... 打印一条消息并降低 LR
         min_lr=1e-5   # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)

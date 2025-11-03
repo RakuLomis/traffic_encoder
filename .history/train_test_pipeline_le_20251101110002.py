@@ -306,7 +306,7 @@ if __name__ == '__main__':
     set_seed(SEED)
 
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 150
+    NUM_EPOCHS = 100
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4
@@ -324,7 +324,7 @@ if __name__ == '__main__':
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
 
-    ROLLBACK_PATIENCE = NUM_EPOCHS // 10
+    ROLLBACK_PATIENCE = 10
     MIN_LR_FOR_TRAINING = 1e-6
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -604,12 +604,12 @@ if __name__ == '__main__':
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max',      # 我们的目标是最大化 F1
-        factor=0.6,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
-        patience=3,      # 【关键】如果 Val F1 在 5 个 epoch 内没有创下新高...
-        verbose=True,     # ... 打印一条消息并降低 LR
-        min_lr=1e-5   # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)
+    optimizer,
+    mode='max',      # 我们的目标是最大化 F1
+    factor=0.8,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
+    patience=5,      # 【关键】如果 Val F1 在 5 个 epoch 内没有创下新高...
+    verbose=True,     # ... 打印一条消息并降低 LR
+    min_lr=1e-4   # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)
     )
 
     # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0

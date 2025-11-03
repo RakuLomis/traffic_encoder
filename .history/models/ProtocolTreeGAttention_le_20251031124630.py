@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from torch_geometric.nn import GATConv, global_mean_pool
 from models.FieldEmbedding import FieldEmbedding
 from collections import defaultdict
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple
 import pandas as pd
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Any
 
 # ==============================================================================
 # 1. “微型专家” (PTGAMiniExpert)

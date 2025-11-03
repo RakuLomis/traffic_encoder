@@ -306,7 +306,7 @@ if __name__ == '__main__':
     set_seed(SEED)
 
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 150
+    NUM_EPOCHS = 100
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4
@@ -324,7 +324,7 @@ if __name__ == '__main__':
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
 
-    ROLLBACK_PATIENCE = NUM_EPOCHS // 10
+    ROLLBACK_PATIENCE = 10
     MIN_LR_FOR_TRAINING = 1e-6
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -452,15 +452,15 @@ if __name__ == '__main__':
         # g) 【最终清理】确保所有新添加的 *流特征* 列是干净的 (nan/inf -> 0)
         print(" -> Final cleanup of *new* flow features (nan/inf -> 0.0)...")
         for df in [train_df, val_df_aligned, test_df_aligned]:
-            if df.empty: continue
-            for col in flow_feature_names: # 只清理我们刚添加的列
-                col_data_numeric = pd.to_numeric(df[col], errors='coerce')
-                col_data_np = col_data_numeric.values
-                col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
-                if col == 'flow_pkt_count':
-                    df[col] = col_data_cleaned.astype(np.int32)
-                else:
-                    df[col] = col_data_cleaned.astype(np.float32)
+             if df.empty: continue
+             for col in flow_feature_names: # 只清理我们刚添加的列
+                 col_data_numeric = pd.to_numeric(df[col], errors='coerce')
+                 col_data_np = col_data_numeric.values
+                 col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
+                 if col == 'flow_pkt_count':
+                     df[col] = col_data_cleaned.astype(np.int32)
+                 else:
+                     df[col] = col_data_cleaned.astype(np.float32)
                 # --- 方案A: 模拟现实世界 (无数据泄露) ---
                 # print(" -> [OPEN_WORLD MODE] Applying stats learned from Train set to Val/Test sets...")
 
@@ -603,15 +603,6 @@ if __name__ == '__main__':
 
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max',      # 我们的目标是最大化 F1
-        factor=0.6,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
-        patience=3,      # 【关键】如果 Val F1 在 5 个 epoch 内没有创下新高...
-        verbose=True,     # ... 打印一条消息并降低 LR
-        min_lr=1e-5   # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)
-    )
-
     # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0
     # dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
 
@@ -690,8 +681,6 @@ if __name__ == '__main__':
             })
 
             current_val_f1_macro = val_metrics['f1_macro']
-            scheduler.step(current_val_f1_macro)
-
             if current_val_f1_macro > best_val_f1_macro:
                 # --- 发现新高点 ---
                 print(f" -> Validation Macro F1 improved from {best_val_f1_macro:.4f} to {current_val_f1_macro:.4f}. Saving state...")
@@ -713,28 +702,22 @@ if __name__ == '__main__':
                         # 1. 【回滚】
                         pta_model.load_state_dict(best_model_state)
 
-                        # # 2. 【手动降LR】
-                        # print("   -> Aggressively reducing current learning rate by half...")
-                        # new_lr = optimizer.param_groups[0]['lr'] * 0.5
-                        # for param_group in optimizer.param_groups:
-                        #     param_group['lr'] = new_lr
+                        # 2. 【手动降LR】
+                        print("   -> Aggressively reducing current learning rate by half...")
+                        new_lr = optimizer.param_groups[0]['lr'] * 0.5
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = new_lr
 
                         # 3. 【重置计数器】
                         epochs_since_best = 0
 
-                        # # 4. 【增加早停条件】
-                        # if new_lr < MIN_LR_FOR_TRAINING:
-                        #     print(f"   -> Learning rate ({new_lr:.1e}) has fallen below minimum. Triggering final early stop.")
-                        #     stop_training = True # 在下一个epoch开始时停止
+                        # 4. 【增加早停条件】
+                        if new_lr < MIN_LR_FOR_TRAINING:
+                            print(f"   -> Learning rate ({new_lr:.1e}) has fallen below minimum. Triggering final early stop.")
+                            stop_training = True # 在下一个epoch开始时停止
                     else:
                         print("   -> Warning: No best model state found. Stopping training.")
                         break # 如果从未保存过最佳状态就触发回滚，直接停止
-                # 5. 【修改】早停逻辑现在只检查LR
-                current_lr = optimizer.param_groups[0]['lr']
-                if current_lr < MIN_LR_FOR_TRAINING:
-                    print(f"Learning rate ({current_lr:.1e}) has fallen below minimum. Triggering final early stop.")
-                    stop_training = True # 在下一个epoch开始时停止
-
         print("\nTraining complete!")
 
         # ==================== 分析学到的特征重要性 ====================
