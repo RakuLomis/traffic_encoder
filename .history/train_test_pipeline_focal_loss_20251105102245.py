@@ -175,8 +175,8 @@ if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 100
     BATCH_SIZE = 1024
-    LEARNING_RATE = 1e-3
-    # LEARNING_RATE = 5e-4
+    # LEARNING_RATE = 1e-3
+    LEARNING_RATE = 5e-4
     WEIGHT_DECAY = 1e-4
     # WEIGHT_DECAY = 5e-4
     DROPOUT_RATE = 0.7

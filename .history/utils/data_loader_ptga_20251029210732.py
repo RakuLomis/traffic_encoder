@@ -54,8 +54,7 @@ class GNNTrafficDataset(Dataset):
     一个为GNN模型准备数据的Dataset。
     它的__getitem__方法将一个数据包（一行DataFrame）转换成一个PyG的图(Data)对象。
     """
-    def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, node_feature_dim: int=128, 
-                 use_flow_features: bool = False):
+    def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, node_feature_dim: int=128):
         super().__init__()
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
@@ -63,7 +62,6 @@ class GNNTrafficDataset(Dataset):
             self.vocab_maps = yaml.safe_load(f)
         self.TORCH_LONG_MAX = torch.iinfo(torch.long).max
         self.decimal_fields = {'tcp.stream'}
-        self.use_flow_features = use_flow_features
 
         # 2. 动态确定节点和图结构
         available_fields = set(dataframe.columns)
@@ -193,41 +191,40 @@ class GNNTrafficDataset(Dataset):
 
         y = self.labels[idx]
 
-        # c) 创建图对象，将【整数索引】作为独立属性附加
-        #    抽象节点的特征将在模型内部处理
-        graph_data = Data(edge_index=self.edge_index, y=y, **feature_dict)
-
         """
         Update: Stream features.
         """
-        if self.use_flow_features: 
         #    这个列表应该与您在数据预处理阶段生成的列名一致
-            flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
+        flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
+        
+        flow_stats_list = []
+        for flow_field in flow_feature_names:
+            # 从原始行中获取值，这些值应该是数值型
+            val = raw_row.get(flow_field, 0)
+            try:
+                # 确保转换为浮点数，并处理NaN
+                flow_stats_list.append(float(val) if pd.notna(val) else 0.0)
+            except ValueError:
+                flow_stats_list.append(0.0)
+                
+        # 将流统计特征转换为一个单独的张量
+        # flow_stats_tensor = torch.tensor(flow_stats_list, dtype=torch.float)
 
-            flow_stats_list = []
-            for flow_field in flow_feature_names:
-                # 从原始行中获取值，这些值应该是数值型
-                val = raw_row.get(flow_field, 0)
-                try:
-                    # 确保转换为浮点数，并处理NaN
-                    flow_stats_list.append(float(val) if pd.notna(val) else 0.0)
-                except ValueError:
-                    flow_stats_list.append(0.0)
-
-            # 将流统计特征转换为一个单独的张量
-            # flow_stats_tensor = torch.tensor(flow_stats_list, dtype=torch.float)
-
-            # ==================== CORE FIX ====================
-            #
-            # Change the tensor's shape from (3,) to (1, 3)
-            #
-            flow_stats_tensor = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1)
+        # ==================== CORE FIX ====================
+        #
+        # Change the tensor's shape from (3,) to (1, 3)
+        #
+        flow_stats_tensor = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1)
         #
         # ==================================================
-            # e) 【关键】将流特征张量，作为一个【新的、独立的属性】附加到图对象上
-            graph_data.flow_stats = flow_stats_tensor
 
+        # c) 创建图对象，将【整数索引】作为独立属性附加
+        #    抽象节点的特征将在模型内部处理
+        graph_data = Data(edge_index=self.edge_index, y=y, **feature_dict)
         
+        # e) 【关键】将流特征张量，作为一个【新的、独立的属性】附加到图对象上
+        graph_data.flow_stats = flow_stats_tensor
+
         # d) 明确地设置节点数
         graph_data.num_nodes = len(self.node_fields)
         

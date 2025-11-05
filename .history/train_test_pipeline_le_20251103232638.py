@@ -316,7 +316,7 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    DIAGNOSE = True
+    DIAGNOSE = False
     stop_training = False
 
     USE_FLOW_FEATURES_THIS_RUN = True

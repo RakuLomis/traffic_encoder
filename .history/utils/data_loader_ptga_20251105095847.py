@@ -228,6 +228,9 @@ class GNNTrafficDataset(Dataset):
             graph_data.flow_stats = flow_stats_tensor
 
         
+        
+        
+
         # d) 明确地设置节点数
         graph_data.num_nodes = len(self.node_fields)
         

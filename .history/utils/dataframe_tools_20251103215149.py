@@ -440,35 +440,35 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], 
             len_prefix += 1
     return dict_protocol_tree 
 
-def add_root_layer(ptree: Dict[str, List[str]]): 
-    protocols = ['eth', 'ip', 'tcp', 'tls'] 
-    ptree['root'] = [p for p in protocols if p in ptree] 
+# def add_root_layer(ptree: Dict[str, List[str]]): 
+#     protocols = ['eth', 'ip', 'tcp', 'tls'] 
+#     ptree['root'] = [p for p in protocols if p in ptree] 
 
-# def add_root_layer(ptree: Dict[str, List[str]]):
-#     """
-#     一个健壮的 add_root_layer 函数。
-#     它只连接 ptree 中已经存在的顶层节点。
-#     """
-#     if not ptree:
-#         # 如果 ptree 为空 (例如，专家没有任何真实字段)
-#         ptree['root'] = []
-#         return
+def add_root_layer(ptree: Dict[str, List[str]]):
+    """
+    一个健壮的 add_root_layer 函数。
+    它只连接 ptree 中已经存在的顶层节点。
+    """
+    if not ptree:
+        # 如果 ptree 为空 (例如，专家没有任何真实字段)
+        ptree['root'] = []
+        return
 
-#     # 1. 找到 ptree 中所有的“父”节点 (e.g., {'eth', 'ip.flags'})
-#     parent_nodes = set(ptree.keys())
+    # 1. 找到 ptree 中所有的“父”节点 (e.g., {'eth', 'ip.flags'})
+    parent_nodes = set(ptree.keys())
     
-#     # 2. 找到 ptree 中所有的“子”节点 (e.g., {'eth.src', 'ip.flags.df'})
-#     child_nodes = set()
-#     for children in ptree.values():
-#         child_nodes.update(children)
+    # 2. 找到 ptree 中所有的“子”节点 (e.g., {'eth.src', 'ip.flags.df'})
+    child_nodes = set()
+    for children in ptree.values():
+        child_nodes.update(children)
         
-#     # 3. 顶层节点 = 那些 *只作为父*，而 *不作为子* 出现的节点
-#     #    (例如: 'eth' 是顶层, 但 'ip.flags' 不是, 因为 'ip' 是它的父)
-#     #    (在这个例子中，set(['eth', 'ip.flags']) - set(['eth.src', 'ip.flags.df']))
-#     top_level_nodes = parent_nodes - child_nodes
+    # 3. 顶层节点 = 那些 *只作为父*，而 *不作为子* 出现的节点
+    #    (例如: 'eth' 是顶层, 但 'ip.flags' 不是, 因为 'ip' 是它的父)
+    #    (在这个例子中，set(['eth', 'ip.flags']) - set(['eth.src', 'ip.flags.df']))
+    top_level_nodes = parent_nodes - child_nodes
     
-#     # 4. 将 'root' 连接到所有找到的顶层节点
-#     ptree['root'] = sorted(list(top_level_nodes))
+    # 4. 将 'root' 连接到所有找到的顶层节点
+    ptree['root'] = sorted(list(top_level_nodes))
 
 def find_fields_in_pta(protocol, dict_protocol_tree, physical_nodes): 
     """

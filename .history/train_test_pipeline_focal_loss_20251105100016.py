@@ -175,8 +175,8 @@ if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 100
     BATCH_SIZE = 1024
-    LEARNING_RATE = 1e-3
-    # LEARNING_RATE = 5e-4
+    # LEARNING_RATE = 1e-3
+    LEARNING_RATE = 5e-4
     WEIGHT_DECAY = 1e-4
     # WEIGHT_DECAY = 5e-4
     DROPOUT_RATE = 0.7
@@ -186,7 +186,6 @@ if __name__ == '__main__':
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
-    USE_FLOW_FEATURES = False
 
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
@@ -208,9 +207,7 @@ if __name__ == '__main__':
     # val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
     # test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
 
-    # dataset_name = 'dataset_29_d1'
-    dataset_name = 'ISCX-TOR-Application' 
-
+    dataset_name = 'dataset_29_d1'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -287,95 +284,95 @@ if __name__ == '__main__':
     # ==============================================================
     del val_df, test_df
 
-    if USE_FLOW_FEATURES: 
-        # ==================== 核心修改点：流统计特征工程 ====================
-        print("\n[2.5/4] Performing Flow-level Statistics Engineering...")
 
-        # 这是一个开关，决定了我们是模拟“现实世界”（True）还是进行“理想实验”（False）
-        OPEN_WORLD = False 
+    # ==================== 核心修改点：流统计特征工程 ====================
+    print("\n[2.5/4] Performing Flow-level Statistics Engineering...")
 
-        # a) 定义流特征名称
-        flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
+    # 这是一个开关，决定了我们是模拟“现实世界”（True）还是进行“理想实验”（False）
+    OPEN_WORLD = False 
 
-        # b) 确保训练集的统计列是数值型的
-        print(" -> Converting stats columns in Train set to numeric...")
-        train_df['ip.len'] = pd.to_numeric(train_df['ip.len'], errors='coerce').fillna(0)
-        train_df['tcp.stream'] = pd.to_numeric(train_df['tcp.stream'], errors='coerce').fillna(0)
+    # a) 定义流特征名称
+    flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
 
-        # c) 【关键】从训练集中学习“知识”
-        print(" -> Learning per-flow statistics from Train set...")
-        train_flow_avg_len = train_df.groupby('tcp.stream')['ip.len'].mean()
-        train_flow_std_len = train_df.groupby('tcp.stream')['ip.len'].std().fillna(0)
-        train_flow_pkt_count = train_df.groupby('tcp.stream')['ip.len'].count()
+    # b) 确保训练集的统计列是数值型的
+    print(" -> Converting stats columns in Train set to numeric...")
+    train_df['ip.len'] = pd.to_numeric(train_df['ip.len'], errors='coerce').fillna(0)
+    train_df['tcp.stream'] = pd.to_numeric(train_df['tcp.stream'], errors='coerce').fillna(0)
 
-        # d) 【关键】计算用于填充“新流”的“全局默认值” (从训练集中学到)
-        train_global_avg_len = train_flow_avg_len.mean()
-        train_global_std_len = train_flow_std_len.mean()
-        train_global_pkt_count = train_flow_pkt_count.mean()
+    # c) 【关键】从训练集中学习“知识”
+    print(" -> Learning per-flow statistics from Train set...")
+    train_flow_avg_len = train_df.groupby('tcp.stream')['ip.len'].mean()
+    train_flow_std_len = train_df.groupby('tcp.stream')['ip.len'].std().fillna(0)
+    train_flow_pkt_count = train_df.groupby('tcp.stream')['ip.len'].count()
 
-        print(f" -> Learned global defaults: AvgLen={train_global_avg_len:.2f}, StdLen={train_global_std_len:.2f}, PktCount={train_global_pkt_count:.2f}")
+    # d) 【关键】计算用于填充“新流”的“全局默认值” (从训练集中学到)
+    train_global_avg_len = train_flow_avg_len.mean()
+    train_global_std_len = train_flow_std_len.mean()
+    train_global_pkt_count = train_flow_pkt_count.mean()
 
-        # e) 将“知识”应用（广播）回训练集
-        print(" -> Applying learned stats back to Train set...")
-        train_df['flow_avg_len'] = train_df['tcp.stream'].map(train_flow_avg_len)
-        train_df['flow_std_len'] = train_df['tcp.stream'].map(train_flow_std_len)
-        train_df['flow_pkt_count'] = train_df['tcp.stream'].map(train_flow_pkt_count)
-        # 填充训练集自身可能出现的（例如只有一个包的流）的NaN
-        # train_df['flow_std_len'].fillna(train_global_std_len, inplace=True)
-        train_df['flow_std_len'] = train_df['flow_std_len'].fillna(train_global_std_len)
+    print(f" -> Learned global defaults: AvgLen={train_global_avg_len:.2f}, StdLen={train_global_std_len:.2f}, PktCount={train_global_pkt_count:.2f}")
+
+    # e) 将“知识”应用（广播）回训练集
+    print(" -> Applying learned stats back to Train set...")
+    train_df['flow_avg_len'] = train_df['tcp.stream'].map(train_flow_avg_len)
+    train_df['flow_std_len'] = train_df['tcp.stream'].map(train_flow_std_len)
+    train_df['flow_pkt_count'] = train_df['tcp.stream'].map(train_flow_pkt_count)
+    # 填充训练集自身可能出现的（例如只有一个包的流）的NaN
+    # train_df['flow_std_len'].fillna(train_global_std_len, inplace=True)
+    train_df['flow_std_len'] = train_df['flow_std_len'].fillna(train_global_std_len)
 
 
-        if OPEN_WORLD:
-            # --- 方案A: 模拟现实世界 (无数据泄露) ---
-            print(" -> [OPEN_WORLD MODE] Applying stats learned from Train set to Val/Test sets...")
+    if OPEN_WORLD:
+        # --- 方案A: 模拟现实世界 (无数据泄露) ---
+        print(" -> [OPEN_WORLD MODE] Applying stats learned from Train set to Val/Test sets...")
 
-            for df in [val_df_aligned, test_df_aligned]:
-                df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
-                df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0)
+        for df in [val_df_aligned, test_df_aligned]:
+            df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
+            df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0)
 
-            # 应用 .map() 并使用 .fillna() 填充“新流”
-            val_df_aligned['flow_avg_len'] = val_df_aligned['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
-            val_df_aligned['flow_std_len'] = val_df_aligned['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
-            val_df_aligned['flow_pkt_count'] = val_df_aligned['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
+        # 应用 .map() 并使用 .fillna() 填充“新流”
+        val_df_aligned['flow_avg_len'] = val_df_aligned['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
+        val_df_aligned['flow_std_len'] = val_df_aligned['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
+        val_df_aligned['flow_pkt_count'] = val_df_aligned['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
 
-            test_df_aligned['flow_avg_len'] = test_df_aligned['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
-            test_df_aligned['flow_std_len'] = test_df_aligned['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
-            test_df_aligned['flow_pkt_count'] = test_df_aligned['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
+        test_df_aligned['flow_avg_len'] = test_df_aligned['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
+        test_df_aligned['flow_std_len'] = test_df_aligned['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
+        test_df_aligned['flow_pkt_count'] = test_df_aligned['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
 
-        else:
-            # --- 方案B: 您的“理想情况”实验 (有数据泄露) ---
-            print(" -> [CLOSED_WORLD MODE] Calculating and applying stats directly from Val/Test sets...")
+    else:
+        # --- 方案B: 您的“理想情况”实验 (有数据泄露) ---
+        print(" -> [CLOSED_WORLD MODE] Calculating and applying stats directly from Val/Test sets...")
 
-            # 迭代并【就地修改】验证集和测试集
-            for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-                print(f" -> Calculating stats directly from {df_name} set...")
-                if df.empty:
-                    continue
+        # 迭代并【就地修改】验证集和测试集
+        for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
+            print(f" -> Calculating stats directly from {df_name} set...")
+            if df.empty:
+                continue
 
-                # 1. 转换数值
-                df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
-                df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0) 
+            # 1. 转换数值
+            df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
+            df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0) 
 
-                # 2. 【关键】计算此DataFrame【自身】的统计数据
-                df_flow_avg_len = df.groupby('tcp.stream')['ip.len'].mean()
-                df_flow_std_len = df.groupby('tcp.stream')['ip.len'].std().fillna(0)
-                df_flow_pkt_count = df.groupby('tcp.stream')['ip.len'].count()
+            # 2. 【关键】计算此DataFrame【自身】的统计数据
+            df_flow_avg_len = df.groupby('tcp.stream')['ip.len'].mean()
+            df_flow_std_len = df.groupby('tcp.stream')['ip.len'].std().fillna(0)
+            df_flow_pkt_count = df.groupby('tcp.stream')['ip.len'].count()
 
-                # 3. 计算此DataFrame【自身】的全局平均值
-                df_global_avg_len = df_flow_avg_len.mean()
-                df_global_std_len = df_flow_std_len.mean()
-                df_global_pkt_count = df_flow_pkt_count.mean() 
+            # 3. 计算此DataFrame【自身】的全局平均值
+            df_global_avg_len = df_flow_avg_len.mean()
+            df_global_std_len = df_flow_std_len.mean()
+            df_global_pkt_count = df_flow_pkt_count.mean() 
 
-                # 4. 【关键】将【自身】的统计数据map回自身
-                df['flow_avg_len'] = df['tcp.stream'].map(df_flow_avg_len)
-                df['flow_std_len'] = df['tcp.stream'].map(df_flow_std_len)
-                df['flow_pkt_count'] = df['tcp.stream'].map(df_flow_pkt_count)
+            # 4. 【关键】将【自身】的统计数据map回自身
+            df['flow_avg_len'] = df['tcp.stream'].map(df_flow_avg_len)
+            df['flow_std_len'] = df['tcp.stream'].map(df_flow_std_len)
+            df['flow_pkt_count'] = df['tcp.stream'].map(df_flow_pkt_count)
 
-                # 5. 填充可能产生的NaN (例如只有一个包的流，其std为NaN)
-                # df['flow_std_len'].fillna(df_global_std_len, inplace=True)
-                df['flow_std_len'] = df['flow_std_len'].fillna(df_global_std_len)
+            # 5. 填充可能产生的NaN (例如只有一个包的流，其std为NaN)
+            # df['flow_std_len'].fillna(df_global_std_len, inplace=True)
+            df['flow_std_len'] = df['flow_std_len'].fillna(df_global_std_len)
 
-        print(" -> Flow-level features successfully engineered for all datasets.")
+    print(" -> Flow-level features successfully engineered for all datasets.")
 
 
     # c) 创建全局标签映射

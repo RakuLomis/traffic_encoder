@@ -306,7 +306,7 @@ if __name__ == '__main__':
     set_seed(SEED)
 
     # --- 1. 设置超参数 ---
-    NUM_EPOCHS = 100
+    NUM_EPOCHS = 150
     BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    DIAGNOSE = True
+    DIAGNOSE = False
     stop_training = False
 
     USE_FLOW_FEATURES_THIS_RUN = True
@@ -330,8 +330,7 @@ if __name__ == '__main__':
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
-    # dataset_name = 'ISCX-TOR-Application'
-    dataset_name = 'dataset_29_d1'
+    dataset_name = 'ISCX-TOR-Application'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -607,10 +606,10 @@ if __name__ == '__main__':
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='max',      # 我们的目标是最大化 F1
-        factor=0.6,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
+        factor=0.2,      # 当F1停滞时，将 LR 乘以 0.2 (例如: 1e-3 -> 2e-4 -> 4e-5)
         patience=5,      # 【关键】如果 Val F1 在 5 个 epoch 内没有创下新高...
         verbose=True,     # ... 打印一条消息并降低 LR
-        min_lr=1e-6 # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)
+        min_lr=1e-6   # (你可以保留你现有的 MIN_LR_FOR_TRAINING 逻辑)
     )
 
     # 【关键】初始化一个“动态权重”张量，一开始所有类别权重都为1.0

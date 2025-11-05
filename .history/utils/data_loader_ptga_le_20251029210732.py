@@ -166,6 +166,187 @@ class GNNTrafficDataset(Dataset):
     def __len__(self):
         return len(self.labels)
 
+    # def __getitem__(self, idx) -> Dict[str, Any]:
+    #     """
+    #     【新】
+    #     从“已预处理”的DataFrame中，快速切片，并组装成一个“专家图字典”。
+    #     """
+    #     # 1. 从已预处理的DataFrame中获取一行（非常快）
+    #     processed_row = self.processed_df.iloc[idx]
+    #     # y = self.labels[idx]
+    #     y = self.labels[idx].view(1)
+        
+    #     data_dict = {}
+
+    #     # 2. 遍历所有“专家”，为它们构建“微型图”
+    #     for expert_name, graph_info in self.expert_graphs.items():
+            
+    #         feature_dict_for_expert = {}
+    #         # 遍历这个专家需要的所有“真实”字段
+    #         for field_name in graph_info['real_nodes']:
+    #             # 从已预处理的行中，获取【整数索引】或【列表】
+    #             value = processed_row.get(field_name) 
+                
+    #             # 【解决缺失】如果值存在（非0或非空列表），才将其添加到图中
+    #             # 这实现了“零填充”的哲学
+    #             if value is not None and value != 0 and value != [0]*len(value) if isinstance(value, list) else True:
+    #                 feature_dict_for_expert[field_name] = value
+
+    #             # ==================== 核心修正点：将所有值转换为Tensor ====================
+    #             tensor_value = None
+                
+    #             if isinstance(value, list):
+    #                 # --- 针对地址类型 (list) ---
+    #                 if not all(v == 0 for v in value): # 检查是否为全0
+    #                     # 将 [192, 168, 1, 1] 转换为 torch.long Tensor
+    #                     tensor_value = torch.tensor(value, dtype=torch.long)
+                        
+    #             elif isinstance(value, (int, float, np.number)):
+    #                 # --- 针对分类/数值类型 (int/float) ---
+    #                 if value != 0: # 假设 0 是 OOV/NaN 的填充值
+    #                     # 将 6 转换为 torch.long Tensor [6]
+    #                     tensor_value = torch.tensor([value], dtype=torch.long)
+                
+    #             # 只有在值有效时，才将其添加到字典中
+    #             if tensor_value is not None:
+    #                 feature_dict_for_expert[field_name] = tensor_value
+    #             # =======================================================================
+            
+    #         # 创建“微型”Data对象
+    #         graph_data = Data(
+    #             edge_index=graph_info['edge_index'],
+    #             y=y,
+    #             # num_nodes=len(graph_info['all_nodes']),
+    #             **feature_dict_for_expert
+    #         )
+    #         data_dict[expert_name] = graph_data
+
+    #     # 3. 附加“流统计”特征
+    #     if self.use_flow_features: 
+    #         flow_stats_list = [processed_row.get(f, 0.0) for f in self.flow_feature_names]
+    #         data_dict['flow_stats'] = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1) # 保持 (1, 3)
+    #     return data_dict
+    
+    
+    # def __getitem__(self, idx) -> Dict[str, Any]:
+    #     """
+    #     【新 - 已修正地址Tensor形状】
+    #     从“已预处理”的DataFrame中，快速切片，并组装成一个“专家图字典”。
+    #     """
+    #     processed_row = self.processed_df.iloc[idx]
+    #     y = self.labels[idx].view(1) # 保持 [1] 形状
+        
+    #     data_dict = {}
+
+    #     for expert_name, graph_info in self.expert_graphs.items():
+            
+    #         feature_dict_for_expert = {}
+    #         for field_name in graph_info['real_nodes']:
+    #             value = processed_row.get(field_name) 
+                
+    #             if value is None:
+    #                 continue
+                
+    #             tensor_value = None
+                
+    #             # ==================== 核心修正点：修复“地址”形状 ====================
+    #             if isinstance(value, list):
+    #                 # --- 针对地址类型 (list) ---
+    #                 if not all(v == 0 for v in value):
+    #                     # 我们需要一个【2D】张量，形状为 [1, N]
+    #                     # 这样1024个 [1, 4] 的张量才能被批处理为 [1024, 4]
+    #                     tensor_value = torch.tensor(value, dtype=torch.long).view(1, -1)
+                
+    #             # =================================================================
+                
+    #             elif isinstance(value, (int, float, np.number)):
+    #                 # --- 针对分类/数值类型 (int/float) ---
+    #                 # 我们需要一个【1D】张量，形状为 [1]
+    #                 # 这样1024个 [1] 的张量才能被批处理为 [1024]
+    #                 tensor_value = torch.tensor([value], dtype=torch.long)
+                
+    #             if tensor_value is not None:
+    #                 # 我们不再检查 value != 0，因为 0 可能是合法的OOV索引
+    #                 feature_dict_for_expert[field_name] = tensor_value
+
+    #         graph_data = Data(
+    #             edge_index=graph_info['edge_index'],
+    #             y=y,
+    #             # 我们仍然删除 num_nodes，以避免上一个TypeError
+    #             num_nodes=len(graph_info['all_nodes']), 
+    #             **feature_dict_for_expert
+    #         )
+    #         data_dict[expert_name] = graph_data
+
+    #     if self.use_flow_features:
+    #         flow_stats_list = [processed_row.get(f, 0.0) for f in self.flow_feature_names]
+    #         data_dict['flow_stats'] = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1)
+        
+    #     return data_dict
+
+    # def __getitem__(self, idx) -> Dict[str, Any]:
+    #     """
+    #     【新 - 已修正 KeyError 和 形状问题】
+    #     从“已预处理”的DataFrame中，快速切片，并组装成一个“专家图字典”。
+    #     """
+    #     processed_row = self.processed_df.iloc[idx]
+    #     y = self.labels[idx].view(1) # 保持 [1] 形状，修复 'int' object is not callable
+        
+    #     data_dict = {}
+
+    #     for expert_name, graph_info in self.expert_graphs.items():
+            
+    #         feature_dict_for_expert = {}
+    #         # 遍历这个专家定义的所有“真实”字段
+    #         for field_name in graph_info['real_nodes']:
+    #             value = processed_row.get(field_name) 
+                
+    #             # ==================== 核心修正点：修复 KeyError ====================
+    #             # 无论值是否存在，我们都必须为每个字段创建一个Tensor，以保证键(key)的一致性
+                
+    #             tensor_value = None
+                
+    #             if isinstance(value, list):
+    #                 # --- 针对地址类型 (list) ---
+    #                 # [192, 168, 1, 1] -> tensor([[192, 168, 1, 1]])
+    #                 tensor_value = torch.tensor(value, dtype=torch.long).view(1, -1)
+                
+    #             elif isinstance(value, (int, float, np.number)):
+    #                 # --- 针对分类/数值类型 (int/float) ---
+    #                 # 6 -> tensor([6])
+    #                 tensor_value = torch.tensor([value], dtype=torch.long)
+                
+    #             else:
+    #                 # --- 针对缺失值 (None) 或其他类型 ---
+    #                 # 我们需要知道这个字段“应该”是什么形状
+    #                 config_type = self.config.get(field_name, {}).get('type', 'numerical')
+    #                 if config_type in ['address_ipv4']:
+    #                     # 形状 (1, 4)
+    #                     tensor_value = torch.zeros((1, 4), dtype=torch.long)
+    #                 elif config_type in ['address_mac']:
+    #                     # 形状 (1, 6)
+    #                     tensor_value = torch.zeros((1, 6), dtype=torch.long)
+    #                 else:
+    #                     # 形状 (1,)
+    #                     tensor_value = torch.tensor([0], dtype=torch.long)
+
+    #             feature_dict_for_expert[field_name] = tensor_value
+    #             # =================================================================
+
+    #         graph_data = Data(
+    #             edge_index=graph_info['edge_index'],
+    #             y=y,
+
+    #             num_nodes=len(graph_info['all_nodes']),
+    #             **feature_dict_for_expert
+    #         )
+    #         data_dict[expert_name] = graph_data
+
+    #     if self.use_flow_features:
+    #         flow_stats_list = [processed_row.get(f, 0.0) for f in self.flow_feature_names]
+    #         data_dict['flow_stats'] = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1)
+        
+    #     return data_dict
 
     def __getitem__(self, idx) -> Dict[str, Any]:
         """

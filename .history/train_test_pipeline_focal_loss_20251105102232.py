@@ -175,8 +175,8 @@ if __name__ == '__main__':
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 100
     BATCH_SIZE = 1024
-    LEARNING_RATE = 1e-3
-    # LEARNING_RATE = 5e-4
+    # LEARNING_RATE = 1e-3
+    LEARNING_RATE = 5e-4
     WEIGHT_DECAY = 1e-4
     # WEIGHT_DECAY = 5e-4
     DROPOUT_RATE = 0.7
@@ -209,7 +209,7 @@ if __name__ == '__main__':
     # test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
 
     # dataset_name = 'dataset_29_d1'
-    dataset_name = 'ISCX-TOR-Application' 
+    dataset_name = 'ISCX-TOR-Application'
 
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 

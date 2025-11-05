@@ -10,7 +10,7 @@ dataset_name2 = 'ISCX-TOR-Acctivity'
 dataset_name3 = 'ISCX-TOR-Application'
 dataset_name4 = 'dataset_29_d1'
 root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
-config_path = os.path.join('.', 'Data', 'fields_embedding_configs_v1.yaml')
+config_path = os.path.join('.', 'utils', 'fields_embedding_configs_v1.yaml')
 # csv_path = os.path.join('..', 'TrafficData', 'dataset_29_d1_csv_merged', 'completeness', 'dataset_29_completed_label.csv')
 # csv_path = os.path.join('..', 'TrafficData', 'dataset_20_d2_csv', 'dataset_20_d2.csv') 
 
