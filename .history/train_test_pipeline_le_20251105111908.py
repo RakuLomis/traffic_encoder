@@ -340,7 +340,7 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    DIAGNOSE = False
+    DIAGNOSE = True
     stop_training = False
 
     USE_FLOW_FEATURES_THIS_RUN = True
@@ -354,8 +354,8 @@ if __name__ == '__main__':
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
-    dataset_name = 'ISCX-TOR-Application'
-    # dataset_name = 'dataset_29_d1'
+    # dataset_name = 'ISCX-TOR-Application'
+    dataset_name = 'dataset_29_d1'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -413,203 +413,133 @@ if __name__ == '__main__':
         OPEN_WORLD = True
 
         # a) 定义流特征名称
-        flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count', 
-                              'flow_avg_iat', 'flow_std_iat', 'flow_max_iat',
-                                'flow_duration',
-                                'flow_large_pkt_count']
-        # b) 【!! 核心修改 !!】
-        print(" -> [Hex Fix] Converting key columns to temporary decimal columns...")
+        flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
+
+        # b) 【!! 关键修复：在 groupby 之前转换 Hex (使用临时列) !!】
+        print(" -> [Hex Fix] Converting 'ip.len' and 'tcp.stream' to temporary decimal columns for flow calc...")
         
-        for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-            if df.empty: continue
-            print(f"   -> Processing {df_name} set for temp columns...")
-            
-            # 1. 转换 ip.len (不变)
-            df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
-            # 2. 转换 tcp.stream (不变)
-            df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
-            
-            # 3. 【!! 修改 !!】转换 timestamp
-            if 'tcp.options.timestamp' not in df.columns: # <-- 检查新列
-                raise ValueError("错误：特征工程2.0需要 'tcp.options.timestamp' 列，但数据集中未找到。")
-            
-            # 使用 *新* 函数转换 *新* 列，并使用 int64 (因为时间戳会很大)
-            df['time_temp_dec'] = df['tcp.options.timestamp'].apply(robust_timestamp_to_tsval).astype(np.int64) 
+        # --- 1. 转换 (仅限 train_df，因为我们只从它学习) ---
+        #     我们创建 *新* 的临时列，而不是覆盖旧的
+        train_df['ip.len_temp_dec'] = train_df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
+        train_df['tcp.stream_temp_dec'] = train_df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+        print(" -> Temporary decimal columns created in train_df.")
 
-        print(" -> Temporary decimal columns created.")
-
-        # c) 【!! 核心修改：从 *临时* 列中学习 *新* 知识 !!】
+        # c) 【关键】从 *临时* 列中学习“知识”
         print(" -> Learning per-flow statistics ONLY from Train set (using temp decimal values)...")
-        
-        # --- (旧特征) --- (不变)
+        # (现在 groupby 正在对 *真实* 的十进制包长进行操作)
         train_flow_avg_len = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].mean()
         train_flow_std_len = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].std().fillna(0)
         train_flow_pkt_count = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].count()
-        
-        # --- (新特征 1: IAT) ---
-        print("   -> Calculating IAT (this may take a moment)...")
-        # (我们必须先按流和时间排序，以确保 diff() 是正确的)
-        # (我们假设 TSval (time_temp_dec) 已经是单调递增的，但排序更安全)
-        train_df = train_df.sort_values(by=['tcp.stream_temp_dec', 'time_temp_dec'])
-        
-        # 【!! 修改 !!】计算 TSval 的差值
-        #    (注意：如果TSval回绕(wrap-around)，diff()可能会产生巨大负数，
-        #     我们稍后用 np.nan_to_num(..., neginf=0) 来清理)
-        train_df['iat_temp'] = train_df.groupby('tcp.stream_temp_dec')['time_temp_dec'].diff().fillna(0)
-        
-        # (计算 IAT 统计数据)
-        train_flow_avg_iat = train_df.groupby('tcp.stream_temp_dec')['iat_temp'].mean()
-        train_flow_std_iat = train_df.groupby('tcp.stream_temp_dec')['iat_temp'].std().fillna(0)
-        train_flow_max_iat = train_df.groupby('tcp.stream_temp_dec')['iat_temp'].max()
 
-        # --- (新特征 2: Duration) ---
-        # (计算 TSval 的总 "持续时间")
-        flow_min_time = train_df.groupby('tcp.stream_temp_dec')['time_temp_dec'].min()
-        flow_max_time = train_df.groupby('tcp.stream_temp_dec')['time_temp_dec'].max()
-        train_flow_duration = (flow_max_time - flow_min_time)
+        # d) 【关键】计算“全局默认值” (从训练集中学到)
+        train_global_avg_len = float(train_flow_avg_len.mean())
+        train_global_std_len = float(train_flow_std_len.mean())
+        train_global_pkt_count = int(train_flow_pkt_count.mean())
         
-        # --- (新特征 3: Bins) --- (不变)
-        LARGE_PKT_THRESHOLD = 1400 
-        large_pkts = train_df[train_df['ip.len_temp_dec'] > LARGE_PKT_THRESHOLD]
-        train_flow_large_pkt_count = large_pkts.groupby('tcp.stream_temp_dec').size()
-
-        # d) 【!! 核心修改：计算 *所有* 全局默认值 !!】
-        print(" -> Learning global defaults for all features...")
-        g_avg_len = float(train_flow_avg_len.mean())
-        g_std_len = float(train_flow_std_len.mean())
-        g_pkt_count = int(train_flow_pkt_count.mean())
-        g_avg_iat = float(train_flow_avg_iat.mean())
-        g_std_iat = float(train_flow_std_iat.mean())
-        g_max_iat = float(train_flow_max_iat.mean())
-        g_duration = float(train_flow_duration.mean())
-        g_large_pkt_count = 0 
+        # 【健壮性修复：检查全局值是否为 NaN/Inf】
+        if np.isnan(train_global_avg_len) or np.isinf(train_global_avg_len): train_global_avg_len = 0.0
+        if np.isnan(train_global_std_len) or np.isinf(train_global_std_len): train_global_std_len = 0.0
+        if np.isnan(train_global_pkt_count) or np.isinf(train_global_pkt_count): train_global_pkt_count = 0
         
-        global_defaults = {
-            'flow_avg_len': np.nan_to_num(g_avg_len, nan=0.0, posinf=0.0, neginf=0.0),
-            'flow_std_len': np.nan_to_num(g_std_len, nan=0.0, posinf=0.0, neginf=0.0),
-            'flow_pkt_count': np.nan_to_num(g_pkt_count, nan=0),
-            'flow_avg_iat': np.nan_to_num(g_avg_iat, nan=0.0, posinf=0.0, neginf=0.0),
-            'flow_std_iat': np.nan_to_num(g_std_iat, nan=0.0, posinf=0.0, neginf=0.0),
-            'flow_max_iat': np.nan_to_num(g_max_iat, nan=0.0, posinf=0.0, neginf=0.0),
-            'flow_duration': np.nan_to_num(g_duration, nan=0.0, posinf=0.0, neginf=0.0),
-            'flow_large_pkt_count': g_large_pkt_count 
-        }
-        train_maps = {
-            'flow_avg_len': train_flow_avg_len,
-            'flow_std_len': train_flow_std_len,
-            'flow_pkt_count': train_flow_pkt_count,
-            'flow_avg_iat': train_flow_avg_iat,
-            'flow_std_iat': train_flow_std_iat,
-            'flow_max_iat': train_flow_max_iat,
-            'flow_duration': train_flow_duration,
-            'flow_large_pkt_count': train_flow_large_pkt_count
-        }
-
-        # e) 【!! 核心修改：应用 *所有* 特征 (OPEN_WORLD=True) !!】
-        OPEN_WORLD = True 
-        print(" -> [OPEN_WORLD MODE] Applying all stats to Val/Test sets...")
-        for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-            if df.empty: continue
-            print(f"   -> Processing {df_name} set...")
-            for f_name in flow_feature_names:
-                df[f_name] = df['tcp.stream_temp_dec'].map(train_maps[f_name]).fillna(global_defaults[f_name])
-
-        # f) 【!! 关键清理 !!】删除所有临时列
-        print(" -> Cleaning up temporary decimal columns...")
-        for df in [train_df, val_df_aligned, test_df_aligned]:
-            if 'ip.len_temp_dec' in df.columns: df.drop(columns=['ip.len_temp_dec'], inplace=True)
-            if 'tcp.stream_temp_dec' in df.columns: df.drop(columns=['tcp.stream_temp_dec'], inplace=True)
-            if 'time_temp_dec' in df.columns: df.drop(columns=['time_temp_dec'], inplace=True)
-            if 'iat_temp' in df.columns: df.drop(columns=['iat_temp'], inplace=True)
-        
-        # g) 【最终清理】(不变, 使用 np.nan_to_num)
-        print(" -> Final cleanup of *new* flow features (nan/inf/neginf -> 0.0)...")
-        for df in [train_df, val_df_aligned, test_df_aligned]:
-             if df.empty: continue
-             for col in flow_feature_names: 
-                 col_data_numeric = pd.to_numeric(df[col], errors='coerce')
-                 col_data_np = col_data_numeric.values
-                 # 【!! 修复 !!】确保 neginf (来自 IAT diff) 也被清理
-                 col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0) 
-                 
-                 if 'count' in col:
-                     df[col] = col_data_cleaned.astype(np.int32)
-                 else: # avg, std, iat, duration -> float
-                     df[col] = col_data_cleaned.astype(np.float32)
-                     
-        print(f" -> Feature Engineering 2.0 complete. {len(flow_feature_names)} flow features created.")
-
-        # # b) 【!! 关键修复：在 groupby 之前转换 Hex (使用临时列) !!】
-        # print(" -> [Hex Fix] Converting 'ip.len' and 'tcp.stream' to temporary decimal columns for flow calc...")
-        
-        # # --- 1. 转换 (仅限 train_df，因为我们只从它学习) ---
-        # #     我们创建 *新* 的临时列，而不是覆盖旧的
-        # train_df['ip.len_temp_dec'] = train_df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
-        # train_df['tcp.stream_temp_dec'] = train_df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
-        # print(" -> Temporary decimal columns created in train_df.")
-
-        # # c) 【关键】从 *临时* 列中学习“知识”
-        # print(" -> Learning per-flow statistics ONLY from Train set (using temp decimal values)...")
-        # # (现在 groupby 正在对 *真实* 的十进制包长进行操作)
-        # train_flow_avg_len = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].mean()
-        # train_flow_std_len = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].std().fillna(0)
-        # train_flow_pkt_count = train_df.groupby('tcp.stream_temp_dec')['ip.len_temp_dec'].count()
-
-        # # d) 【关键】计算“全局默认值” (从训练集中学到)
-        # train_global_avg_len = float(train_flow_avg_len.mean())
-        # train_global_std_len = float(train_flow_std_len.mean())
-        # train_global_pkt_count = int(train_flow_pkt_count.mean())
-        
-        # # 【健壮性修复：检查全局值是否为 NaN/Inf】
-        # if np.isnan(train_global_avg_len) or np.isinf(train_global_avg_len): train_global_avg_len = 0.0
-        # if np.isnan(train_global_std_len) or np.isinf(train_global_std_len): train_global_std_len = 0.0
-        # if np.isnan(train_global_pkt_count) or np.isinf(train_global_pkt_count): train_global_pkt_count = 0
-        
-        # print(f" -> Learned global defaults: AvgLen={train_global_avg_len:.2f}, StdLen={train_global_std_len:.2f}, PktCount={train_global_pkt_count:.2f}")
+        print(f" -> Learned global defaults: AvgLen={train_global_avg_len:.2f}, StdLen={train_global_std_len:.2f}, PktCount={train_global_pkt_count:.2f}")
     
 
-        # # e) 将“知识”应用（广播）回训练集
-        # # print(" -> Applying learned stats back to Train set...")
-        # # train_df['flow_avg_len'] = train_df['tcp.stream'].map(train_flow_avg_len)
-        # # train_df['flow_std_len'] = train_df['tcp.stream'].map(train_flow_std_len)
-        # # train_df['flow_pkt_count'] = train_df['tcp.stream'].map(train_flow_pkt_count)
+        # e) 将“知识”应用（广播）回训练集
+        # print(" -> Applying learned stats back to Train set...")
+        # train_df['flow_avg_len'] = train_df['tcp.stream'].map(train_flow_avg_len)
+        # train_df['flow_std_len'] = train_df['tcp.stream'].map(train_flow_std_len)
+        # train_df['flow_pkt_count'] = train_df['tcp.stream'].map(train_flow_pkt_count)
 
 
-        # if OPEN_WORLD:
-        #     for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
-        #         if df.empty: continue
-        #         print(f"   -> Processing {df_name} set...")
+        if OPEN_WORLD:
+            for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
+                if df.empty: continue
+                print(f"   -> Processing {df_name} set...")
 
-        #         # 【重要】我们 map 用的 key 必须是十进制的 tcp.stream
-        #         # 我们需要为所有 df 创建临时 stream 列
-        #         if 'tcp.stream_temp_dec' not in df.columns: # 避免重复转换 train_df
-        #             df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+                # 【重要】我们 map 用的 key 必须是十进制的 tcp.stream
+                # 我们需要为所有 df 创建临时 stream 列
+                if 'tcp.stream_temp_dec' not in df.columns: # 避免重复转换 train_df
+                    df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
 
-        #         # 使用 temp stream key 和全局默认值来map
-        #         df['flow_avg_len'] = df['tcp.stream_temp_dec'].map(train_flow_avg_len).fillna(train_global_avg_len)
-        #         df['flow_std_len'] = df['tcp.stream_temp_dec'].map(train_flow_std_len).fillna(train_global_std_len)
-        #         df['flow_pkt_count'] = df['tcp.stream_temp_dec'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
+                # 使用 temp stream key 和全局默认值来map
+                df['flow_avg_len'] = df['tcp.stream_temp_dec'].map(train_flow_avg_len).fillna(train_global_avg_len)
+                df['flow_std_len'] = df['tcp.stream_temp_dec'].map(train_flow_std_len).fillna(train_global_std_len)
+                df['flow_pkt_count'] = df['tcp.stream_temp_dec'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
 
-        #     # f) 【!! 关键清理 !!】删除所有临时列
-        #     print(" -> Cleaning up temporary decimal columns...")
-        #     for df in [train_df, val_df_aligned, test_df_aligned]:
-        #         if 'ip.len_temp_dec' in df.columns:
-        #             df.drop(columns=['ip.len_temp_dec'], inplace=True)
-        #         if 'tcp.stream_temp_dec' in df.columns:
-        #             df.drop(columns=['tcp.stream_temp_dec'], inplace=True)
+            # f) 【!! 关键清理 !!】删除所有临时列
+            print(" -> Cleaning up temporary decimal columns...")
+            for df in [train_df, val_df_aligned, test_df_aligned]:
+                if 'ip.len_temp_dec' in df.columns:
+                    df.drop(columns=['ip.len_temp_dec'], inplace=True)
+                if 'tcp.stream_temp_dec' in df.columns:
+                    df.drop(columns=['tcp.stream_temp_dec'], inplace=True)
 
-        # # g) 【最终清理】确保所有新添加的 *流特征* 列是干净的 (nan/inf -> 0)
-        # print(" -> Final cleanup of *new* flow features (nan/inf -> 0.0)...")
+        # g) 【最终清理】确保所有新添加的 *流特征* 列是干净的 (nan/inf -> 0)
+        print(" -> Final cleanup of *new* flow features (nan/inf -> 0.0)...")
+        for df in [train_df, val_df_aligned, test_df_aligned]:
+            if df.empty: continue
+            for col in flow_feature_names: # 只清理我们刚添加的列
+                col_data_numeric = pd.to_numeric(df[col], errors='coerce')
+                col_data_np = col_data_numeric.values
+                col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
+                if col == 'flow_pkt_count':
+                    df[col] = col_data_cleaned.astype(np.int32)
+                else:
+                    df[col] = col_data_cleaned.astype(np.float32)
+                # --- 方案A: 模拟现实世界 (无数据泄露) ---
+                # print(" -> [OPEN_WORLD MODE] Applying stats learned from Train set to Val/Test sets...")
+
+                # for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
+                #     if df.empty: continue
+                #     print(f"   -> Processing {df_name} set...")
+                #     # 应用 .map() 并使用训练集的【全局默认值】填充“新流”
+                #     df['flow_avg_len'] = df['tcp.stream'].map(train_flow_avg_len).fillna(train_global_avg_len)
+                #     df['flow_std_len'] = df['tcp.stream'].map(train_flow_std_len).fillna(train_global_std_len)
+                #     df['flow_pkt_count'] = df['tcp.stream'].map(train_flow_pkt_count).fillna(train_global_pkt_count)
+        # else:
+        #     # --- 方案B: 您的“理想情况”实验 (有数据泄露) ---
+        #     print(" -> [CLOSED_WORLD MODE] Calculating and applying stats directly from Val/Test sets...")
+
+        #     # 迭代并【就地修改】验证集和测试集
+        #     for df_name, df in [('Validation', val_df_aligned), ('Test', test_df_aligned)]:
+        #         print(f" -> Calculating stats directly from {df_name} set...")
+        #         if df.empty:
+        #             continue
+
+        #         # 1. 转换数值
+        #         df['ip.len'] = pd.to_numeric(df['ip.len'], errors='coerce').fillna(0)
+        #         df['tcp.stream'] = pd.to_numeric(df['tcp.stream'], errors='coerce').fillna(0) 
+
+        #         # 2. 【关键】计算此DataFrame【自身】的统计数据
+        #         df_flow_avg_len = df.groupby('tcp.stream')['ip.len'].mean()
+        #         df_flow_std_len = df.groupby('tcp.stream')['ip.len'].std().fillna(0)
+        #         df_flow_pkt_count = df.groupby('tcp.stream')['ip.len'].count()
+
+        #         # 3. 计算此DataFrame【自身】的全局平均值
+        #         df_global_avg_len = df_flow_avg_len.mean()
+        #         df_global_std_len = df_flow_std_len.mean()
+        #         df_global_pkt_count = df_flow_pkt_count.mean() 
+
+        #         # 4. 【关键】将【自身】的统计数据map回自身
+        #         df['flow_avg_len'] = df['tcp.stream'].map(df_flow_avg_len)
+        #         df['flow_std_len'] = df['tcp.stream'].map(df_flow_std_len)
+        #         df['flow_pkt_count'] = df['tcp.stream'].map(df_flow_pkt_count)
+
+        #         # 5. 填充可能产生的NaN (例如只有一个包的流，其std为NaN)
+        #         # df['flow_std_len'].fillna(df_global_std_len, inplace=True)
+        #         df['flow_std_len'] = df['flow_std_len'].fillna(df_global_std_len)
+        # # g) 【最终清理】确保所有新列都是干净的 (nan/inf -> 0)
+        # print(" -> Final cleanup of flow features (nan/inf -> 0.0)...")
         # for df in [train_df, val_df_aligned, test_df_aligned]:
-        #     if df.empty: continue
-        #     for col in flow_feature_names: # 只清理我们刚添加的列
-        #         col_data_numeric = pd.to_numeric(df[col], errors='coerce')
-        #         col_data_np = col_data_numeric.values
-        #         col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
-        #         if col == 'flow_pkt_count':
-        #             df[col] = col_data_cleaned.astype(np.int32)
-        #         else:
-        #             df[col] = col_data_cleaned.astype(np.float32)
+        #      if df.empty: continue
+        #      for col in flow_feature_names:
+        #          col_data_numeric = pd.to_numeric(df[col], errors='coerce')
+        #          col_data_np = col_data_numeric.values
+        #          col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0)
+        #          if col == 'flow_pkt_count':
+        #              df[col] = col_data_cleaned.astype(np.int32)
+        #          else:
+        #              df[col] = col_data_cleaned.astype(np.float32)
 
         print(" -> Flow-level features successfully engineered for all datasets.")
 

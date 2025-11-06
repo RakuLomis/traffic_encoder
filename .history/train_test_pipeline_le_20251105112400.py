@@ -340,7 +340,7 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    DIAGNOSE = False
+    DIAGNOSE = True
     stop_training = False
 
     USE_FLOW_FEATURES_THIS_RUN = True
@@ -354,8 +354,8 @@ if __name__ == '__main__':
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
-    dataset_name = 'ISCX-TOR-Application'
-    # dataset_name = 'dataset_29_d1'
+    # dataset_name = 'ISCX-TOR-Application'
+    dataset_name = 'dataset_29_d1'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
