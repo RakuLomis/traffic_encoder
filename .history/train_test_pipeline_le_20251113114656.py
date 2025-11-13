@@ -697,16 +697,16 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
                               drop_last=True, 
-                              prefetch_factor=8, 
+                              prefetch_factor=4, 
                               )
                             #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            prefetch_factor=8, 
+                            prefetch_factor=4, 
                             )
                             # collate_fn=custom_collate_flat_dict)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            prefetch_factor=8, 
+                            prefetch_factor=4, 
                             )
                             #  collate_fn=custom_collate_flat_dict)
     

@@ -332,23 +332,20 @@ if __name__ == '__main__':
 
     # --- 1. 设置超参数 ---
     NUM_EPOCHS = 100
-    # BATCH_SIZE = 1024
-    BATCH_SIZE = 512
+    BATCH_SIZE = 1024
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4
     MAX_LEARNING_RATE = 1e-3
     DROPOUT_RATE = 0.5
-    NUM_WORKERS = 6 
+    NUM_WORKERS = 4 
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
     DIAGNOSE = False
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
     USE_FLOW_FEATURES_THIS_RUN = False
-    # STRATIFIED_TRAIN_SET = True
-    STRATIFIED_TRAIN_SET = False
+    STRATIFIED_TRAIN_SET = True
     SAMPLING_PROPORTION = 0.1 
 
     # FocalLoss的超参数
@@ -363,8 +360,8 @@ if __name__ == '__main__':
     # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
-    # dataset_name = 'USTC-TFC2016-Benign'
-    dataset_name = 'dataset_29_d1'
+    dataset_name = 'USTC-TFC2016-Benign'
+    # dataset_name = 'dataset_29_d1'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -696,18 +693,12 @@ if __name__ == '__main__':
     # c) 实例化 PyG 的 DataLoader (使用默认collate，无需自定义)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
-                              drop_last=True, 
-                              prefetch_factor=8, 
-                              )
+                              drop_last=True)
                             #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
-                            num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            prefetch_factor=8, 
-                            )
+                            num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, )
                             # collate_fn=custom_collate_flat_dict)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            prefetch_factor=8, 
-                            )
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, )
                             #  collate_fn=custom_collate_flat_dict)
     
     # --- 5. 初始化模型、损失函数和优化器 ---
@@ -725,15 +716,7 @@ if __name__ == '__main__':
         num_flow_features=len(train_dataset.flow_feature_names) if USE_FLOW_FEATURES_THIS_RUN else 0,
         hidden_dim=GNN_HIDDEN_DIM, 
         dropout_rate=DROPOUT_RATE
-    )#.to(device)
-
-    # 【!! 修复 1：添加性能优化 !!】
-    # (采纳日志中的建议，让 4060 开启 TensorFloat32 核心)
-    if torch.cuda.is_available():
-        print("Setting torch.set_float32_matmul_precision('high')")
-        torch.set_float32_matmul_precision('high')  
-
-    pta_model.to(device)
+    ).to(device)
 
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
 

@@ -697,17 +697,17 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
                               drop_last=True, 
-                              prefetch_factor=8, 
-                              )
+                              prefetch_factor=4, 
+                              persistent_workers=True)
                             #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            prefetch_factor=8, 
-                            )
+                            prefetch_factor=4, 
+                            persistent_workers=True)
                             # collate_fn=custom_collate_flat_dict)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            prefetch_factor=8, 
-                            )
+                            prefetch_factor=4, 
+                            persistent_workers=True)
                             #  collate_fn=custom_collate_flat_dict)
     
     # --- 5. 初始化模型、损失函数和优化器 ---
@@ -727,12 +727,12 @@ if __name__ == '__main__':
         dropout_rate=DROPOUT_RATE
     )#.to(device)
 
-    # 【!! 修复 1：添加性能优化 !!】
-    # (采纳日志中的建议，让 4060 开启 TensorFloat32 核心)
-    if torch.cuda.is_available():
-        print("Setting torch.set_float32_matmul_precision('high')")
-        torch.set_float32_matmul_precision('high')  
-
+    print("Compiling model (torch.compile)...")
+    try:
+        pta_model = torch.compile(pta_model)
+        print("Model compiled successfully!")
+    except Exception as e:
+        print(f"Warning: torch.compile() failed: {e}. Using uncompiled model.") 
     pta_model.to(device)
 
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay

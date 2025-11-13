@@ -120,10 +120,6 @@ class GNNTrafficDataset(Dataset):
         self.processed_df = self._preprocess_all(dataframe)
         print("Dataset initialization complete.")
 
-        # 调用我们的一键转换
-        self._preload_to_tensors()
-        print("Dataset initialization complete.")
-
         # # ==================== 【!! 核心性能修复 !!】 ====================
         # print("\nPre-caching all items into RAM. This may take several minutes...")
         # # 
@@ -369,137 +365,89 @@ class GNNTrafficDataset(Dataset):
         # 可选：释放原始 DataFrame 以节省内存 (我们现在只依赖 Tensor 了)
         del self.processed_df 
 
-    # def __getitem__(self, idx) -> Dict[str, Any]:
-    # # def _create_data_dict(self, idx) -> Dict[str, Any]:
-    #     """
-    #     【新 - 已修正 KeyError 和 形状问题】
-    #     【再修正 - 确保抽象节点也具有特征属性】
-    #     从“已预处理”的DataFrame中，快速切片，并组装成一个“专家图字典”。
-    #     """
-    #     processed_row = self.processed_df.iloc[idx]
-    #     y = self.labels[idx].view(1) # 保持 [1] 形状
-        
-    #     data_dict = {}
-
-    #     for expert_name, graph_info in self.expert_graphs.items():
-            
-    #         feature_dict_for_expert = {}
-    #         all_nodes_list = graph_info['all_nodes']
-    #         real_nodes_set = set(graph_info['real_nodes']) # 转换为集合以便快速查找
-            
-    #         # --- 核心修改点：遍历 *所有* 节点，而不仅仅是 real_nodes ---
-    #         for field_name in all_nodes_list:
-                
-    #             value = None
-    #             is_real_node = field_name in real_nodes_set
-                
-    #             # 1. 如果是真实节点，尝试从行数据中获取值
-    #             if is_real_node:
-    #                 value = processed_row.get(field_name) # value 可能是真实值，也可能是 None
-                
-    #             # 2. value 现在的情况:
-    #             #    a) 真实值 (list, int, float)
-    #             #    b) None (因为是抽象节点，或 真实节点但数据缺失)
-                
-    #             tensor_value = None
-
-    #             # 1. 首先获取该字段的配置类型
-    #             config = self.config.get(field_name, {})
-    #             config_type = config.get('type', 'categorical') # 默认按 categorical 处理
-                
-    #             if isinstance(value, list):
-    #                 # --- 针对地址类型 (list) ---
-    #                 tensor_value = torch.tensor(value, dtype=torch.long).view(1, -1)
-                
-    #             elif isinstance(value, (int, float, np.number)):
-    #                 # --- 针对分类/数值类型 (int/float) ---
-    #                 # tensor_value = torch.tensor([value], dtype=torch.long)
-    #                 if config_type == 'numerical':
-    #                     # 【修复】数值型 -> float32
-    #                     tensor_value = torch.tensor([value], dtype=torch.float32)
-    #                 else:
-    #                     # 分类型 -> long
-    #                     tensor_value = torch.tensor([value], dtype=torch.long)
-                
-    #             else:
-    #                 # --- 针对缺失值 (None) 或 抽象节点 ---
-    #                 # 检查配置，看它 *应该* 是什么形状
-    #                 # config_type = self.config.get(field_name, {}).get('type', 'numerical')
-                    
-    #                 if config_type == 'address_ipv4':
-    #                     tensor_value = torch.zeros((1, 4), dtype=torch.long)
-    #                 elif config_type == 'address_mac':
-    #                     tensor_value = torch.zeros((1, 6), dtype=torch.long)
-    #                 elif config_type == 'numerical':
-    #                     # 【修复】数值型的占位符也必须是 float
-    #                     tensor_value = torch.tensor([0.0], dtype=torch.float32)
-    #                 else:
-    #                     # 抽象节点 (如 'ip', 'ROOT') 和 缺失的真实节点 (如 'tcp.flags')
-    #                     # 都会得到一个 tensor([0]) 作为占位符
-    #                     tensor_value = torch.tensor([0], dtype=torch.long)
-
-    #             feature_dict_for_expert[field_name] = tensor_value
-    #             # =================================================================
-
-    #         graph_data = Data(
-    #             edge_index=graph_info['edge_index'],
-    #             y=y,
-    #             num_nodes=len(all_nodes_list), # 使用 all_nodes_list 的长度
-    #             **feature_dict_for_expert
-    #         )
-    #         data_dict[expert_name] = graph_data
-
-    #     if self.use_flow_features:
-    #         flow_stats_list = [processed_row.get(f, 0.0) for f in self.flow_feature_names]
-    #         data_dict['flow_stats'] = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1)
-        
-    #     return data_dict
-
     def __getitem__(self, idx) -> Dict[str, Any]:
+    # def _create_data_dict(self, idx) -> Dict[str, Any]:
         """
-        【极速版】直接从预生成的 Tensors 中切片，无需 Pandas 参与。
+        【新 - 已修正 KeyError 和 形状问题】
+        【再修正 - 确保抽象节点也具有特征属性】
+        从“已预处理”的DataFrame中，快速切片，并组装成一个“专家图字典”。
         """
-        # 1. 标签 (Label)
-        y = self.labels[idx].view(1)
-
+        processed_row = self.processed_df.iloc[idx]
+        y = self.labels[idx].view(1) # 保持 [1] 形状
+        
         data_dict = {}
 
-        # 2. 遍历专家，组装 Data 对象
         for expert_name, graph_info in self.expert_graphs.items():
+            
             feature_dict_for_expert = {}
             all_nodes_list = graph_info['all_nodes']
+            real_nodes_set = set(graph_info['real_nodes']) # 转换为集合以便快速查找
             
-            # 从 tensor_cache 中直接拿数据！速度飞快！
-            expert_tensors = self.tensor_cache[expert_name]
-            
+            # --- 核心修改点：遍历 *所有* 节点，而不仅仅是 real_nodes ---
             for field_name in all_nodes_list:
-                # 切片操作：tensor[idx]
-                raw_val = expert_tensors[field_name][idx]
                 
-                # 调整维度：
-                # 如果是 IP/MAC [4] -> [1, 4]，如果是标量 [] -> [1]
-                if raw_val.dim() == 0:
-                    tensor_value = raw_val.view(1)
-                else:
-                    tensor_value = raw_val.unsqueeze(0)
+                value = None
+                is_real_node = field_name in real_nodes_set
                 
-                feature_dict_for_expert[field_name] = tensor_value
+                # 1. 如果是真实节点，尝试从行数据中获取值
+                if is_real_node:
+                    value = processed_row.get(field_name) # value 可能是真实值，也可能是 None
+                
+                # 2. value 现在的情况:
+                #    a) 真实值 (list, int, float)
+                #    b) None (因为是抽象节点，或 真实节点但数据缺失)
+                
+                tensor_value = None
 
-            # 创建 Data 对象 (这个开销很小，因为数据已经准备好了)
+                # 1. 首先获取该字段的配置类型
+                config = self.config.get(field_name, {})
+                config_type = config.get('type', 'categorical') # 默认按 categorical 处理
+                
+                if isinstance(value, list):
+                    # --- 针对地址类型 (list) ---
+                    tensor_value = torch.tensor(value, dtype=torch.long).view(1, -1)
+                
+                elif isinstance(value, (int, float, np.number)):
+                    # --- 针对分类/数值类型 (int/float) ---
+                    # tensor_value = torch.tensor([value], dtype=torch.long)
+                    if config_type == 'numerical':
+                        # 【修复】数值型 -> float32
+                        tensor_value = torch.tensor([value], dtype=torch.float32)
+                    else:
+                        # 分类型 -> long
+                        tensor_value = torch.tensor([value], dtype=torch.long)
+                
+                else:
+                    # --- 针对缺失值 (None) 或 抽象节点 ---
+                    # 检查配置，看它 *应该* 是什么形状
+                    # config_type = self.config.get(field_name, {}).get('type', 'numerical')
+                    
+                    if config_type == 'address_ipv4':
+                        tensor_value = torch.zeros((1, 4), dtype=torch.long)
+                    elif config_type == 'address_mac':
+                        tensor_value = torch.zeros((1, 6), dtype=torch.long)
+                    elif config_type == 'numerical':
+                        # 【修复】数值型的占位符也必须是 float
+                        tensor_value = torch.tensor([0.0], dtype=torch.float32)
+                    else:
+                        # 抽象节点 (如 'ip', 'ROOT') 和 缺失的真实节点 (如 'tcp.flags')
+                        # 都会得到一个 tensor([0]) 作为占位符
+                        tensor_value = torch.tensor([0], dtype=torch.long)
+
+                feature_dict_for_expert[field_name] = tensor_value
+                # =================================================================
+
             graph_data = Data(
                 edge_index=graph_info['edge_index'],
                 y=y,
-                num_nodes=len(all_nodes_list),
+                num_nodes=len(all_nodes_list), # 使用 all_nodes_list 的长度
                 **feature_dict_for_expert
             )
             data_dict[expert_name] = graph_data
 
-        # 3. 流特征 (如果启用)
         if self.use_flow_features:
-            flow_stats_list = []
-            for f in self.flow_feature_names:
-                flow_stats_list.append(self.flow_tensor_cache[f][idx])
-            data_dict['flow_stats'] = torch.stack(flow_stats_list).view(1, -1)
+            flow_stats_list = [processed_row.get(f, 0.0) for f in self.flow_feature_names]
+            data_dict['flow_stats'] = torch.tensor(flow_stats_list, dtype=torch.float).view(1, -1)
         
         return data_dict
     
