@@ -64,11 +64,8 @@ class GNNTrafficDataset(Dataset):
         ip_fields = {f for f in all_available_fields if f.startswith('ip.')}
 
         # 【!! 核心修复：移除 IP 噪声 !!】
-        if not use_ip_address: 
-            ip_fields_to_ignore = {'ip.src', 'ip.dst'} 
-            ip_fields_cleaned = ip_fields - ip_fields_to_ignore
-        else: 
-            ip_fields_cleaned = ip_fields
+        ip_fields_to_ignore = {'ip.src', 'ip.dst'}
+        ip_fields_cleaned = ip_fields - ip_fields_to_ignore
         
         # 您可以根据需要，像配置表一样，精确地定义这些专家的字段
         self.expert_definitions = {

@@ -34,7 +34,7 @@ import random
 from torch.optim import RAdam
 import copy
 import gc
-from utils.dataframe_tools import stratified_sample_dataframe, stratified_hybrid_sample_dataframe_optimized, stratified_aggressive_balancing
+from utils.dataframe_tools import stratified_sample_dataframe, stratified_hybrid_sample_dataframe, stratified_aggressive_balancing
 
 # os.environ['CUDA_LAUNCH_BLOCKING'] = "1" 
 # os.environ['TORCH_USE_CUDA_DSA'] = "1"
@@ -347,10 +347,9 @@ if __name__ == '__main__':
 
     # USE_FLOW_FEATURES_THIS_RUN = True
     USE_FLOW_FEATURES_THIS_RUN = False
-    # USE_IP_ADDRESS_THIS_RUN = True
-    USE_IP_ADDRESS_THIS_RUN = False
-    STRATIFIED_TRAIN_SET = True
-    # STRATIFIED_TRAIN_SET = False
+    USE_IP_ADDRESS_THIS_RUN = True
+    # STRATIFIED_TRAIN_SET = True
+    STRATIFIED_TRAIN_SET = False
     SAMPLING_PROPORTION = 0.1 
 
     # FocalLoss的超参数
@@ -363,11 +362,10 @@ if __name__ == '__main__':
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
-    dataset_name = 'ISCX-TOR-Acctivity'
-    # dataset_name = 'ISCX-TOR-Application'
+    # dataset_name = 'ISCX-TOR-Acctivity'
+    dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
-    # dataset_name = 'dataset_29_d1' 
-    # dataset_name = 'dataset_20_d2'
+    # dataset_name = 'dataset_29_d1'
     # dataset_name = 'USTC-TFC2016-Malware'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
@@ -394,15 +392,15 @@ if __name__ == '__main__':
     print("\n[1/4] Loading datasets...")
     try:
         train_df = pd.read_csv(train_df_path, dtype=str)
-        # val_df = pd.read_csv(val_df_path, dtype=str)
-        # test_df = pd.read_csv(test_df_path, dtype=str)
+        val_df = pd.read_csv(val_df_path, dtype=str)
+        test_df = pd.read_csv(test_df_path, dtype=str)
     except FileNotFoundError as e:
         print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
         exit()
         
     print(f" - Train set (augmented): {len(train_df)} rows")
-    # print(f" - Validation set: {len(val_df)} rows")
-    # print(f" - Test set: {len(test_df)} rows")
+    print(f" - Validation set: {len(val_df)} rows")
+    print(f" - Test set: {len(test_df)} rows")
 
     # c) 创建全局标签映射
     #    为了确保所有数据集的标签一致，我们基于训练集来创建映射
@@ -417,7 +415,7 @@ if __name__ == '__main__':
         # train_df = stratified_sample_dataframe(train_df, 
         #                                        label_column='label_id', 
         #                                        proportion=SAMPLING_PROPORTION) 
-        train_df = stratified_hybrid_sample_dataframe_optimized( # <-- [新]
+        train_df = stratified_hybrid_sample_dataframe( # <-- [新]
             df=train_df,
             label_column='label_id', # 按 'label_id' 分层
             proportion=SAMPLING_PROPORTION,
@@ -427,16 +425,6 @@ if __name__ == '__main__':
         #                                            label_column='label_id', 
         #                                            proportion=SAMPLING_PROPORTION, 
         #                                            random_state=SEED)
-
-    try:
-        val_df = pd.read_csv(val_df_path, dtype=str)
-        test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
-        
-    print(f" - Validation set: {len(val_df)} rows")
-    print(f" - Test set: {len(test_df)} rows")
     
 
     # ==================== 代码优化：高效对齐 ====================
@@ -1059,24 +1047,3 @@ if __name__ == '__main__':
         print(f"\nCombined feature importance report saved to: {report_output_path}")
         print("="*50)
         print("Diagnose completed. ")
-
-        # ==================== 2. 【新增】分析每层专家重要性 (Macro) ====================
-        print("\n" + "="*50)
-        print("###   Learned Expert Layer Importance Report (Macro)   ###")
-        
-        # 调用我们新写的函数
-        try:
-            expert_layer_report = pta_model.get_expert_importance()
-            
-            # 打印到控制台看看
-            print(expert_layer_report.to_string())
-            
-            # 保存到 CSV
-            expert_report_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_expert_layer_importance.csv')
-            expert_layer_report.to_csv(expert_report_path, index=False)
-            print(f"\nExpert layer importance saved to: {expert_report_path}")
-        except Exception as e:
-            print(f"Warning: Could not generate expert importance report. Error: {e}")
-        
-        print("="*50)
-        # ============================================================================

@@ -345,10 +345,9 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
-    # USE_IP_ADDRESS_THIS_RUN = True
-    USE_IP_ADDRESS_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
+    USE_IP_ADDRESS_THIS_RUN = True
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     SAMPLING_PROPORTION = 0.1 
@@ -363,9 +362,9 @@ if __name__ == '__main__':
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
-    dataset_name = 'ISCX-TOR-Acctivity'
+    # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
-    # dataset_name = 'USTC-TFC2016-Benign'
+    dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'

@@ -221,51 +221,18 @@ class HierarchicalMoE(nn.Module):
 
         # --- 2. 【!! 核心修改：独立的归一化层 !!】 ---
         
-        # # a. 为 *所有* GNN 专家的拼接输出创建一个 LayerNorm
-        # self.gnn_output_norm = nn.LayerNorm(total_gnn_dim)
+        # a. 为 *所有* GNN 专家的拼接输出创建一个 LayerNorm
+        self.gnn_output_norm = nn.LayerNorm(total_gnn_dim)
         
-        # # --- 【!! 实施建议 5：专家重要性门控 !!】 ---
-        # num_expert_blocks = 1 + (1 if self.use_flow_features else 0)
-        # self.expert_gate = nn.Parameter(torch.zeros(num_expert_blocks))
-        # print(f" -> Initializing Expert Gate with {num_expert_blocks} weights.")
+        # --- 【!! 实施建议 5：专家重要性门控 !!】 ---
+        num_expert_blocks = 1 + (1 if self.use_flow_features else 0)
+        self.expert_gate = nn.Parameter(torch.zeros(num_expert_blocks))
+        print(f" -> Initializing Expert Gate with {num_expert_blocks} weights.")
 
-        # # --- 4. 创建最终的“聚合器” (一个简单的MLP) ---
-        # print(f" -> Initializing aggregator (input dim: {total_embedding_dim})")
-        # self.aggregator = nn.Sequential(
-        #     # nn.LayerNorm(total_embedding_dim), 
-        #     nn.Linear(total_embedding_dim, hidden_dim * 2), # 放大
-        #     nn.LeakyReLU(),
-        #     nn.Dropout(p=dropout_rate),
-        #     nn.Linear(hidden_dim * 2, num_classes)
-        # )
-
-        # --- 【!! 核心修改 1：移除 GNN 块归一化 !!】 ---
-        # (我们不再有“融合”的 GNN 块了，所以这个norm必须被删除)
-        # self.gnn_output_norm = nn.LayerNorm(total_gnn_dim)
-
-        # --- 【!! 核心修改 2：创建“每层”的专家门控 !!】 ---
-
-        # a. 获取所有 GNN 专家的名字 (并排序，以保证顺序)
-        self.gnn_expert_names = sorted(list(self.experts.keys()))
-        num_gnn_experts = len(self.gnn_expert_names)
-        print(f" -> Found {num_gnn_experts} GNN experts: {self.gnn_expert_names}")
-
-        # b. 确定总门控数量
-        num_flow_experts = 1 if self.use_flow_features else 0
-        num_total_experts = num_gnn_experts + num_flow_experts
-
-        # c. 创建门控参数 (例如: 4个GNN + 1个Flow = 5个参数)
-        self.expert_gate = nn.Parameter(torch.zeros(num_total_experts))
-
-        # d. 存储名称列表，供“get_expert_importance”函数使用
-        self.all_expert_names = self.gnn_expert_names + (["Flow_Features_Block"] if self.use_flow_features else [])
-        print(f" -> Initializing Expert Gate with {num_total_experts} weights for: {self.all_expert_names}")
-
-        # --- 【!! 核心修改 3：激活 Aggregator 的归一化 !!】 ---
+        # --- 4. 创建最终的“聚合器” (一个简单的MLP) ---
         print(f" -> Initializing aggregator (input dim: {total_embedding_dim})")
         self.aggregator = nn.Sequential(
-            # (现在所有专家都已加权，我们在“拼接后”进行一次总归一化)
-            nn.LayerNorm(total_embedding_dim), # <-- 【!! 激活此行 !!】
+            # nn.LayerNorm(total_embedding_dim), 
             nn.Linear(total_embedding_dim, hidden_dim * 2), # 放大
             nn.LeakyReLU(),
             nn.Dropout(p=dropout_rate),
@@ -322,123 +289,42 @@ class HierarchicalMoE(nn.Module):
     #     # 【重要】返回logits，以及【所有】专家的门控，以便计算总正则化损失
     #     return logits, all_gates
 
-    # def forward(self, batch_dict: Dict[str, Any]) -> torch.Tensor:
-    #     gnn_embeddings = [] # <-- 【修改】只收集 GNN
-    #     all_gates = {} 
-        
-    #     # --- a) GNN 专家处理 ---
-    #     for expert_name, expert_model in self.experts.items():
-    #         if expert_name not in batch_dict: continue
-    #         data_for_this_expert = batch_dict[expert_name]
-    #         embedding, gate = expert_model(data_for_this_expert)
-    #         gnn_embeddings.append(embedding) # <-- 只添加 GNN 嵌入
-    #         all_gates[expert_name] = gate
-            
-    #     if not gnn_embeddings:
-    #          raise ValueError("没有任何 GNN 专家输出了嵌入向量！")
-
-    #     # --- b) 独立归一化 (不变) ---
-    #     gnn_combined = torch.cat(gnn_embeddings, dim=1)
-    #     gnn_normed = self.gnn_output_norm(gnn_combined)
-    #     final_embeddings_list = [gnn_normed]
-            
-    #     # --- c) 【条件】处理流特征 ---
-    #     if self.use_flow_features:
-    #         if 'flow_stats' not in batch_dict: raise ValueError("...")
-            
-    #         flow_stats_input = batch_dict['flow_stats']
-    #         if flow_stats_input.dim() == 3 and flow_stats_input.shape[1] == 1:
-    #             flow_stats_input = flow_stats_input.squeeze(1)
-            
-    #         flow_embedding = self.flow_stats_embedder(flow_stats_input)
-    #         flow_normed = self.flow_output_norm(flow_embedding) 
-    #         final_embeddings_list.append(flow_normed)
-        
-    #     # --- d) 最终拼接 & 分类 (不变) ---
-    #     combined_embedding = torch.cat(final_embeddings_list, dim=1) 
-    #     logits = self.aggregator(combined_embedding) 
-        
-    #     return logits, all_gates
-
     def forward(self, batch_dict: Dict[str, Any]) -> torch.Tensor:
-        all_gates = {} # 用于特征重要性
-        gated_embeddings_list = [] # 存储“加权后”的专家输出
-
-        # --- a) 获取所有专家门控权重 ---
-        # 形状: [num_total_experts] (例如: 5个)
-        gate_weights = torch.sigmoid(self.expert_gate)
-
-        # --- b) GNN 专家处理 (逐个加权) ---
-
-        # (我们必须按 __init__ 中定义的 gnn_expert_names 顺序迭代)
-        for i, expert_name in enumerate(self.gnn_expert_names):
+        gnn_embeddings = [] # <-- 【修改】只收集 GNN
+        all_gates = {} 
         
-            # 检查批次中是否有此专家的数据 (例如，非TLS包没有'tls'专家)
-            if expert_name in batch_dict:
-                expert_model = self.experts[expert_name]
-                data_for_this_expert = batch_dict[expert_name]
-                
-                # 1. 运行 GNN 专家
-                embedding, gate = expert_model(data_for_this_expert) # [B, D_hidden]
-                all_gates[expert_name] = gate # 存储特征门控
-                
-                # 2. 【!! 核心 !!】应用“顶层”专家门控
-                gated_embedding = embedding * gate_weights[i] # [B, D] * [1]
-                gated_embeddings_list.append(gated_embedding)
+        # --- a) GNN 专家处理 ---
+        for expert_name, expert_model in self.experts.items():
+            if expert_name not in batch_dict: continue
+            data_for_this_expert = batch_dict[expert_name]
+            embedding, gate = expert_model(data_for_this_expert)
+            gnn_embeddings.append(embedding) # <-- 只添加 GNN 嵌入
+            all_gates[expert_name] = gate
+            
+        if not gnn_embeddings:
+             raise ValueError("没有任何 GNN 专家输出了嵌入向量！")
 
-            else:
-                # 【!! 健壮性 !!】如果这个专家不存在于批次中
-                # 我们必须添加一个“零向量占位符”来保持拼接维度
-                
-                # a. 获取输出维度
-                expert_hidden_dim = self.experts[expert_name].hidden_dim
-                # b. 获取批次大小 (这有点tricky，我们从'all_gates'借一个)
-                if not all_gates:
-                    # 如果这是第一个专家，我们必须从 batch_dict 找一个
-                    any_expert_name = next(iter(batch_dict))
-                    batch_size = batch_dict[any_expert_name].num_graphs
-                else:
-                    # 我们可以从已处理的专家那里安全地获取 B
-
-                    any_processed_gate = next(iter(all_gates.values()))
-                    # (这不可靠，gate是[N]，不是B)
-                    # 让我们用一个更可靠的方法
-                    any_expert_name = next(iter(batch_dict))
-                    batch_size = batch_dict[any_expert_name].num_graphs
-
-                # c. 创建零张量
-                zero_embedding = torch.zeros(
-                    (batch_size, expert_hidden_dim), 
-                    device=gate_weights.device, 
-                    type=gate_weights.dtype
-                )
-                gated_embeddings_list.append(zero_embedding)
-
-        if not gated_embeddings_list:
-            raise ValueError("没有任何 GNN 专家输出了嵌入向量！")
-
-        # --- c) 【条件】处理流特征 (逐个加权) ---
+        # --- b) 独立归一化 (不变) ---
+        gnn_combined = torch.cat(gnn_embeddings, dim=1)
+        gnn_normed = self.gnn_output_norm(gnn_combined)
+        final_embeddings_list = [gnn_normed]
+            
+        # --- c) 【条件】处理流特征 ---
         if self.use_flow_features:
             if 'flow_stats' not in batch_dict: raise ValueError("...")
             
             flow_stats_input = batch_dict['flow_stats']
             if flow_stats_input.dim() == 3 and flow_stats_input.shape[1] == 1:
                 flow_stats_input = flow_stats_input.squeeze(1)
-                
-            # 1. 运行 Flow 专家
+            
             flow_embedding = self.flow_stats_embedder(flow_stats_input)
             flow_normed = self.flow_output_norm(flow_embedding) 
-            
-            # 2. 【!! 核心 !!】应用“顶层”专家门控 (最后一个门控)
-            flow_gate_weight = gate_weights[-1]
-            gated_flow_embedding = flow_normed * flow_gate_weight
-            gated_embeddings_list.append(gated_flow_embedding)
-            
-        # --- d) 最终拼接 & 分类 ---
-        # (现在拼接的是 *所有* 专家的 *加权* 输出)
-        combined_embedding = torch.cat(gated_embeddings_list, dim=1) 
-        # (Aggregator 现在会先执行 LayerNorm)
+            final_embeddings_list.append(flow_normed)
+        
+        # --- d) 最终拼接 & 分类 (不变) ---
+        combined_embedding = torch.cat(final_embeddings_list, dim=1) 
         logits = self.aggregator(combined_embedding) 
+        
         return logits, all_gates
     
     def get_feature_importance(self) -> Dict[str, pd.DataFrame]:
@@ -457,28 +343,3 @@ class HierarchicalMoE(nn.Module):
             reports[name] = feature_importance_df.sort_values(by='importance_score', ascending=False).reset_index(drop=True)
         return reports
 
-    def get_expert_importance(self) -> pd.DataFrame:
-        """
-        【新 - V2版】分析“每层”GNN专家和Flow专家的重要性。
-        """
-        # 1. 获取在 __init__ 中定义的名称列表
-        # (例如: ['eth', 'ip', 'tcp', 'tls', 'Flow_Features_Block'])
-        expert_names = self.all_expert_names
-
-        # 2. 获取权重
-        with torch.no_grad():
-            final_gate_weights = torch.sigmoid(self.expert_gate).cpu().numpy()
-
-        # 3. 创建 DataFrame
-        num_weights = len(final_gate_weights)
-        num_names = len(expert_names)
-
-        if num_weights != num_names:
-        
-            raise RuntimeError(f"专家重要性权重({num_weights})与名称({num_names})数量不匹配！")
-
-        importance_df = pd.DataFrame({
-            'expert_name': expert_names,
-            'importance_score': final_gate_weights
-        })
-        return importance_df.sort_values(by='importance_score', ascending=False).reset_index(drop=True)

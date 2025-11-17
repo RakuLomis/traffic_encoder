@@ -21,7 +21,7 @@ class GNNTrafficDataset(Dataset):
     它的__getitem__方法将一个数据包（一行DataFrame）转换成一个PyG的图(Data)对象。
     """
     def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, node_feature_dim: int=128, 
-                 use_flow_features: bool = False, use_ip_address: bool = True):
+                 use_flow_features: bool = False):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
         self.use_flow_features = use_flow_features
@@ -64,11 +64,8 @@ class GNNTrafficDataset(Dataset):
         ip_fields = {f for f in all_available_fields if f.startswith('ip.')}
 
         # 【!! 核心修复：移除 IP 噪声 !!】
-        if not use_ip_address: 
-            ip_fields_to_ignore = {'ip.src', 'ip.dst'} 
-            ip_fields_cleaned = ip_fields - ip_fields_to_ignore
-        else: 
-            ip_fields_cleaned = ip_fields
+        ip_fields_to_ignore = {'ip.src', 'ip.dst'}
+        ip_fields_cleaned = ip_fields - ip_fields_to_ignore
         
         # 您可以根据需要，像配置表一样，精确地定义这些专家的字段
         self.expert_definitions = {

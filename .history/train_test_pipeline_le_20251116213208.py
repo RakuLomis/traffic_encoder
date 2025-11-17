@@ -347,8 +347,7 @@ if __name__ == '__main__':
 
     # USE_FLOW_FEATURES_THIS_RUN = True
     USE_FLOW_FEATURES_THIS_RUN = False
-    # USE_IP_ADDRESS_THIS_RUN = True
-    USE_IP_ADDRESS_THIS_RUN = False
+    USE_IP_ADDRESS_THIS_RUN = True
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     SAMPLING_PROPORTION = 0.1 
@@ -363,9 +362,9 @@ if __name__ == '__main__':
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
-    dataset_name = 'ISCX-TOR-Acctivity'
+    # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
-    # dataset_name = 'USTC-TFC2016-Benign'
+    dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
@@ -1059,24 +1058,3 @@ if __name__ == '__main__':
         print(f"\nCombined feature importance report saved to: {report_output_path}")
         print("="*50)
         print("Diagnose completed. ")
-
-        # ==================== 2. 【新增】分析每层专家重要性 (Macro) ====================
-        print("\n" + "="*50)
-        print("###   Learned Expert Layer Importance Report (Macro)   ###")
-        
-        # 调用我们新写的函数
-        try:
-            expert_layer_report = pta_model.get_expert_importance()
-            
-            # 打印到控制台看看
-            print(expert_layer_report.to_string())
-            
-            # 保存到 CSV
-            expert_report_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_expert_layer_importance.csv')
-            expert_layer_report.to_csv(expert_report_path, index=False)
-            print(f"\nExpert layer importance saved to: {expert_report_path}")
-        except Exception as e:
-            print(f"Warning: Could not generate expert importance report. Error: {e}")
-        
-        print("="*50)
-        # ============================================================================
