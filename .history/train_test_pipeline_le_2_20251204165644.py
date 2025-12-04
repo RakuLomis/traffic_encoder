@@ -393,6 +393,15 @@ if __name__ == '__main__':
     val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
     test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
     SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
+
+    if STRATIFIED_TRAIN_SET: 
+        train_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=train_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED
+        )
     
     # --- 3. 加载并对齐数据集 ---
     print("\n[1/4] Loading datasets...")

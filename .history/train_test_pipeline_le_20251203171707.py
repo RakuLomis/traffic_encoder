@@ -35,7 +35,6 @@ from torch.optim import RAdam
 import copy
 import gc
 from utils.dataframe_tools import stratified_sample_dataframe, stratified_hybrid_sample_dataframe_optimized, stratified_aggressive_balancing
-from utils.dataframe_tools import stratified_hybrid_sample_from_csv_stream
 
 # os.environ['CUDA_LAUNCH_BLOCKING'] = "1" 
 # os.environ['TORCH_USE_CUDA_DSA'] = "1"
@@ -354,7 +353,7 @@ if __name__ == '__main__':
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.01
+    SAMPLING_PROPORTION = 0.02
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -404,12 +403,7 @@ if __name__ == '__main__':
         print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
         exit()
         
-    print(f" - Train set: {len(train_df)} rows")
-
-    # print("当前使用的 train_df_path =", train_df_path)
-    # print("pandas 读到的列：", train_df.columns.tolist())
-    # for c in train_df.columns:
-    #     print(repr(c))
+    print(f" - Train set (augmented): {len(train_df)} rows")
     # print(f" - Validation set: {len(val_df)} rows")
     # print(f" - Test set: {len(test_df)} rows")
 
