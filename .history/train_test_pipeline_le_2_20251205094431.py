@@ -349,12 +349,12 @@ if __name__ == '__main__':
 
     USE_FLOW_FEATURES_THIS_RUN = True
     # USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.02
+    SAMPLING_PROPORTION = 0.01
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -393,28 +393,68 @@ if __name__ == '__main__':
     val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
     test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
     SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
-    
-    # --- 3. 加载并对齐数据集 ---
-    print("\n[1/4] Loading datasets...")
-    try:
-        train_df = pd.read_csv(train_df_path, dtype=str)
-        # val_df = pd.read_csv(val_df_path, dtype=str)
-        # test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
+
+    if STRATIFIED_TRAIN_SET: 
+        train_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=train_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED, 
+            read_csv_kwargs={
+                "dtype": str,       
+                "low_memory": False,
+            },
+        )
+
+    else: 
+        # --- 3. 加载并对齐数据集 ---
+        print("\n[1/4] Loading datasets...")
+        try:
+            train_df = pd.read_csv(train_df_path, dtype=str)
+            # val_df = pd.read_csv(val_df_path, dtype=str)
+            # test_df = pd.read_csv(test_df_path, dtype=str)
+        except FileNotFoundError as e:
+            print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
+            exit()
+
+    if STRATIFIED_VAL_TEST_SET: 
+        val_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=val_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED, 
+            read_csv_kwargs={
+                "dtype": str,       
+                "low_memory": False,
+            },
+        )
+
+        test_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=test_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED, 
+            read_csv_kwargs={
+                "dtype": str,       
+                "low_memory": False,
+            },
+        )
+    else: 
+        try:
+            val_df = pd.read_csv(val_df_path, dtype=str)
+            test_df = pd.read_csv(test_df_path, dtype=str)
+        except FileNotFoundError as e:
+            print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
+            exit()
         
     print(f" - Train set: {len(train_df)} rows")
+    print(f" - Validation set: {len(val_df)} rows")
+    print(f" - Test set: {len(test_df)} rows")
 
-    # print("当前使用的 train_df_path =", train_df_path)
-    # print("pandas 读到的列：", train_df.columns.tolist())
-    # for c in train_df.columns:
-    #     print(repr(c))
-    # print(f" - Validation set: {len(val_df)} rows")
-    # print(f" - Test set: {len(test_df)} rows")
-
-    # c) 创建全局标签映射
-    #    为了确保所有数据集的标签一致，我们基于训练集来创建映射
+    
     print("\n[3/4] Creating label mapping...")
     labels = train_df['label'].unique() # ?
     label_to_int = {label: i for i, label in enumerate(labels)}
@@ -422,60 +462,6 @@ if __name__ == '__main__':
 
     train_df['label_id'] = train_df['label'].map(label_to_int)
 
-    if STRATIFIED_TRAIN_SET: 
-        # train_df = stratified_sample_dataframe(train_df, 
-        #                                        label_column='label_id', 
-        #                                        proportion=SAMPLING_PROPORTION) 
-        train_df = stratified_hybrid_sample_dataframe_optimized( # <-- [新]
-            df=train_df,
-            label_column='label', # 按 'label_id' 分层
-            proportion=SAMPLING_PROPORTION,
-            random_state=SEED
-        )
-        # train_df = stratified_aggressive_balancing(df=train_df, 
-        #                                            label_column='label_id', 
-        #                                            proportion=SAMPLING_PROPORTION, 
-        #                                            random_state=SEED)
-
-     
-
-
-    try:
-        val_df = pd.read_csv(val_df_path, dtype=str)
-        # test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
-        
-    print(f" - Validation set: {len(val_df)} rows")
-    # print(f" - Test set: {len(test_df)} rows")
-
-    if STRATIFIED_VAL_TEST_SET: 
-        val_df = stratified_hybrid_sample_dataframe_optimized(
-            df=val_df, 
-            label_column='label', # 按 'label_id' 分层
-            proportion=2 * SAMPLING_PROPORTION,
-            random_state=SEED
-        )
-        print(f" - Validation set is stratified: {len(val_df)} rows")
-
-    try:
-        # val_df = pd.read_csv(val_df_path, dtype=str)
-        test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
-
-    print(f" - Test set: {len(val_df)} rows")
-
-    if STRATIFIED_VAL_TEST_SET: 
-        test_df = stratified_hybrid_sample_dataframe_optimized(
-            df=test_df, 
-            label_column='label', # 按 'label_id' 分层
-            proportion=2 * SAMPLING_PROPORTION,
-            random_state=SEED
-        )
-        print(f" - Test set is stratified: {len(test_df)} rows")
 
     # ==================== 代码优化：高效对齐 ====================
     print("\n[2/4] Aligning feature space for validation and test sets...")

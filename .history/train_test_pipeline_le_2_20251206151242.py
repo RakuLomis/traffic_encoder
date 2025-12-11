@@ -347,14 +347,14 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
     USE_IP_ADDRESS_THIS_RUN = True
     # USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.02
+    SAMPLING_PROPORTION = 0.04
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -393,28 +393,68 @@ if __name__ == '__main__':
     val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
     test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
     SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
-    
-    # --- 3. 加载并对齐数据集 ---
-    print("\n[1/4] Loading datasets...")
-    try:
-        train_df = pd.read_csv(train_df_path, dtype=str)
-        # val_df = pd.read_csv(val_df_path, dtype=str)
-        # test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
+
+    if STRATIFIED_TRAIN_SET: 
+        train_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=train_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED, 
+            read_csv_kwargs={
+                "dtype": str,       
+                "low_memory": False,
+            },
+        )
+
+    else: 
+        # --- 3. 加载并对齐数据集 ---
+        print("\n[1/4] Loading datasets...")
+        try:
+            train_df = pd.read_csv(train_df_path, dtype=str)
+            # val_df = pd.read_csv(val_df_path, dtype=str)
+            # test_df = pd.read_csv(test_df_path, dtype=str)
+        except FileNotFoundError as e:
+            print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
+            exit()
+
+    if STRATIFIED_VAL_TEST_SET: 
+        val_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=val_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED, 
+            read_csv_kwargs={
+                "dtype": str,       
+                "low_memory": False,
+            },
+        )
+
+        test_df = stratified_hybrid_sample_from_csv_stream(
+            csv_path=test_df_path, 
+            label_column='label', 
+            proportion=SAMPLING_PROPORTION, 
+            chunksize=200000, 
+            random_state=SEED, 
+            read_csv_kwargs={
+                "dtype": str,       
+                "low_memory": False,
+            },
+        )
+    else: 
+        try:
+            val_df = pd.read_csv(val_df_path, dtype=str)
+            test_df = pd.read_csv(test_df_path, dtype=str)
+        except FileNotFoundError as e:
+            print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
+            exit()
         
     print(f" - Train set: {len(train_df)} rows")
+    print(f" - Validation set: {len(val_df)} rows")
+    print(f" - Test set: {len(test_df)} rows")
 
-    # print("当前使用的 train_df_path =", train_df_path)
-    # print("pandas 读到的列：", train_df.columns.tolist())
-    # for c in train_df.columns:
-    #     print(repr(c))
-    # print(f" - Validation set: {len(val_df)} rows")
-    # print(f" - Test set: {len(test_df)} rows")
-
-    # c) 创建全局标签映射
-    #    为了确保所有数据集的标签一致，我们基于训练集来创建映射
+    
     print("\n[3/4] Creating label mapping...")
     labels = train_df['label'].unique() # ?
     label_to_int = {label: i for i, label in enumerate(labels)}
@@ -422,60 +462,6 @@ if __name__ == '__main__':
 
     train_df['label_id'] = train_df['label'].map(label_to_int)
 
-    if STRATIFIED_TRAIN_SET: 
-        # train_df = stratified_sample_dataframe(train_df, 
-        #                                        label_column='label_id', 
-        #                                        proportion=SAMPLING_PROPORTION) 
-        train_df = stratified_hybrid_sample_dataframe_optimized( # <-- [新]
-            df=train_df,
-            label_column='label', # 按 'label_id' 分层
-            proportion=SAMPLING_PROPORTION,
-            random_state=SEED
-        )
-        # train_df = stratified_aggressive_balancing(df=train_df, 
-        #                                            label_column='label_id', 
-        #                                            proportion=SAMPLING_PROPORTION, 
-        #                                            random_state=SEED)
-
-     
-
-
-    try:
-        val_df = pd.read_csv(val_df_path, dtype=str)
-        # test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
-        
-    print(f" - Validation set: {len(val_df)} rows")
-    # print(f" - Test set: {len(test_df)} rows")
-
-    if STRATIFIED_VAL_TEST_SET: 
-        val_df = stratified_hybrid_sample_dataframe_optimized(
-            df=val_df, 
-            label_column='label', # 按 'label_id' 分层
-            proportion=2 * SAMPLING_PROPORTION,
-            random_state=SEED
-        )
-        print(f" - Validation set is stratified: {len(val_df)} rows")
-
-    try:
-        # val_df = pd.read_csv(val_df_path, dtype=str)
-        test_df = pd.read_csv(test_df_path, dtype=str)
-    except FileNotFoundError as e:
-        print(f"错误: 数据文件未找到，请确保您已完成预处理步骤。 {e}")
-        exit()
-
-    print(f" - Test set: {len(val_df)} rows")
-
-    if STRATIFIED_VAL_TEST_SET: 
-        test_df = stratified_hybrid_sample_dataframe_optimized(
-            df=test_df, 
-            label_column='label', # 按 'label_id' 分层
-            proportion=2 * SAMPLING_PROPORTION,
-            random_state=SEED
-        )
-        print(f" - Test set is stratified: {len(test_df)} rows")
 
     # ==================== 代码优化：高效对齐 ====================
     print("\n[2/4] Aligning feature space for validation and test sets...")
@@ -506,88 +492,216 @@ if __name__ == '__main__':
             'flow_large_pkt_ratio'    # <-- 必须匹配 c) 中的 'maps'
         ]
         
-        # b) 【!! 核心修复 2 !!】 定义 *可重用* 的计算函数
-        #    (这个函数现在只负责计算，不负责返回)
+        # # b) 【!! 核心修复 2 !!】 定义 *可重用* 的计算函数
+        # #    (这个函数现在只负责计算，不负责返回)
+        # def calculate_flow_stats(df, is_train_set=False):
+        #     """
+        #     【修正版：实现了建议4 - 使用中位数】
+        #     在一个 DataFrame 上计算所有流统计数据。
+        #     如果 is_train_set=True, 返回 (maps, defaults)。
+        #     如果 is_train_set=False, 只返回 (maps)。
+        #     """
+        #     print(f"   -> Calculating stats for DataFrame (size: {len(df)})...")
+            
+        #     # --- 1. 转换 (如果需要) ---
+        #     # (这个逻辑是正确的，它确保了临时列的存在)
+        #     if 'ip.len_temp_dec' not in df.columns:
+        #          df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
+        #     if 'tcp.stream_temp_dec' not in df.columns:
+        #          df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+        #     if 'time_temp_dec' not in df.columns:
+        #          if 'tcp.options.timestamp' not in df.columns:
+        #              raise ValueError("错误：缺少 'tcp.options.timestamp' 列。")
+        #          df['time_temp_dec'] = df['tcp.options.timestamp'].apply(robust_timestamp_to_tsval).astype(np.int64) 
+            
+        #     # --- 2. 计算 IAT ---
+        #     print("     -> Calculating IAT...")
+        #     df = df.sort_values(by=['tcp.stream_temp_dec', 'time_temp_dec'])
+        #     df['iat_temp'] = df.groupby('tcp.stream_temp_dec')['time_temp_dec'].diff().fillna(0)
+            
+        #     # --- 3. 计算所有 *基础* 统计数据 ---
+        #     print("     -> Grouping base statistics...")
+        #     grouped = df.groupby('tcp.stream_temp_dec')
+            
+        #     maps = {}
+        #     maps['flow_avg_len'] = grouped['ip.len_temp_dec'].mean()
+        #     maps['flow_std_len'] = grouped['ip.len_temp_dec'].std().fillna(0)
+        #     maps['flow_pkt_count'] = grouped['ip.len_temp_dec'].count()
+        #     maps['flow_avg_iat'] = grouped['iat_temp'].mean()
+        #     maps['flow_std_iat'] = grouped['iat_temp'].std().fillna(0)
+        #     maps['flow_max_iat'] = grouped['iat_temp'].max()
+            
+        #     flow_min_time = grouped['time_temp_dec'].min()
+        #     flow_max_time = grouped['time_temp_dec'].max()
+        #     base_duration = (flow_max_time - flow_min_time)
+            
+        #     LARGE_PKT_THRESHOLD = 1400 
+        #     large_pkts = df[df['ip.len_temp_dec'] > LARGE_PKT_THRESHOLD]
+        #     base_large_pkt_count = large_pkts.groupby('tcp.stream_temp_dec').size().reindex(maps['flow_pkt_count'].index, fill_value=0)
+
+        #     # --- 4. 计算比率特征 ---
+        #     print("     -> Calculating ratio features...")
+        #     maps['flow_duration_per_pkt'] = base_duration / (maps['flow_pkt_count'] + EPSILON)
+        #     maps['flow_large_pkt_ratio'] = base_large_pkt_count / (maps['flow_pkt_count'] + EPSILON)
+            
+        #     # --- 5. 【!! 核心修改：恢复 is_train_set 逻辑 !!】 ---
+        #     if is_train_set:
+        #         # --- 计算全局默认值 (实现了建议4) ---
+        #         print("     -> Calculating global defaults (using MEDIAN)...")
+        #         defaults = {}
+                
+        #         # 遍历刚刚创建的 maps 字典
+        #         for f_name in maps.keys(): 
+        #             stat_series = maps[f_name]
+                    
+        #             # 【!! 建议 4 !!】
+        #             if 'count' in f_name or 'ratio' in f_name:
+        #                 # 对于 count 和 ratio，使用 mean() 仍然是合理的
+        #                 default_val = float(stat_series.mean())
+        #             else:
+        #                 # 对于 avg, std, iat, duration (易受异常值影响的)
+        #                 # 使用中位数 .median()
+        #                 default_val = float(stat_series.median()) 
+                    
+        #             # 清理 (nan/inf -> 0)
+        #             if np.isnan(default_val) or np.isinf(default_val):
+        #                 default_val = 0
+                    
+        #             defaults[f_name] = default_val
+                
+        #         return maps, defaults
+        #     else:
+        #         # 【!!】确保 else 分支存在
+        #         return maps
+
         def calculate_flow_stats(df, is_train_set=False):
             """
-            【修正版：实现了建议4 - 使用中位数】
-            在一个 DataFrame 上计算所有流统计数据。
-            如果 is_train_set=True, 返回 (maps, defaults)。
-            如果 is_train_set=False, 只返回 (maps)。
+            在一个 DataFrame 上计算所有可用的流统计特征。
+            - 如果 is_train_set=True, 返回 (maps, defaults)
+            - 如果 is_train_set=False, 只返回 maps
+            - 对于缺失的字段（尤其是时间类），会自动跳过相关 flow 特征
             """
             print(f"   -> Calculating stats for DataFrame (size: {len(df)})...")
-            
-            # --- 1. 转换 (如果需要) ---
-            # (这个逻辑是正确的，它确保了临时列的存在)
-            if 'ip.len_temp_dec' not in df.columns:
-                 df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
-            if 'tcp.stream_temp_dec' not in df.columns:
-                 df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
-            if 'time_temp_dec' not in df.columns:
-                 if 'tcp.options.timestamp' not in df.columns:
-                     raise ValueError("错误：缺少 'tcp.options.timestamp' 列。")
-                 df['time_temp_dec'] = df['tcp.options.timestamp'].apply(robust_timestamp_to_tsval).astype(np.int64) 
-            
-            # --- 2. 计算 IAT ---
-            print("     -> Calculating IAT...")
-            df = df.sort_values(by=['tcp.stream_temp_dec', 'time_temp_dec'])
-            df['iat_temp'] = df.groupby('tcp.stream_temp_dec')['time_temp_dec'].diff().fillna(0)
-            
-            # --- 3. 计算所有 *基础* 统计数据 ---
-            print("     -> Grouping base statistics...")
-            grouped = df.groupby('tcp.stream_temp_dec')
-            
-            maps = {}
-            maps['flow_avg_len'] = grouped['ip.len_temp_dec'].mean()
-            maps['flow_std_len'] = grouped['ip.len_temp_dec'].std().fillna(0)
-            maps['flow_pkt_count'] = grouped['ip.len_temp_dec'].count()
-            maps['flow_avg_iat'] = grouped['iat_temp'].mean()
-            maps['flow_std_iat'] = grouped['iat_temp'].std().fillna(0)
-            maps['flow_max_iat'] = grouped['iat_temp'].max()
-            
-            flow_min_time = grouped['time_temp_dec'].min()
-            flow_max_time = grouped['time_temp_dec'].max()
-            base_duration = (flow_max_time - flow_min_time)
-            
-            LARGE_PKT_THRESHOLD = 1400 
-            large_pkts = df[df['ip.len_temp_dec'] > LARGE_PKT_THRESHOLD]
-            base_large_pkt_count = large_pkts.groupby('tcp.stream_temp_dec').size().reindex(maps['flow_pkt_count'].index, fill_value=0)
 
-            # --- 4. 计算比率特征 ---
-            print("     -> Calculating ratio features...")
-            maps['flow_duration_per_pkt'] = base_duration / (maps['flow_pkt_count'] + EPSILON)
-            maps['flow_large_pkt_ratio'] = base_large_pkt_count / (maps['flow_pkt_count'] + EPSILON)
-            
-            # --- 5. 【!! 核心修改：恢复 is_train_set 逻辑 !!】 ---
-            if is_train_set:
-                # --- 计算全局默认值 (实现了建议4) ---
-                print("     -> Calculating global defaults (using MEDIAN)...")
-                defaults = {}
-                
-                # 遍历刚刚创建的 maps 字典
-                for f_name in maps.keys(): 
-                    stat_series = maps[f_name]
+            # -------- 0. 必要字段检查（刚性依赖）---------
+            # 没有 ip.len / tcp.stream，就没法按流计算任何有意义的特征，仍然直接报错
+            if 'ip.len' not in df.columns:
+                raise ValueError("错误：缺少 'ip.len' 列，无法计算流长度/包数相关特征。")
+            if 'tcp.stream' not in df.columns:
+                raise ValueError("错误：缺少 'tcp.stream' 列，无法按流分组计算 flow 特征。")
+
+            # -------- 1. 基础数值列转换 --------
+            # ip.len -> ip.len_temp_dec
+            if 'ip.len_temp_dec' not in df.columns:
+                df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
+
+            # tcp.stream -> tcp.stream_temp_dec
+            if 'tcp.stream_temp_dec' not in df.columns:
+                df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+
+            # -------- 2. 时间列处理（可选） --------
+            has_time = True
+
+            if 'time_temp_dec' in df.columns:
+                # 上游已经准备好了，直接用
+                pass
+            else:
+                # 尝试在多种可能的时间列中找一个可用的
+                candidate_time_cols = [
+                    'tcp.options.timestamp',   # 你原来用的
+                    'frame.time_relative',     # 有些数据集常见
+                    'frame.time_epoch',        # 另一种常见形式
+                ]
+                time_col = None
+                for cand in candidate_time_cols:
+                    if cand in df.columns:
+                        time_col = cand
+                        break
                     
-                    # 【!! 建议 4 !!】
-                    if 'count' in f_name or 'ratio' in f_name:
-                        # 对于 count 和 ratio，使用 mean() 仍然是合理的
+                if time_col is None:
+                    # 找不到任何时间列：只计算与时间无关的特征
+                    has_time = False
+                    print("     [警告] 未找到任何时间列，将跳过 IAT / duration 相关的 flow 特征。")
+                else:
+                    print(f"     -> 使用时间列 '{time_col}' 计算 IAT / duration 特征...")
+                    if time_col == 'tcp.options.timestamp':
+                        # 原来的 timestamp -> tsval 转换逻辑
+                        df['time_temp_dec'] = df[time_col].apply(robust_timestamp_to_tsval).astype(np.int64)
+                    else:
+                        # frame.time_relative / frame.time_epoch 通常是数值 / 字符串数值
+                        df['time_temp_dec'] = (
+                            pd.to_numeric(df[time_col], errors='coerce')
+                              .fillna(0)
+                              .astype(np.float64)
+                        )
+
+            # -------- 3. 分组 + 基础长度/包数特征（一定能算） --------
+            grouped = df.groupby('tcp.stream_temp_dec')
+
+            maps = {}
+
+            # 与时间无关的特征
+            print("     -> Calculating base length/count features...")
+            maps['flow_avg_len']   = grouped['ip.len_temp_dec'].mean()
+            maps['flow_std_len']   = grouped['ip.len_temp_dec'].std().fillna(0)
+            maps['flow_pkt_count'] = grouped['ip.len_temp_dec'].count()
+
+            # 大包比例（也与时间无关）
+            LARGE_PKT_THRESHOLD = 1400
+            large_pkts = df[df['ip.len_temp_dec'] > LARGE_PKT_THRESHOLD]
+            base_large_pkt_count = (
+                large_pkts
+                .groupby('tcp.stream_temp_dec')
+                .size()
+                .reindex(maps['flow_pkt_count'].index, fill_value=0)
+            )
+            print("     -> Calculating large packet ratio...")
+            maps['flow_large_pkt_ratio'] = base_large_pkt_count / (maps['flow_pkt_count'] + EPSILON)
+
+            # -------- 4. 如果有时间列，再计算 IAT 和 duration 类特征 --------
+            if has_time:
+                print("     -> Calculating IAT & duration based features...")
+
+                # 4.1 计算 IAT
+                df = df.sort_values(by=['tcp.stream_temp_dec', 'time_temp_dec'])
+                df['iat_temp'] = df.groupby('tcp.stream_temp_dec')['time_temp_dec'].diff().fillna(0)
+
+                # 4.2 IAT 相关统计
+                maps['flow_avg_iat'] = grouped['iat_temp'].mean()
+                maps['flow_std_iat'] = grouped['iat_temp'].std().fillna(0)
+                maps['flow_max_iat'] = grouped['iat_temp'].max()
+
+                # 4.3 duration_per_pkt
+                flow_min_time = grouped['time_temp_dec'].min()
+                flow_max_time = grouped['time_temp_dec'].max()
+                base_duration = (flow_max_time - flow_min_time)  # 每个流的总时长
+
+                maps['flow_duration_per_pkt'] = base_duration / (maps['flow_pkt_count'] + EPSILON)
+            else:
+                # 没有时间列：这些特征就不放进 maps
+                print("     [提示] 无时间列：未计算 flow_avg_iat / flow_std_iat / flow_max_iat / flow_duration_per_pkt。")
+
+            # -------- 5. 训练集：计算 defaults（只对实际存在的特征） --------
+            if is_train_set:
+                print("     -> Calculating global defaults (using MEDIAN where appropriate)...")
+                defaults = {}
+
+                for f_name, stat_series in maps.items():
+                    # count/ratio 用 mean，其余用 median
+                    if ('count' in f_name) or ('ratio' in f_name):
                         default_val = float(stat_series.mean())
                     else:
-                        # 对于 avg, std, iat, duration (易受异常值影响的)
-                        # 使用中位数 .median()
-                        default_val = float(stat_series.median()) 
-                    
-                    # 清理 (nan/inf -> 0)
+                        default_val = float(stat_series.median())
+
                     if np.isnan(default_val) or np.isinf(default_val):
-                        default_val = 0
-                    
+                        default_val = 0.0
+
                     defaults[f_name] = default_val
-                
+
                 return maps, defaults
             else:
-                # 【!!】确保 else 分支存在
                 return maps
-        
+
         # c) 【!! 核心修复 3 !!】 实现 OPEN_WORLD 分支
         
         # 【!! 在这里设置你的实验 !!】
@@ -602,7 +716,10 @@ if __name__ == '__main__':
             print(" -> [OPEN_WORLD MODE] Learning stats *only* from Train set...")
             
             # 1. 只在 train_df 上计算
-            train_maps = calculate_flow_stats(train_df)
+            train_maps, train_defaults = calculate_flow_stats(train_df, is_train_set=True)
+
+            flow_feature_names = list(train_maps.keys())
+            print("本次实验实际可用的 flow 特征：", flow_feature_names)
             
             # 2. 计算全局默认值
             print("     -> Calculating global defaults...")
@@ -665,24 +782,59 @@ if __name__ == '__main__':
         # d) 【!! 关键清理 !!】删除所有临时列
         print(" -> Cleaning up temporary decimal columns...")
         for df in [train_df, val_df_aligned, test_df_aligned]:
-            if 'ip.len_temp_dec' in df.columns: df.drop(columns=['ip.len_temp_dec'], inplace=True)
-            if 'tcp.stream_temp_dec' in df.columns: df.drop(columns=['tcp.stream_temp_dec'], inplace=True)
-            if 'time_temp_dec' in df.columns: df.drop(columns=['time_temp_dec'], inplace=True)
-            if 'iat_temp' in df.columns: df.drop(columns=['iat_temp'], inplace=True)
+            if df is None or df.empty:
+                continue
+            for tmp_col in ['ip.len_temp_dec', 'tcp.stream_temp_dec', 'time_temp_dec', 'iat_temp']:
+                if tmp_col in df.columns: 
+                    df.drop(columns=[tmp_col], inplace=True)
         
         # e) 【最终清理】(不变)
-        print(" -> Final cleanup of *new* flow features (nan/inf/neginf -> 0.0)...")
-        for df in [train_df, val_df_aligned, test_df_aligned]:
-             if df.empty: continue
-             for col in flow_feature_names: 
-                 if col not in df.columns: raise KeyError(f"列 '{col}' 未在 {df_name} 中找到！")
-                 col_data_numeric = pd.to_numeric(df[col], errors='coerce')
-                 col_data_np = col_data_numeric.values
-                 col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0) 
-                 if 'count' in col: df[col] = col_data_cleaned.astype(np.int32)
-                 else: df[col] = col_data_cleaned.astype(np.float32)
+        # print(" -> Final cleanup of *new* flow features (nan/inf/neginf -> 0.0)...")
+        # for df in [train_df, val_df_aligned, test_df_aligned]:
+        #      if df.empty: continue
+        #      for col in flow_feature_names: 
+        #          if col not in df.columns: raise KeyError(f"列 '{col}' 未在 {df_name} 中找到！")
+        #          col_data_numeric = pd.to_numeric(df[col], errors='coerce')
+        #          col_data_np = col_data_numeric.values
+        #          col_data_cleaned = np.nan_to_num(col_data_np, nan=0.0, posinf=0.0, neginf=0.0) 
+        #          if 'count' in col: df[col] = col_data_cleaned.astype(np.int32)
+        #          else: df[col] = col_data_cleaned.astype(np.float32)
                      
-        print(f" -> Feature Engineering 5.0 complete. {len(flow_feature_names)} flow features created.")
+        # print(f" -> Feature Engineering 5.0 complete. {len(flow_feature_names)} flow features created.")
+        print(" -> Final cleanup of *new* flow features (nan/inf/neginf -> 0.0)...")
+
+        dfs = [
+            (train_df,       "train_df"),
+            (val_df_aligned, "val_df_aligned"),
+            (test_df_aligned,"test_df_aligned"),
+        ]
+
+        for df, df_name in dfs:
+            if df is None or df.empty:
+                continue
+            
+            for col in flow_feature_names:
+                if col not in df.columns:
+                    # 这里不再报错，而是给一个温和提示
+                    print(f"    [提示] {df_name} 中缺少 flow 特征列 '{col}'，已跳过。")
+                    continue
+                
+                # 以下是你原来的清理逻辑
+                col_data_numeric = pd.to_numeric(df[col], errors='coerce')
+                col_data_np = col_data_numeric.values
+                col_data_cleaned = np.nan_to_num(
+                    col_data_np,
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0
+                )
+
+                if 'count' in col:
+                    df[col] = col_data_cleaned.astype(np.int32)
+                else:
+                    df[col] = col_data_cleaned.astype(np.float32)
+
+        print(f" -> Feature Engineering 5.0 complete. {len(flow_feature_names)} flow features defined for this run.")
 
 
     # # c) 创建全局标签映射

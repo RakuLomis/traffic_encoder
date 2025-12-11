@@ -2658,7 +2658,7 @@ def stratified_hybrid_sample_from_csv_stream(
     # =========================
     print("收集合并所有类别的抽样结果...")
     sampled_rows: List[pd.Series] = []
-    for label, rows in tqdm(reservoir_per_class.items(), desc="Merging the final sampling. "):
+    for label, rows in reservoir_per_class.items():
         sampled_rows.extend(rows)
 
     if not sampled_rows:
