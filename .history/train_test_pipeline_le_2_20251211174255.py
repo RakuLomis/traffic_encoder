@@ -347,10 +347,10 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
@@ -849,9 +849,9 @@ if __name__ == '__main__':
                 if 'tcp.stream_temp_dec' not in df.columns:
                     df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
 
-                # for f_name in flow_feature_names:
-                #     # 使用 .map(global_true_maps) 和 .fillna(0)
-                #     df[f_name] = df['tcp.stream_temp_dec'].map(global_true_maps[f_name]).fillna(0)
+                for f_name in flow_feature_names:
+                    # 使用 .map(global_true_maps) 和 .fillna(0)
+                    df[f_name] = df['tcp.stream_temp_dec'].map(global_true_maps[f_name]).fillna(0)
 
 
         # d) 【!! 关键清理 !!】删除所有临时列

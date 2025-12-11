@@ -347,10 +347,10 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True

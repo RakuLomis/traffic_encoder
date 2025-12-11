@@ -347,10 +347,10 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
@@ -484,13 +484,13 @@ if __name__ == '__main__':
     if USE_FLOW_FEATURES_THIS_RUN:
         print("\n[2.5/4] Performing Feature Engineering 5.0 (Correct OPEN_WORLD branching)...")
 
-        # # a) 【!! 核心修复 1 !!】 修正特征名称列表
-        # flow_feature_names = [
-        #     'flow_avg_len', 'flow_std_len', 'flow_pkt_count',
-        #     'flow_avg_iat', 'flow_std_iat', 'flow_max_iat',
-        #     'flow_duration_per_pkt',  # <-- 必须匹配 c) 中的 'maps'
-        #     'flow_large_pkt_ratio'    # <-- 必须匹配 c) 中的 'maps'
-        # ]
+        # a) 【!! 核心修复 1 !!】 修正特征名称列表
+        flow_feature_names = [
+            'flow_avg_len', 'flow_std_len', 'flow_pkt_count',
+            'flow_avg_iat', 'flow_std_iat', 'flow_max_iat',
+            'flow_duration_per_pkt',  # <-- 必须匹配 c) 中的 'maps'
+            'flow_large_pkt_ratio'    # <-- 必须匹配 c) 中的 'maps'
+        ]
         def calculate_flow_stats(df: pd.DataFrame, is_train_set: bool = False):
             """
             在一个 DataFrame 上计算所有 *当前数据集字段条件下可用的* 流统计特征。
@@ -623,18 +623,18 @@ if __name__ == '__main__':
             if is_train_set:
                 print("     -> Calculating global defaults (using MEDIAN where appropriate)...")
                 defaults = {}
-
+        
                 for f_name, stat_series in maps.items():
                     if ('count' in f_name) or ('ratio' in f_name):
                         default_val = float(stat_series.mean())
                     else:
                         default_val = float(stat_series.median())
-
+        
                     if np.isnan(default_val) or np.isinf(default_val):
                         default_val = 0.0
-
+        
                     defaults[f_name] = default_val
-
+        
                 return maps, defaults
             else:
                 return maps
@@ -768,7 +768,6 @@ if __name__ == '__main__':
         #     else:
         #         return maps
 
-
         # c) 【!! 核心修复 3 !!】 实现 OPEN_WORLD 分支
         
         # 【!! 在这里设置你的实验 !!】
@@ -784,14 +783,6 @@ if __name__ == '__main__':
             
             # 1. 只在 train_df 上计算
             train_maps, train_defaults = calculate_flow_stats(train_df, is_train_set=True)
-
-            if len(train_maps) == 0:
-            # 一个特征都没算出来，直接中断
-                raise RuntimeError(
-                    "[致命] 当前数据集缺少计算流特征所需的基础字段 "
-                    "(至少需要 'ip.len' 与 'tcp.stream'，以及可选的时间列)，"
-                    "无法启用 USE_FLOW_FEATURES_THIS_RUN，请关闭或更换数据集。"
-                )
 
             flow_feature_names = list(train_maps.keys())
             print("本次实验实际可用的 flow 特征：", flow_feature_names)
@@ -849,9 +840,9 @@ if __name__ == '__main__':
                 if 'tcp.stream_temp_dec' not in df.columns:
                     df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
 
-                # for f_name in flow_feature_names:
-                #     # 使用 .map(global_true_maps) 和 .fillna(0)
-                #     df[f_name] = df['tcp.stream_temp_dec'].map(global_true_maps[f_name]).fillna(0)
+                for f_name in flow_feature_names:
+                    # 使用 .map(global_true_maps) 和 .fillna(0)
+                    df[f_name] = df['tcp.stream_temp_dec'].map(global_true_maps[f_name]).fillna(0)
 
 
         # d) 【!! 关键清理 !!】删除所有临时列
