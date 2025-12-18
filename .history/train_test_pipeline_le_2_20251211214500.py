@@ -354,7 +354,7 @@ if __name__ == '__main__':
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.05
+    SAMPLING_PROPORTION = 0.03
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -370,9 +370,9 @@ if __name__ == '__main__':
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
-    # dataset_name = 'dataset_29_d1' 
+    dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
-    dataset_name = 'USTC-TFC2016-Malware'
+    # dataset_name = 'USTC-TFC2016-Malware'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
