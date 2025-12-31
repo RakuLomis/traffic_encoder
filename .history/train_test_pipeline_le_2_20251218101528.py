@@ -358,8 +358,7 @@ if __name__ == '__main__':
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.01
-    ABLATION_LAYERS = ['tcp', 'tls']
+    SAMPLING_PROPORTION = 0.05
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -371,13 +370,13 @@ if __name__ == '__main__':
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
-    dataset_name = 'ISCX-VPN'
+    # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
-    # dataset_name = 'USTC-TFC2016-Malware'
+    dataset_name = 'USTC-TFC2016-Malware'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -933,11 +932,11 @@ if __name__ == '__main__':
     print("\n[4/4] Creating GNN Datasets and DataLoaders...")
     
     # a) 实例化 GNNTrafficDataset
-    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
+    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, 
                                       use_ip_address=USE_IP_ADDRESS_THIS_RUN)
-    val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
+    val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, 
                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN)
-    test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
+    test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, 
                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -20,7 +20,7 @@ class GNNTrafficDataset(Dataset):
     一个为GNN模型准备数据的Dataset。
     它的__getitem__方法将一个数据包（一行DataFrame）转换成一个PyG的图(Data)对象。
     """
-    def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, node_feature_dim: int=128, 
+    def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, enabled_layers: List[str] | None, node_feature_dim: int=128, 
                  use_flow_features: bool = False, use_ip_address: bool = True):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
@@ -83,6 +83,28 @@ class GNNTrafficDataset(Dataset):
             # ... 您可以根据需要，定义任意多的“专家”
         }
         self.flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
+
+        # ADD: for Ablation
+        # layer -> experts 映射（你想要的“输入 tcp/tls 自动展开”）
+        self.layer_to_experts = {
+            "eth": ["eth"],
+            "ip": ["ip"],
+            "tcp": ["tcp_core", "tcp_options"],
+            "tls": ["tls_record", "tls_handshake", "tls_x509"],
+        }
+        
+        # enabled_layers 例如 ["tcp", "tls"]；None 表示全用
+        if enabled_layers is not None:
+            enabled = set()
+            for layer in enabled_layers:
+                enabled.update(self.layer_to_experts.get(layer, []))
+        
+            # 过滤 expert_definitions
+            self.expert_definitions = {
+                name: fields
+                for name, fields in self.expert_definitions.items()
+                if name in enabled
+            }
 
         # --- 3. 【核心修改点】为每个“专家”预先生成图结构 ---
         print("Pre-calculating graph structures for each expert...")
