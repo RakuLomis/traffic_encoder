@@ -122,14 +122,14 @@ class PTGAMiniExpert(nn.Module):
         # --- d) 应用特征掩码 ---
         feature_gate = torch.sigmoid(self.feature_mask_logits)
 
-        # # ===== [NEW] Light Drop-Feature Regularization =====
-        # if self.training:
-        #     drop_prob = 0.05  # 非常保守，推荐从 0.05 开始
-        #     drop_mask = torch.bernoulli(
-        #         torch.full_like(feature_gate, 1.0 - drop_prob)
-        #     )
-        #     feature_gate = feature_gate * drop_mask
-        # # ===================================================
+        # ===== [NEW] Light Drop-Feature Regularization =====
+        if self.training:
+            drop_prob = 0.05  # 非常保守，推荐从 0.05 开始
+            drop_mask = torch.bernoulli(
+                torch.full_like(feature_gate, 1.0 - drop_prob)
+            )
+            feature_gate = feature_gate * drop_mask
+        # ===================================================
 
         mask_for_broadcast = feature_gate.view(1, -1, 1)
         gated_stacked_x = stacked_x_normed * mask_for_broadcast

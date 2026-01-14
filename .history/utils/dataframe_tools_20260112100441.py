@@ -2603,7 +2603,7 @@ def stratified_hybrid_sample_from_csv_stream(
         if N_A <= n_avg:
             n_sample = N_A
         else:
-            # n_A_prop = int(round(N_A * proportion))
+            n_A_prop = int(round(N_A * proportion))
             n_sample = n_avg
             # if n_A_prop < n_avg:
             #     n_sample = n_avg

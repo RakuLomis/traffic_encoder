@@ -353,12 +353,12 @@ if __name__ == '__main__':
 
     # USE_FLOW_FEATURES_THIS_RUN = True
     USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.02
+    SAMPLING_PROPORTION = 0.1
     ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
 
     # FocalLoss的超参数

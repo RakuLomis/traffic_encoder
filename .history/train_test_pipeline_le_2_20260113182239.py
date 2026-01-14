@@ -353,12 +353,12 @@ if __name__ == '__main__':
 
     # USE_FLOW_FEATURES_THIS_RUN = True
     USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.02
+    SAMPLING_PROPORTION = 0.1
     ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
 
     # FocalLoss的超参数
@@ -371,11 +371,11 @@ if __name__ == '__main__':
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
-    dataset_name = 'ISCX-VPN'
+    # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
-    # dataset_name = 'dataset_29_d1' 
+    dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')

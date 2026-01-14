@@ -379,15 +379,6 @@ class HierarchicalMoE(nn.Module):
         # 形状: [num_total_experts] (例如: 5个)
         gate_weights = torch.sigmoid(self.expert_gate)
 
-        # # ===== Expert-level stochastic gating =====
-        # if self.training:
-        #     drop_prob = 0.1
-        #     expert_drop_mask = torch.bernoulli(
-        #         torch.full_like(gate_weights, 1.0 - drop_prob)
-        #     )
-        #     gate_weights = gate_weights * expert_drop_mask
-        # # =========================================
-
         # --- b) GNN 专家处理 (逐个加权) ---
 
         # (我们必须按 __init__ 中定义的 gnn_expert_names 顺序迭代)
