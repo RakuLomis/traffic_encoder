@@ -149,7 +149,9 @@ def train_one_epoch(
         
         # 2. 【新】从一个“基础”图（例如'eth'）中获取标签
         #    (因为所有子图的'y'都是一样的)
-        labels = batch_dict['eth'].y 
+        # labels = batch_dict['eth'].y 
+        any_key = next(iter(batch_dict.keys()))
+        labels = batch_dict[any_key].y
 
         # ==================== 【!! 核心修改：屏蔽SNI !!】 ====================
         # 定义你想要屏蔽的“作弊”特征
@@ -266,7 +268,9 @@ def evaluate(
              print(f"警告: 无法将批处理项 {key} 移动到 device. 错误: {e}")
         
         # 2. 【新】从一个“基础”图（例如'eth'）中获取标签
-        labels = batch_dict['eth'].y 
+        # labels = batch_dict['eth'].y 
+        any_key = next(iter(batch_dict.keys()))
+        labels = batch_dict[any_key].y
 
         # ==================== 【!! 核心修改：屏蔽SNI !!】 ====================
         # 定义你想要屏蔽的“作弊”特征
@@ -347,14 +351,15 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
     # USE_IP_ADDRESS_THIS_RUN = True
     USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.02
+    SAMPLING_PROPORTION = 0.1
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
 
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
@@ -366,13 +371,13 @@ if __name__ == '__main__':
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
-    # dataset_name = 'ISCX-VPN'
+    dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
-    dataset_name = 'USTC-TFC2016-Malware'
+    # dataset_name = 'USTC-TFC2016-Malware'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -928,11 +933,11 @@ if __name__ == '__main__':
     print("\n[4/4] Creating GNN Datasets and DataLoaders...")
     
     # a) 实例化 GNNTrafficDataset
-    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, 
+    train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
                                       use_ip_address=USE_IP_ADDRESS_THIS_RUN)
-    val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, 
+    val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN)
-    test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, 
+    test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
