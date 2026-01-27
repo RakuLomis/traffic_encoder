@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd 
 import os
-import yaml
 
 def compute_ngi(values: np.ndarray, tau: float = 0.2) -> np.ndarray:
     """
@@ -356,7 +355,7 @@ def analyze_field_wise_importance_per_expert_v2(
 
     # --- abstract nodes (paper-defined V_abs) ---
     ABSTRACT_NODE_WHITELIST = {
-        "root",
+        "ROOT",
         "eth", "ip", "tcp", "tls",
         "tcp.options",
         "tls.handshake",

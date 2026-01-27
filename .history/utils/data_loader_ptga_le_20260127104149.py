@@ -60,8 +60,8 @@ class GNNTrafficDataset(Dataset):
 
         # --- 2. 【核心修改点】定义“专家”及其“视野” (Schema) --- 
         all_available_fields = set(dataframe.columns)
-
         ip_fields = {f for f in all_available_fields if f.startswith('ip.')}
+        # ip_fields = {f for f in all_available_fields if f.startswith('ip.') and 'payload' not in f}
 
         # 【!! 核心修复：移除 IP 噪声 !!】
         if not use_ip_address: 
@@ -76,6 +76,9 @@ class GNNTrafficDataset(Dataset):
             # 'ip': {f for f in all_available_fields if f.startswith('ip.')},
             'ip': ip_fields_cleaned, 
             'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f},
+            # 'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f 
+            #                 and 'payload' not in f
+            #                 and 'segment_data' not in f},
             'tcp_options': {f for f in all_available_fields if f.startswith('tcp.options.')},
             'tls_record': {f for f in all_available_fields if f.startswith('tls.record.')},
             'tls_handshake': {f for f in all_available_fields if f.startswith('tls.handshake.')},
@@ -83,6 +86,28 @@ class GNNTrafficDataset(Dataset):
             # ... 您可以根据需要，定义任意多的“专家”
         }
         self.flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
+
+        # ADD: for Ablation
+        # layer -> experts 映射（你想要的“输入 tcp/tls 自动展开”）
+        self.layer_to_experts = {
+            "eth": ["eth"],
+            "ip": ["ip"],
+            "tcp": ["tcp_core", "tcp_options"],
+            "tls": ["tls_record", "tls_handshake", "tls_x509"],
+        }
+        
+        # enabled_layers 例如 ["tcp", "tls"]；None 表示全用
+        if enabled_layers is not None:
+            enabled = set()
+            for layer in enabled_layers:
+                enabled.update(self.layer_to_experts.get(layer, []))
+        
+            # 过滤 expert_definitions
+            self.expert_definitions = {
+                name: fields
+                for name, fields in self.expert_definitions.items()
+                if name in enabled
+            }
 
         # --- 3. 【核心修改点】为每个“专家”预先生成图结构 ---
         print("Pre-calculating graph structures for each expert...")

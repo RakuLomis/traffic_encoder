@@ -61,7 +61,7 @@ class GNNTrafficDataset(Dataset):
         # --- 2. 【核心修改点】定义“专家”及其“视野” (Schema) --- 
         all_available_fields = set(dataframe.columns)
 
-        ip_fields = {f for f in all_available_fields if f.startswith('ip.')}
+        ip_fields = {f for f in all_available_fields if f.startswith('ip.') and 'payload' not in f}
 
         # 【!! 核心修复：移除 IP 噪声 !!】
         if not use_ip_address: 
@@ -75,7 +75,10 @@ class GNNTrafficDataset(Dataset):
             'eth': {f for f in all_available_fields if f.startswith('eth.')},
             # 'ip': {f for f in all_available_fields if f.startswith('ip.')},
             'ip': ip_fields_cleaned, 
-            'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f},
+            # 'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f},
+            'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f 
+                            and 'payload' not in f
+                            and 'segment_data' not in f},
             'tcp_options': {f for f in all_available_fields if f.startswith('tcp.options.')},
             'tls_record': {f for f in all_available_fields if f.startswith('tls.record.')},
             'tls_handshake': {f for f in all_available_fields if f.startswith('tls.handshake.')},

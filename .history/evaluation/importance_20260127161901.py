@@ -356,7 +356,7 @@ def analyze_field_wise_importance_per_expert_v2(
 
     # --- abstract nodes (paper-defined V_abs) ---
     ABSTRACT_NODE_WHITELIST = {
-        "root",
+        "ROOT",
         "eth", "ip", "tcp", "tls",
         "tcp.options",
         "tls.handshake",
