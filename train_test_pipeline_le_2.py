@@ -27,7 +27,7 @@ from models.ProtocolTreeGAttention_le import HierarchicalMoE
 from utils.metrics import calculate_metrics
 from utils.model_utils import diagnose_gate_weights_for_class
 import sys
-from transformers import get_linear_schedule_with_warmup
+# from transformers import get_linear_schedule_with_warmup
 from utils.loss_functions import FocalLoss
 import numpy as np
 import random 
@@ -351,10 +351,12 @@ if __name__ == '__main__':
     DIAGNOSE = False
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_MAC_ADDRESS_THIS_RUN = True
+    USE_MAC_ADDRESS_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
@@ -375,9 +377,9 @@ if __name__ == '__main__':
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
-    # dataset_name = 'dataset_29_d1' 
+    dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
-    dataset_name = 'USTC-TFC2016-Malware'
+    # dataset_name = 'USTC-TFC2016-Malware'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -934,11 +936,11 @@ if __name__ == '__main__':
     
     # a) 实例化 GNNTrafficDataset
     train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
-                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN)
+                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN)
     val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
-                                    use_ip_address=USE_IP_ADDRESS_THIS_RUN)
+                                    use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN)
     test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
-                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN)
+                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
