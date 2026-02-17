@@ -12,6 +12,7 @@ from collections import defaultdict
 import torch.nn as nn
 from typing import Dict, List, Any
 from torch_geometric.data import Batch
+from typing import Optional
 import gc
 
 
@@ -20,11 +21,18 @@ class GNNTrafficDataset(Dataset):
     一个为GNN模型准备数据的Dataset。
     它的__getitem__方法将一个数据包（一行DataFrame）转换成一个PyG的图(Data)对象。
     """
-    def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, enabled_layers: List[str] | None, node_feature_dim: int=128, 
-                 use_flow_features: bool = False, use_ip_address: bool = True, use_mac_address: bool =True):
+    def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, 
+                #  enabled_layers: List[str] | None, 
+                enabled_layers: Optional[List[str]], 
+                 node_feature_dim: int=128, 
+                 use_flow_features: bool = False, use_ip_address: bool = True, use_mac_address: bool = True, 
+                 use_port: bool = True):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
         self.use_flow_features = use_flow_features
+        self.use_ip_address = use_ip_address 
+        self.use_mac_address = use_mac_address 
+        self.use_port = use_port 
 
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
@@ -62,6 +70,7 @@ class GNNTrafficDataset(Dataset):
         all_available_fields = set(dataframe.columns)
         eth_fields = {f for f in all_available_fields if f.startswith('eth.')}
         ip_fields = {f for f in all_available_fields if f.startswith('ip.')}
+        tcp_core_fields = {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f} 
         # ip_fields = {f for f in all_available_fields if f.startswith('ip.') and 'payload' not in f}
 
         if not use_mac_address: 
@@ -76,6 +85,12 @@ class GNNTrafficDataset(Dataset):
             ip_fields_cleaned = ip_fields - ip_fields_to_ignore
         else: 
             ip_fields_cleaned = ip_fields
+
+        if not use_port: 
+            tcp_core_fields_cleaned = tcp_core_fields - self.port_fields 
+            print("Port addresses are not included in this run !!!")
+        else: 
+            tcp_core_fields_cleaned = tcp_core_fields
         
         # 您可以根据需要，像配置表一样，精确地定义这些专家的字段
         self.expert_definitions = {
@@ -83,7 +98,8 @@ class GNNTrafficDataset(Dataset):
             'eth': eth_fields_cleaned,
             # 'ip': {f for f in all_available_fields if f.startswith('ip.')},
             'ip': ip_fields_cleaned, 
-            'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f},
+            # 'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f},
+            'tcp_core': tcp_core_fields_cleaned, 
             # 'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f 
             #                 and 'payload' not in f
             #                 and 'segment_data' not in f},
@@ -95,6 +111,8 @@ class GNNTrafficDataset(Dataset):
         }
         # self.flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
         self.flow_feature_names = [f for f in dataframe.columns if f.startswith('flow_')]
+
+        print(f"Now we have flow features: {self.flow_feature_names}.")
 
         # ADD: for Ablation
         # layer -> experts 映射（你想要的“输入 tcp/tls 自动展开”）
@@ -250,7 +268,7 @@ class GNNTrafficDataset(Dataset):
             
             elif field_type == 'categorical':
                 # 【!! 核心修复：劫持端口字段 !!】
-                if field_name in self.port_fields:
+                if field_name in self.port_fields and self.use_port:
                     # a. Hex Port -> Bin ID (0, 1, 2, 3)
                     binned_data = col_data.apply(bin_port_from_hex)
                     # b. Map Bin ID -> Embedding Index (使用注入的 {0:0, 1:1, ...})
