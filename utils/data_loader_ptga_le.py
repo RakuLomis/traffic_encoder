@@ -40,7 +40,7 @@ class GNNTrafficDataset(Dataset):
             self.vocab_maps = yaml.safe_load(f)
         self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
         self.TORCH_LONG_MAX = torch.iinfo(torch.long).max
-        self.decimal_fields = {'tcp.stream'}
+        # self.decimal_fields = {'tcp.stream'}
 
         # --- 【!! 核心：注入端口分箱逻辑 !!】 ---
         

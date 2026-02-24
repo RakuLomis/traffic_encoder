@@ -8,8 +8,8 @@ STEP = 'datasets_split'
 dataset_name = 'ISCX-VPN'
 dataset_name2 = 'ISCX-TOR-Acctivity' 
 dataset_name3 = 'ISCX-TOR-Application'
-dataset_name4 = 'dataset_29_d1'
-# dataset_name4 = 'dataset_20_d2'
+# dataset_name4 = 'dataset_29_d1'
+dataset_name4 = 'dataset_20_d2'
 # dataset_name4 = 'USTC-TFC2016-Benign' 
 # dataset_name4 = 'USTC-TFC2016-Malware' 
 root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
@@ -24,11 +24,11 @@ config_path = os.path.join('.', 'Data', 'fields_embedding_configs_v1.yaml')
 # output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name2 + '_vocabs.yaml')
 
 
-csv_path = os.path.join(root_path, STEP, dataset_name3, TARGET)
-output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name3 + '_vocabs.yaml')
+# csv_path = os.path.join(root_path, STEP, dataset_name3, TARGET)
+# output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name3 + '_vocabs.yaml')
 
-# csv_path = os.path.join(root_path, STEP, dataset_name4, TARGET)
-# output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name4 + '_vocabs.yaml')
+csv_path = os.path.join(root_path, STEP, dataset_name4, TARGET)
+output_path = os.path.join(root_path, 'categorical_vocabs', dataset_name4 + '_vocabs.yaml')
 
 with open(config_path, 'r') as f: 
     yaml_config = yaml.safe_load(f)['field_embedding_config']
