@@ -24,15 +24,18 @@ class GNNTrafficDataset(Dataset):
     def __init__(self, dataframe: pd.DataFrame, config_path: str, vocab_path: str, 
                 #  enabled_layers: List[str] | None, 
                 enabled_layers: Optional[List[str]], 
-                 node_feature_dim: int=128, 
-                 use_flow_features: bool = False, use_ip_address: bool = True, use_mac_address: bool = True, 
-                 use_port: bool = True):
+                node_feature_dim: int=128, 
+                use_flow_features: bool = False, use_ip_address: bool = True, use_mac_address: bool = True, 
+                use_port: bool = True, 
+                obfuscation_config: Optional[Dict[str, Any]] = None):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
         self.use_flow_features = use_flow_features
         self.use_ip_address = use_ip_address 
         self.use_mac_address = use_mac_address 
         self.use_port = use_port 
+        self.obfuscation_config = obfuscation_config
+
 
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)['field_embedding_config']
@@ -293,9 +296,47 @@ class GNNTrafficDataset(Dataset):
                     # 1. 转换为大整数
                     # 2. 应用 np.log1p (log(x+1)) 来压缩数值范围
                     # 3. 转换为 float32
-                    processed_data_dict[field_name] = col_data.apply(robust_timestamp_to_tsval).apply(np.log1p).astype(np.float32)
+                    # processed_data_dict[field_name] = col_data.apply(robust_timestamp_to_tsval).apply(np.log1p).astype(np.float32)
+                    values = col_data.apply(robust_timestamp_to_tsval).astype(np.float32)
+
+                    # =============================
+                    # IAT / Timestamp Noise
+                    # =============================
+                    if (
+                        self.obfuscation_config
+                        and self.obfuscation_config.get("iat_noise") is not None
+                    ):
+                        sigma = self.obfuscation_config["iat_noise"]
+                        values = values + np.random.normal(
+                            0,
+                            sigma,
+                            size=len(values)
+                        )
+                
+                    values = np.log1p(values)
+                    processed_data_dict[field_name] = values.astype(np.float32)
+
                 else: # (默认: ip.len, tcp.len, tsval, tsecr ...)
-                    processed_data_dict[field_name] = col_data.apply(robust_hex_to_int).astype(np.int32)
+                    # processed_data_dict[field_name] = col_data.apply(robust_hex_to_int).astype(np.int32)
+                    values = col_data.apply(robust_hex_to_int).astype(np.float32)
+
+                    # =============================
+                    # Packet Length Obfuscation
+                    # =============================
+                    if (
+                        self.obfuscation_config
+                        and field_name == "ip.len"
+                        and self.obfuscation_config.get("len_noise") is not None
+                    ):
+                        noise_level = self.obfuscation_config["len_noise"]
+                        noise = np.random.uniform(
+                            -noise_level,
+                            noise_level,
+                            size=len(values)
+                        )
+                        values = values * (1 + noise)
+
+                    processed_data_dict[field_name] = values.astype(np.float32)
             
             else:
                  print(f"警告: 字段 '{field_name}' 的类型 '{field_type}' 无法识别。将跳过。")

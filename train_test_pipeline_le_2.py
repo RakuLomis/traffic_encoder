@@ -348,24 +348,29 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    DIAGNOSE = False
+    # DIAGNOSE = False
+    DIAGNOSE = True
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
-    USE_MAC_ADDRESS_THIS_RUN = True
-    # USE_MAC_ADDRESS_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_MAC_ADDRESS_THIS_RUN = True
+    USE_MAC_ADDRESS_THIS_RUN = False
     # USE_IP_ADDRESS_THIS_RUN = True
     USE_IP_ADDRESS_THIS_RUN = False
-    USE_PORT_THIS_RUN = True
-    # USE_PORT_THIS_RUN = False
+    # USE_PORT_THIS_RUN = True
+    USE_PORT_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
     SAMPLING_PROPORTION = 0.5
-    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
+    OBFUSCATION_CONFIG = {
+        "len_noise": 0.1,
+        "iat_noise": 0.005,
+    }
     # FocalLoss的超参数
     FOCAL_GAMMA = 2.0 # 0.0 ~ 5.0, 2.0是一个经典的起始值
     EPSILON = 1e-6 
@@ -403,6 +408,8 @@ if __name__ == '__main__':
     val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
     test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
     SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
+
+    GLOBAL_CHIEF_SCHEMA = None
 
     if STRATIFIED_TRAIN_SET: 
         train_df = stratified_hybrid_sample_from_csv_stream(
@@ -476,6 +483,8 @@ if __name__ == '__main__':
     # ==================== 代码优化：高效对齐 ====================
     print("\n[2/4] Aligning feature space for validation and test sets...")
     chief_schema = [col for col in train_df.columns if col not in ['label', 'label_id']]
+
+    GLOBAL_CHIEF_SCHEMA = chief_schema
     
     # 使用 reindex + fillna，一步到位，性能更高
     val_df_aligned = val_df.reindex(columns=chief_schema, fill_value='0')
@@ -650,135 +659,6 @@ if __name__ == '__main__':
                 return maps
 
 
-        # def calculate_flow_stats(df, is_train_set=False):
-        #     """
-        #     在一个 DataFrame 上计算所有可用的流统计特征。
-        #     - 如果 is_train_set=True, 返回 (maps, defaults)
-        #     - 如果 is_train_set=False, 只返回 maps
-        #     - 对于缺失的字段（尤其是时间类），会自动跳过相关 flow 特征
-        #     """
-        #     print(f"   -> Calculating stats for DataFrame (size: {len(df)})...")
-
-        #     # -------- 0. 必要字段检查（刚性依赖）---------
-        #     # 没有 ip.len / tcp.stream，就没法按流计算任何有意义的特征，仍然直接报错
-        #     if 'ip.len' not in df.columns:
-        #         raise ValueError("错误：缺少 'ip.len' 列，无法计算流长度/包数相关特征。")
-        #     if 'tcp.stream' not in df.columns:
-        #         raise ValueError("错误：缺少 'tcp.stream' 列，无法按流分组计算 flow 特征。")
-
-        #     # -------- 1. 基础数值列转换 --------
-        #     # ip.len -> ip.len_temp_dec
-        #     if 'ip.len_temp_dec' not in df.columns:
-        #         df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
-
-        #     # tcp.stream -> tcp.stream_temp_dec
-        #     if 'tcp.stream_temp_dec' not in df.columns:
-        #         df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
-
-        #     # -------- 2. 时间列处理（可选） --------
-        #     has_time = True
-
-        #     if 'time_temp_dec' in df.columns:
-        #         # 上游已经准备好了，直接用
-        #         pass
-        #     else:
-        #         # 尝试在多种可能的时间列中找一个可用的
-        #         candidate_time_cols = [
-        #             'tcp.options.timestamp',   # 你原来用的
-        #             'frame.time_relative',     # 有些数据集常见
-        #             'frame.time_epoch',        # 另一种常见形式
-        #         ]
-        #         time_col = None
-        #         for cand in candidate_time_cols:
-        #             if cand in df.columns:
-        #                 time_col = cand
-        #                 break
-                    
-        #         if time_col is None:
-        #             # 找不到任何时间列：只计算与时间无关的特征
-        #             has_time = False
-        #             print("     [警告] 未找到任何时间列，将跳过 IAT / duration 相关的 flow 特征。")
-        #         else:
-        #             print(f"     -> 使用时间列 '{time_col}' 计算 IAT / duration 特征...")
-        #             if time_col == 'tcp.options.timestamp':
-        #                 # 原来的 timestamp -> tsval 转换逻辑
-        #                 df['time_temp_dec'] = df[time_col].apply(robust_timestamp_to_tsval).astype(np.int64)
-        #             else:
-        #                 # frame.time_relative / frame.time_epoch 通常是数值 / 字符串数值
-        #                 df['time_temp_dec'] = (
-        #                     pd.to_numeric(df[time_col], errors='coerce')
-        #                       .fillna(0)
-        #                       .astype(np.float64)
-        #                 )
-
-        #     # -------- 3. 分组 + 基础长度/包数特征（一定能算） --------
-        #     grouped = df.groupby('tcp.stream_temp_dec')
-
-        #     maps = {}
-
-        #     # 与时间无关的特征
-        #     print("     -> Calculating base length/count features...")
-        #     maps['flow_avg_len']   = grouped['ip.len_temp_dec'].mean()
-        #     maps['flow_std_len']   = grouped['ip.len_temp_dec'].std().fillna(0)
-        #     maps['flow_pkt_count'] = grouped['ip.len_temp_dec'].count()
-
-        #     # 大包比例（也与时间无关）
-        #     LARGE_PKT_THRESHOLD = 1400
-        #     large_pkts = df[df['ip.len_temp_dec'] > LARGE_PKT_THRESHOLD]
-        #     base_large_pkt_count = (
-        #         large_pkts
-        #         .groupby('tcp.stream_temp_dec')
-        #         .size()
-        #         .reindex(maps['flow_pkt_count'].index, fill_value=0)
-        #     )
-        #     print("     -> Calculating large packet ratio...")
-        #     maps['flow_large_pkt_ratio'] = base_large_pkt_count / (maps['flow_pkt_count'] + EPSILON)
-
-        #     # -------- 4. 如果有时间列，再计算 IAT 和 duration 类特征 --------
-        #     if has_time:
-        #         print("     -> Calculating IAT & duration based features...")
-
-        #         # 4.1 计算 IAT
-        #         df = df.sort_values(by=['tcp.stream_temp_dec', 'time_temp_dec'])
-        #         df['iat_temp'] = df.groupby('tcp.stream_temp_dec')['time_temp_dec'].diff().fillna(0)
-
-        #         # 4.2 IAT 相关统计
-        #         maps['flow_avg_iat'] = grouped['iat_temp'].mean()
-        #         maps['flow_std_iat'] = grouped['iat_temp'].std().fillna(0)
-        #         maps['flow_max_iat'] = grouped['iat_temp'].max()
-
-        #         # 4.3 duration_per_pkt
-        #         flow_min_time = grouped['time_temp_dec'].min()
-        #         flow_max_time = grouped['time_temp_dec'].max()
-        #         base_duration = (flow_max_time - flow_min_time)  # 每个流的总时长
-
-        #         maps['flow_duration_per_pkt'] = base_duration / (maps['flow_pkt_count'] + EPSILON)
-        #     else:
-        #         # 没有时间列：这些特征就不放进 maps
-        #         print("     [提示] 无时间列：未计算 flow_avg_iat / flow_std_iat / flow_max_iat / flow_duration_per_pkt。")
-
-        #     # -------- 5. 训练集：计算 defaults（只对实际存在的特征） --------
-        #     if is_train_set:
-        #         print("     -> Calculating global defaults (using MEDIAN where appropriate)...")
-        #         defaults = {}
-
-        #         for f_name, stat_series in maps.items():
-        #             # count/ratio 用 mean，其余用 median
-        #             if ('count' in f_name) or ('ratio' in f_name):
-        #                 default_val = float(stat_series.mean())
-        #             else:
-        #                 default_val = float(stat_series.median())
-
-        #             if np.isnan(default_val) or np.isinf(default_val):
-        #                 default_val = 0.0
-
-        #             defaults[f_name] = default_val
-
-        #         return maps, defaults
-        #     else:
-        #         return maps
-
-
         # c) 【!! 核心修复 3 !!】 实现 OPEN_WORLD 分支
         
         # 【!! 在这里设置你的实验 !!】
@@ -939,11 +819,11 @@ if __name__ == '__main__':
     
     # a) 实例化 GNNTrafficDataset
     train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
-                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN)
+                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN, obfuscation_config=None)
     val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
-                                    use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN)
+                                    use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN, obfuscation_config=None)
     test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
-                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN)
+                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN, obfuscation_config=OBFUSCATION_CONFIG)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
@@ -972,9 +852,9 @@ if __name__ == '__main__':
     # dynamic_weights = torch.ones(num_classes, dtype=torch.float).to(device)
     
     # =====================================================================
-
-    del train_df, val_df_aligned, test_df_aligned
-    gc.collect()
+    if not DIAGNOSE: 
+        del train_df, val_df_aligned, test_df_aligned
+        gc.collect()
     
     expert_graph_info = train_dataset.expert_graphs
 
@@ -1273,85 +1153,136 @@ if __name__ == '__main__':
         results_df.to_csv(os.path.join(res_path,dataset_name + '_' + train_set_name + '_training_log.csv'), index=False)
         print(f"\nTraining log saved to {train_set_name}_training_log.csv")
 
-    elif DIAGNOSE: 
-        d_res_dir = ''
-        best_model_path = os.path.join(res_path, d_res_dir,dataset_name + '_' + train_set_name + '_best_model.pth') 
-        if not os.path.exists(best_model_path):
-            print(f"错误: 找不到已保存的模型文件: {best_model_path}")
-            print("请确保 'train_set_name' 变量与你训练时的设置一致。")
-            exit()
-        pta_model.load_state_dict(torch.load(best_model_path, map_location=device))
-        # pta_model.to(device)
-        pta_model.eval()
-        test_metrics, test_confusion_matrix = evaluate(pta_model, test_loader, 
-                                                           device, num_classes, loss_fn)
-        print(f"\nFinal Test Performance:")
-        print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Macro): {test_metrics['f1_macro']:.4f}")
+    elif DIAGNOSE:
 
-        # --- 7. 保存混淆矩阵到CSV ---
-        print("\nSaving confusion matrix...")
+        print("\n==============================")
+        print("  Robustness Obfuscation Mode ")
+        print("==============================\n")
 
-        # a) 创建从整数索引回字符串标签的映射
-        #    我们需要之前创建的 label_to_int 字典
-        int_to_label = {i: label for label, i in label_to_int.items()}
-        class_names = [int_to_label[i] for i in range(num_classes)]
-
-        # b) 将PyTorch Tensor转换为带标签的Pandas DataFrame
-        confusion_matrix_df = pd.DataFrame(
-            test_confusion_matrix.cpu().numpy(), # 必须先移回CPU
-            index=class_names,
-            columns=class_names
+        best_model_path = os.path.join(
+            res_path,
+            # '..', 'obfucation', 'models',
+            dataset_name + '_' + train_set_name + '_best_model.pth'
         )
 
-        # c) 保存为CSV文件
-        cm_output_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_final_test_confusion_matrix.csv')
-        confusion_matrix_df.to_csv(cm_output_path)
+        if not os.path.exists(best_model_path):
+            print(f"错误: 找不到已保存的模型文件: {best_model_path}")
+            exit()
 
-        print(f"Confusion matrix saved to: {cm_output_path}")
+        print("Loading trained model...")
+        pta_model.load_state_dict(torch.load(best_model_path, map_location=device))
+        pta_model.to(device)
+        pta_model.eval()
+        print("Model loaded successfully.\n")
 
-        # ==================== 分析学到的特征重要性 ====================
-        print("\n" + "="*50)
-        print("###   Learned Feature Importance Report   ###")
+        # ==========================================================
+        # 直接复用前面 pipeline 已经生成好的 test_df_aligned
+        # 以及 flow 特征、label_id、schema 等
+        # ==========================================================
 
-        importance_reports_dict = pta_model.get_feature_importance()
-        all_reports_list = []
-        for expert_name, expert_df in importance_reports_dict.items():
-            print(f"\n--- Importance for Expert: '{expert_name}' ---")
-            # to_string()可以打印所有行
-            print(expert_df.to_string())
-        
-            # 为合并做准备
-            expert_df_with_name = expert_df.copy()
-            expert_df_with_name['expert_name'] = expert_name
-            all_reports_list.append(expert_df_with_name)           
-        # 【修复】将所有报告合并为一个大的DataFrame
-        combined_report_df = pd.concat(all_reports_list).reset_index(drop=True)
+        noise_levels = [0.0, 0.05, 0.1, 0.2 ]
+        robustness_results = []
 
-        # 保存报告为CSV
-        report_output_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_feature_importance_report.csv')
-        combined_report_df.to_csv(report_output_path, index=False)
+        for noise in noise_levels:
 
-        print(f"\nCombined feature importance report saved to: {report_output_path}")
-        print("="*50)
-        print("Diagnose completed. ")
+            print("\n--------------------------------------------")
+            print(f"Testing with len_noise = {noise}")
+            print("--------------------------------------------")
 
-        # ==================== 2. 【新增】分析每层专家重要性 (Macro) ====================
-        print("\n" + "="*50)
-        print("###   Learned Expert Layer Importance Report (Macro)   ###")
-        
-        # 调用我们新写的函数
-        try:
-            expert_layer_report = pta_model.get_expert_importance()
-            
-            # 打印到控制台看看
-            print(expert_layer_report.to_string())
-            
-            # 保存到 CSV
-            expert_report_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_expert_layer_importance.csv')
-            expert_layer_report.to_csv(expert_report_path, index=False)
-            print(f"\nExpert layer importance saved to: {expert_report_path}")
-        except Exception as e:
-            print(f"Warning: Could not generate expert importance report. Error: {e}")
-        
-        print("="*50)
-        # ============================================================================
+            # 构造 obfuscation_config
+            obfuscation_config = None
+            if noise > 0:
+                obfuscation_config = {
+                    "len_noise": noise,
+                    "iat_noise": 0.005,
+                    "seed": SEED
+                }
+
+            # ======================================================
+            # 重新构造 test_dataset（只改变 obfuscation）
+            # 关键：使用已有的 test_df_aligned
+            # ======================================================
+
+            test_dataset_obf = GNNTrafficDataset(
+                test_df_aligned,   # 直接使用前面已经处理好的
+                config_path,
+                vocab_path,
+                use_flow_features=USE_FLOW_FEATURES_THIS_RUN,
+                enabled_layers=ABLATION_LAYERS,
+                use_ip_address=USE_IP_ADDRESS_THIS_RUN,
+                use_mac_address=USE_MAC_ADDRESS_THIS_RUN,
+                use_port=USE_PORT_THIS_RUN,
+                obfuscation_config=obfuscation_config
+            )
+
+            test_loader_obf = DataLoader(
+                test_dataset_obf,
+                batch_size=BATCH_SIZE,
+                shuffle=False,
+                num_workers=NUM_WORKERS,
+                pin_memory=True,
+                prefetch_factor=8,
+            )
+
+            # ======================================================
+            # 评估
+            # ======================================================
+
+            test_metrics, test_confusion_matrix = evaluate(
+                pta_model,
+                test_loader_obf,
+                # test_loader,
+                device,
+                num_classes,
+                loss_fn
+            )
+
+            print(f"Accuracy: {test_metrics['accuracy']:.4f}")
+            print(f"Macro-F1: {test_metrics['f1_macro']:.4f}")
+
+            robustness_results.append({
+                "noise_level": noise,
+                "accuracy": test_metrics['accuracy'],
+                "f1_macro": test_metrics['f1_macro'],
+                "precision_macro": test_metrics['precision_macro'],
+                "recall_macro": test_metrics['recall_macro'],
+            })
+
+            # ======================================================
+            # 保存混淆矩阵
+            # ======================================================
+
+            int_to_label = {i: label for label, i in label_to_int.items()}
+            class_names = [int_to_label[i] for i in range(num_classes)]
+
+            confusion_matrix_df = pd.DataFrame(
+                test_confusion_matrix.cpu().numpy(),
+                index=class_names,
+                columns=class_names
+            )
+
+            cm_output_path = os.path.join(
+                '..', 'obfucation', 'models',
+                f"{dataset_name}_{train_set_name}_noise_{noise}_confusion_matrix.csv"
+            )
+
+            confusion_matrix_df.to_csv(cm_output_path)
+            print(f"Confusion matrix saved to: {cm_output_path}")
+
+        # ==========================================================
+        # 保存整体 robustness 结果
+        # ==========================================================
+
+        robustness_df = pd.DataFrame(robustness_results)
+
+        robustness_output_path = os.path.join(
+            '..', 'obfucation', 'models',
+            f"{dataset_name}_{train_set_name}_robustness_results.csv"
+        )
+
+        robustness_df.to_csv(robustness_output_path, index=False)
+
+        print("\n=======================================")
+        print("Robustness evaluation completed.")
+        print(f"Results saved to: {robustness_output_path}")
+        print("=======================================\n")
