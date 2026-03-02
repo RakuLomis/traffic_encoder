@@ -348,8 +348,8 @@ if __name__ == '__main__':
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
-    # DIAGNOSE = False
-    DIAGNOSE = True
+    DIAGNOSE = False
+    # DIAGNOSE = True
     stop_training = False
 
     USE_FLOW_FEATURES_THIS_RUN = True
@@ -364,8 +364,8 @@ if __name__ == '__main__':
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
     SAMPLING_PROPORTION = 0.5
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
@@ -1180,7 +1180,8 @@ if __name__ == '__main__':
         # 以及 flow 特征、label_id、schema 等
         # ==========================================================
 
-        noise_levels = [0.0, 0.05, 0.1, 0.2 ]
+        # noise_levels = [0.0, 0.05, 0.1, 0.2 ]
+        noise_levels = [0.0, 1.0, 2.0, 5.0]
         robustness_results = []
 
         for noise in noise_levels:
@@ -1194,7 +1195,8 @@ if __name__ == '__main__':
             if noise > 0:
                 obfuscation_config = {
                     "len_noise": noise,
-                    "iat_noise": 0.005,
+                    # "iat_noise": 0.005,
+                    "iat_noise": 5.0,
                     "seed": SEED
                 }
 
