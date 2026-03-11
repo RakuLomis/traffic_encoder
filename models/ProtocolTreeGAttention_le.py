@@ -12,96 +12,246 @@ import pandas as pd
 # 1️⃣  PTGAMiniExpert  （未改动）
 # ============================================================
 
-class PTGAMiniExpert(nn.Module):
+# class PTGAMiniExpert(nn.Module):
 
-    def __init__(self,
-                 field_embedder: FieldEmbedding,
+#     def __init__(self,
+#                  field_embedder: FieldEmbedding,
+#                  node_fields_list: List[str],
+#                  edge_index: torch.Tensor,
+#                  hidden_dim: int = 128,
+#                  num_heads: int = 4,
+#                  dropout_rate: float = 0.3):
+
+#         super().__init__()
+
+#         self.field_embedder = field_embedder
+#         self.hidden_dim = hidden_dim
+#         self.dropout_rate = dropout_rate
+#         self.node_fields = node_fields_list
+
+#         self.register_buffer('edge_index', edge_index)
+
+#         self.aligners = nn.ModuleDict()
+#         unique_dims = set()
+#         for field_name in self.node_fields:
+#             if field_name in self.field_embedder.embedding_slices:
+#                 dim = self.field_embedder.embedding_slices[field_name][1] - \
+#                       self.field_embedder.embedding_slices[field_name][0]
+#                 if dim > 0:
+#                     unique_dims.add(dim)
+
+#         for dim in unique_dims:
+#             self.aligners[f'aligner_from_{dim}'] = nn.Linear(dim, hidden_dim)
+
+#         self.conv1 = GATConv(hidden_dim, hidden_dim,
+#                              heads=num_heads, dropout=dropout_rate)
+#         self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim,
+#                              heads=1, concat=False, dropout=dropout_rate)
+
+#         num_nodes = len(self.node_fields)
+#         initial_logits = torch.full((num_nodes,), 2.2)
+#         self.feature_mask_logits = nn.Parameter(initial_logits)
+#         self.align_norm = nn.LayerNorm(hidden_dim)
+#         self.dummy_token = nn.Parameter(torch.randn(1, hidden_dim) * 0.01)
+#         # self.abstract_node_embeddings = nn.Embedding(num_nodes, hidden_dim)
+
+#     def _align_fused(self, embedded_vectors: Dict[str, torch.Tensor]):
+#         aligned_vectors = {}
+#         vectors_by_dim = defaultdict(list)
+#         names_by_dim = defaultdict(list)
+
+#         for name, vec in embedded_vectors.items():
+#             dim = vec.shape[-1]
+#             if f'aligner_from_{dim}' in self.aligners:
+#                 vectors_by_dim[dim].append(vec)
+#                 names_by_dim[dim].append(name)
+
+#         for dim, vecs in vectors_by_dim.items():
+#             stacked_vecs = torch.stack(vecs, dim=1)
+#             aligner = self.aligners[f'aligner_from_{dim}']
+#             aligned_stacked = aligner(stacked_vecs)
+#             for i, name in enumerate(names_by_dim[dim]):
+#                 aligned_vectors[name] = aligned_stacked[:, i, :]
+
+#         return aligned_vectors
+
+#     def forward(self, data):
+
+#         batch_dict = {key: val for key, val in data
+#                       if key not in ['edge_index', 'y', 'num_nodes', 'batch', 'ptr']}
+
+#         embedded_vectors = self.field_embedder(batch_dict)
+#         aligned_vectors = self._align_fused(embedded_vectors)
+
+#         node_feature_list = []
+#         for field_name in self.node_fields:
+#             vec = aligned_vectors.get(field_name)
+#             if vec is not None:
+#                 node_feature_list.append(vec)
+#             else:
+#                 dummy_vec = self.dummy_token.expand(data.num_graphs, -1)
+#                 node_feature_list.append(dummy_vec)
+
+#         stacked_x = torch.stack(node_feature_list, dim=1)
+#         stacked_x_normed = self.align_norm(stacked_x)
+
+#         feature_gate = torch.sigmoid(self.feature_mask_logits)
+#         mask_for_broadcast = feature_gate.view(1, -1, 1)
+#         gated_stacked_x = stacked_x_normed * mask_for_broadcast
+
+#         x = gated_stacked_x.view(-1, self.hidden_dim)
+
+#         edge_index = data.edge_index.to(x.device)
+#         batch_idx = data.batch.to(x.device)
+
+#         x = F.dropout(x, p=self.dropout_rate, training=self.training)
+#         x = self.conv1(x, edge_index)
+#         x = F.elu(x)
+#         x = self.conv2(x, edge_index)
+
+#         graph_embedding = global_mean_pool(x, batch_idx)
+
+#         return graph_embedding, feature_gate
+
+class PTGAMiniExpert(nn.Module):
+    """
+    Per-node abstract token version.
+    Each node (including abstract nodes) owns an independent learnable token.
+    """
+
+    def __init__(self, 
+                 field_embedder: FieldEmbedding, 
                  node_fields_list: List[str],
                  edge_index: torch.Tensor,
-                 hidden_dim: int = 128,
-                 num_heads: int = 4,
+                 hidden_dim: int = 128, 
+                 num_heads: int = 4, 
                  dropout_rate: float = 0.3):
-
+        
         super().__init__()
-
+        
         self.field_embedder = field_embedder
         self.hidden_dim = hidden_dim
         self.dropout_rate = dropout_rate
         self.node_fields = node_fields_list
+        self.num_nodes = len(self.node_fields)
 
         self.register_buffer('edge_index', edge_index)
 
+        # ============================================================
+        # 1️⃣  为所有节点创建独立 token（核心修改）
+        # ============================================================
+        self.abstract_node_embeddings = nn.Embedding(
+            num_embeddings=self.num_nodes,
+            embedding_dim=hidden_dim
+        )
+
+        nn.init.normal_(self.abstract_node_embeddings.weight, mean=0.0, std=0.01)
+
+        # ============================================================
+        # 2️⃣  对齐层（保持不变）
+        # ============================================================
         self.aligners = nn.ModuleDict()
         unique_dims = set()
+
         for field_name in self.node_fields:
             if field_name in self.field_embedder.embedding_slices:
-                dim = self.field_embedder.embedding_slices[field_name][1] - \
-                      self.field_embedder.embedding_slices[field_name][0]
+                dim = (
+                    self.field_embedder.embedding_slices[field_name][1]
+                    - self.field_embedder.embedding_slices[field_name][0]
+                )
                 if dim > 0:
                     unique_dims.add(dim)
 
         for dim in unique_dims:
             self.aligners[f'aligner_from_{dim}'] = nn.Linear(dim, hidden_dim)
 
-        self.conv1 = GATConv(hidden_dim, hidden_dim,
-                             heads=num_heads, dropout=dropout_rate)
-        self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim,
-                             heads=1, concat=False, dropout=dropout_rate)
+        # ============================================================
+        # 3️⃣  GAT layers
+        # ============================================================
+        self.conv1 = GATConv(hidden_dim, hidden_dim, heads=num_heads, dropout=dropout_rate)
+        self.conv2 = GATConv(hidden_dim * num_heads, hidden_dim, heads=1, concat=False, dropout=dropout_rate)
 
-        num_nodes = len(self.node_fields)
-        initial_logits = torch.full((num_nodes,), 2.2)
+        # ============================================================
+        # 4️⃣  Feature mask
+        # ============================================================
+        initial_logits = torch.full((self.num_nodes,), 2.2)
         self.feature_mask_logits = nn.Parameter(initial_logits)
-        self.align_norm = nn.LayerNorm(hidden_dim)
-        self.dummy_token = nn.Parameter(torch.randn(1, hidden_dim) * 0.01)
 
+        self.align_norm = nn.LayerNorm(hidden_dim)
+
+    # ================================================================
+    # 对齐函数（保持不变）
+    # ================================================================
     def _align_fused(self, embedded_vectors: Dict[str, torch.Tensor]):
         aligned_vectors = {}
         vectors_by_dim = defaultdict(list)
         names_by_dim = defaultdict(list)
-
+        
         for name, vec in embedded_vectors.items():
             dim = vec.shape[-1]
             if f'aligner_from_{dim}' in self.aligners:
                 vectors_by_dim[dim].append(vec)
                 names_by_dim[dim].append(name)
-
+        
         for dim, vecs in vectors_by_dim.items():
             stacked_vecs = torch.stack(vecs, dim=1)
             aligner = self.aligners[f'aligner_from_{dim}']
             aligned_stacked = aligner(stacked_vecs)
             for i, name in enumerate(names_by_dim[dim]):
                 aligned_vectors[name] = aligned_stacked[:, i, :]
-
+        
         return aligned_vectors
 
+    # ================================================================
+    # Forward
+    # ================================================================
     def forward(self, data):
 
-        batch_dict = {key: val for key, val in data
-                      if key not in ['edge_index', 'y', 'num_nodes', 'batch', 'ptr']}
+        batch_dict = {
+            key: val
+            for key, val in data
+            if key not in ['edge_index', 'y', 'num_nodes', 'batch', 'ptr']
+        }
 
         embedded_vectors = self.field_embedder(batch_dict)
         aligned_vectors = self._align_fused(embedded_vectors)
 
+        B = data.num_graphs
+        device = next(self.parameters()).device
+
         node_feature_list = []
-        for field_name in self.node_fields:
+
+        # ============================================================
+        # 核心逻辑：per-node token
+        # ============================================================
+        for node_idx, field_name in enumerate(self.node_fields):
+
             vec = aligned_vectors.get(field_name)
+
             if vec is not None:
                 node_feature_list.append(vec)
             else:
-                dummy_vec = self.dummy_token.expand(data.num_graphs, -1)
-                node_feature_list.append(dummy_vec)
+                # 使用该节点专属 token
+                token = self.abstract_node_embeddings(
+                    torch.tensor(node_idx, device=device)
+                )
+                token = token.unsqueeze(0).expand(B, -1)
+                node_feature_list.append(token)
 
-        stacked_x = torch.stack(node_feature_list, dim=1)
-        stacked_x_normed = self.align_norm(stacked_x)
+        stacked_x = torch.stack(node_feature_list, dim=1)  # [B, N, D]
+        stacked_x = self.align_norm(stacked_x)
 
+        # ============================================================
+        # Feature gating
+        # ============================================================
         feature_gate = torch.sigmoid(self.feature_mask_logits)
-        mask_for_broadcast = feature_gate.view(1, -1, 1)
-        gated_stacked_x = stacked_x_normed * mask_for_broadcast
+        mask = feature_gate.view(1, -1, 1)
+        stacked_x = stacked_x * mask
 
-        x = gated_stacked_x.view(-1, self.hidden_dim)
+        x = stacked_x.view(-1, self.hidden_dim)
 
-        edge_index = data.edge_index.to(x.device)
-        batch_idx = data.batch.to(x.device)
+        edge_index = data.edge_index.to(device)
+        batch_idx = data.batch.to(device)
 
         x = F.dropout(x, p=self.dropout_rate, training=self.training)
         x = self.conv1(x, edge_index)
