@@ -405,18 +405,18 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
     # USE_MAC_ADDRESS_THIS_RUN = True
     USE_MAC_ADDRESS_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     # USE_PORT_THIS_RUN = True
     USE_PORT_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.01
+    SAMPLING_PROPORTION = 0.5
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
@@ -436,12 +436,11 @@ if __name__ == '__main__':
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
-    # dataset_name = 'ISCX-TOR-Application'
+    dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
-    dataset_name = 'dataset_20_d2'
+    # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
-    # dataset_name = 'cstnet_tls_1.3'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')

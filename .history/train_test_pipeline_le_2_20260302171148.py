@@ -330,59 +330,6 @@ def evaluate(
     return epoch_metrics, cm_cpu, # per_class_f1.cpu()
 
 
-def compute_dataset_expert_importance(model, dataloader, device):
-    """
-    Compute dataset-level expected expert importance:
-    \bar{omega}_k = E_x[ omega_k(x) ]
-
-    Args:
-        model: trained HierarchicalMoE model
-        dataloader: validation or test loader
-        device: torch device
-
-    Returns:
-        torch.Tensor of shape [num_experts]
-    """
-
-    model.eval()
-
-    total_weights = None
-    total_samples = 0
-
-    with torch.no_grad():
-        for batch_dict in dataloader:
-
-            # ================================
-            # Move batch to device (same as evaluate)
-            # ================================
-            for key, value in batch_dict.items():
-                if hasattr(value, 'to'):
-                    batch_dict[key] = value.to(device)
-
-            # Forward pass
-            logits, _ = model(batch_dict)
-
-            # 关键：从模型中拿当前 batch 的 expert weights
-            # 这是 forward 中缓存的 _latest_expert_weights
-            weights = model._latest_expert_weights  # shape [B, K]
-
-            if weights is None:
-                raise RuntimeError("Expert weights not found. "
-                                   "Ensure forward() stores _latest_expert_weights.")
-
-            # 累加
-            if total_weights is None:
-                total_weights = weights.sum(dim=0)
-            else:
-                total_weights += weights.sum(dim=0)
-
-            total_samples += weights.shape[0]
-
-    # 计算期望
-    expected_weights = total_weights / total_samples
-
-    return expected_weights.cpu()
-
 # =====================================================================
 if __name__ == '__main__':
     SEED = 42
@@ -405,20 +352,20 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
     # USE_MAC_ADDRESS_THIS_RUN = True
     USE_MAC_ADDRESS_THIS_RUN = False
-    USE_IP_ADDRESS_THIS_RUN = True
-    # USE_IP_ADDRESS_THIS_RUN = False
+    # USE_IP_ADDRESS_THIS_RUN = True
+    USE_IP_ADDRESS_THIS_RUN = False
     # USE_PORT_THIS_RUN = True
     USE_PORT_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.01
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    SAMPLING_PROPORTION = 0.02
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
@@ -436,12 +383,11 @@ if __name__ == '__main__':
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
-    # dataset_name = 'ISCX-TOR-Application'
+    dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
-    dataset_name = 'dataset_20_d2'
+    # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
-    # dataset_name = 'cstnet_tls_1.3'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -1146,7 +1092,7 @@ if __name__ == '__main__':
             print(expert_layer_report.to_string())
             
             # 保存到 CSV
-            expert_report_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_lastbatch_expert_layer_importance.csv')
+            expert_report_path = os.path.join(res_path, dataset_name + '_' + train_set_name + '_expert_layer_importance.csv')
             expert_layer_report.to_csv(expert_report_path, index=False)
             print(f"\nExpert layer importance saved to: {expert_report_path}")
         except Exception as e:
@@ -1206,34 +1152,6 @@ if __name__ == '__main__':
         results_df = pd.DataFrame(training_results)
         results_df.to_csv(os.path.join(res_path,dataset_name + '_' + train_set_name + '_training_log.csv'), index=False)
         print(f"\nTraining log saved to {train_set_name}_training_log.csv")
-
-        print("\nComputing dataset-level expert importance...")
-
-        expected_expert_weights = compute_dataset_expert_importance(
-            pta_model,
-            test_loader,   # 推荐使用 test_loader
-            device
-        )
-
-        print("Expected expert weights:", expected_expert_weights.numpy())
-
-        expert_names = pta_model.gnn_expert_names.copy()
-        if pta_model.use_flow_features:
-            expert_names.append("Flow_Features_Block")
-
-        df_expert = pd.DataFrame({
-            "expert_name": expert_names,
-            "importance_score": expected_expert_weights.numpy()
-        })
-
-        expert_csv_path = os.path.join(
-            res_path,
-            dataset_name + '_' + train_set_name + '_expert_layer_importance.csv'
-        )
-
-        df_expert.to_csv(expert_csv_path, index=False)
-
-        print(f"Expert importance saved to: {expert_csv_path}")
 
     elif DIAGNOSE:
 
