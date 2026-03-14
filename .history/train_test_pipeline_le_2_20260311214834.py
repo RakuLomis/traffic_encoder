@@ -383,7 +383,6 @@ def compute_dataset_expert_importance(model, dataloader, device):
 
     return expected_weights.cpu()
 
-
 # =====================================================================
 if __name__ == '__main__':
     SEED = 42
@@ -406,22 +405,20 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
-    # USE_MAC_ADDRESS_THIS_RUN = True
-    USE_MAC_ADDRESS_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
+    USE_MAC_ADDRESS_THIS_RUN = True
+    # USE_MAC_ADDRESS_THIS_RUN = False
     # USE_IP_ADDRESS_THIS_RUN = True
     USE_IP_ADDRESS_THIS_RUN = False
-    # USE_PORT_THIS_RUN = True
-    USE_PORT_THIS_RUN = False
+    USE_PORT_THIS_RUN = True
+    # USE_PORT_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.1
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
-
-    FILTER_SHORT_ENTRIES = False
+    SAMPLING_PROPORTION = 0.01
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
@@ -461,21 +458,12 @@ if __name__ == '__main__':
     chief_directory = val_test_dir
     val_test_directory = val_test_dir
 
-    upperlayer_dir = os.path.join(root_path, 'datasets_upperlayer', dataset_name) 
-
-    if not FILTER_SHORT_ENTRIES: 
-        train_df_path = os.path.join(chief_directory, train_set_name + '.csv') 
-        val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
-        test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
-        SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
-    else: 
-        print("USE UPPER FILTER!!!")
-        train_df_path = os.path.join(upperlayer_dir, train_set_name + '.csv') 
-        val_df_path = os.path.join(upperlayer_dir, val_set_name + '.csv')
-        test_df_path = os.path.join(upperlayer_dir, test_set_name + '.csv')
+    train_df_path = os.path.join(chief_directory, train_set_name + '.csv') 
+    val_df_path = os.path.join(val_test_directory, val_set_name + '.csv')
+    test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
+    SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
 
     GLOBAL_CHIEF_SCHEMA = None
-
 
     if STRATIFIED_TRAIN_SET: 
         train_df = stratified_hybrid_sample_from_csv_stream(

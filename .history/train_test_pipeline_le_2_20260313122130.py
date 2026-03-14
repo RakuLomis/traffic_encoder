@@ -417,11 +417,11 @@ if __name__ == '__main__':
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.1
+    SAMPLING_PROPORTION = 0.05
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
-    FILTER_SHORT_ENTRIES = False
+    FILTER_SHORT_ENTRIES = True
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,

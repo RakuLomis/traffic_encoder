@@ -410,18 +410,18 @@ if __name__ == '__main__':
     USE_FLOW_FEATURES_THIS_RUN = False
     # USE_MAC_ADDRESS_THIS_RUN = True
     USE_MAC_ADDRESS_THIS_RUN = False
-    # USE_IP_ADDRESS_THIS_RUN = True
-    USE_IP_ADDRESS_THIS_RUN = False
+    USE_IP_ADDRESS_THIS_RUN = True
+    # USE_IP_ADDRESS_THIS_RUN = False
     # USE_PORT_THIS_RUN = True
     USE_PORT_THIS_RUN = False
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.1
+    SAMPLING_PROPORTION = 0.01
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
-    FILTER_SHORT_ENTRIES = False
+    FILTER_SHORT_ENTRIES = True
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
@@ -469,7 +469,6 @@ if __name__ == '__main__':
         test_df_path = os.path.join(val_test_directory, test_set_name + '.csv')
         SOURCE_CSV_PATH = os.path.join(root_path, 'datasets_consolidate', dataset_name + '.csv')
     else: 
-        print("USE UPPER FILTER!!!")
         train_df_path = os.path.join(upperlayer_dir, train_set_name + '.csv') 
         val_df_path = os.path.join(upperlayer_dir, val_set_name + '.csv')
         test_df_path = os.path.join(upperlayer_dir, test_set_name + '.csv')
