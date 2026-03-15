@@ -216,7 +216,15 @@ class PTGAMiniExpert(nn.Module):
         embedded_vectors = self.field_embedder(batch_dict)
         aligned_vectors = self._align_fused(embedded_vectors)
 
-        B = data.num_graphs
+        # Compatible with both PyG `Batch` and custom batched `Data`.
+        if hasattr(data, 'num_graphs'):
+            B = data.num_graphs
+        elif hasattr(data, 'y') and data.y is not None:
+            B = int(data.y.size(0))
+        elif hasattr(data, 'batch') and data.batch is not None and data.batch.numel() > 0:
+            B = int(data.batch.max().item()) + 1
+        else:
+            raise ValueError("Cannot infer batch size from input data.")
         device = next(self.parameters()).device
 
         node_feature_list = []
