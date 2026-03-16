@@ -1159,126 +1159,145 @@ def global_stratified_split(
     print("\n全局数据集分割步骤已成功完成！")
 
 def global_stratified_split_memory_optimized(
-    source_csv_path: str, 
-    output_dir: str, 
-    test_size: float = 0.1, 
+    source_csv_path: str,
+    output_dir: str,
+    test_size: float = 0.1,
     validation_size: float = 0.1,
-    chunk_size: int = 100000 # 每次处理的行数
+    chunk_size: int = 100000,
+    split_by_flow: bool = False,
+    flow_id_col: str = 'stream_id',
 ):
     """
-    【内存优化版】对一个超大的CSV文件进行全局的、分层的 train-validation-test 分割。
+    Memory-optimized global split.
+
+    - split_by_flow=False: stratified split by packet indices within each label.
+    - split_by_flow=True: split by flow ids within each label, then assign all
+      packets from the selected flows to each subset.
     """
-    print("="*60)
-    print("###   开始执行【内存优化版】的全局数据集分割   ###")
-    print("="*60)
-    
+    print('=' * 60)
+    print('### Start global split (memory optimized) ###')
+    print('=' * 60)
+
     os.makedirs(output_dir, exist_ok=True)
 
-    # # --- Pass 1: 扫描文件，只收集标签和行号 ---
-    # print(f"\n[Pass 1/3] 正在扫描 {source_csv_path} 以收集标签索引...")
-    # label_to_indices = defaultdict(list)
-    # header = None
-    # total_rows = 0
-    # with pd.read_csv(source_csv_path, dtype=str, usecols=['label'], chunksize=chunk_size) as reader:
-    #     for chunk in tqdm(reader, desc="Scanning labels"):
-    #         if header is None:
-    #             # 获取完整的表头，以便后续写入
-    #             full_header_df = pd.read_csv(source_csv_path, dtype=str, nrows=0)
-    #             header = full_header_df.columns.tolist()
-
-    #         for idx, label in chunk['label'].items():
-    #             label_to_indices[label].append(idx)
-    #         total_rows += len(chunk)
-            
-    # print(f" -> 扫描完成。共 {total_rows} 条记录，{len(label_to_indices)} 个唯一类别。")
-
-# --- Pass 1: 扫描文件，只收集标签和行号 ---
-    print(f"\n[Pass 1/3] 正在扫描 {source_csv_path} 以收集标签索引...")
+    print(f"\n[Pass 1/3] Scanning labels from {source_csv_path} ...")
     label_to_indices = defaultdict(list)
+    label_to_flow_indices = defaultdict(lambda: defaultdict(list))
     header = None
     total_rows = 0
-    valid_rows_processed = 0 # <-- [新增] 
-     
-    with pd.read_csv(source_csv_path, dtype=str, usecols=['label'], chunksize=chunk_size) as reader:
-        for chunk in tqdm(reader, desc="Scanning labels"):
+    valid_rows_processed = 0
+
+    use_cols = ['label', flow_id_col] if split_by_flow else ['label']
+    with pd.read_csv(source_csv_path, dtype=str, usecols=use_cols, chunksize=chunk_size) as reader:
+        for chunk in tqdm(reader, desc='Scanning labels'):
             if header is None:
-                # 获取完整的表头
                 full_header_df = pd.read_csv(source_csv_path, dtype=str, nrows=0)
                 header = full_header_df.columns.tolist()
                 if 'label' not in header:
-                    raise ValueError("错误：源CSV文件中未找到 'label' 列。")
+                    raise ValueError("Column 'label' not found in source CSV")
+                if split_by_flow and flow_id_col not in header:
+                    raise ValueError(f"Column '{flow_id_col}' not found in source CSV")
 
-            # [!! 核心修复 !!]
-            # 1. 找到那些 'label' 列的值 *不是* 'label' 的有效行
-            #    这会一次性过滤掉所有混入的表头行
             clean_chunk = chunk[chunk['label'] != 'label']
-            # 2. 只遍历“干净”的行
-            for idx, label in clean_chunk['label'].items():
-                label_to_indices[label].append(idx)
 
-            # 3. 更新统计
+            if split_by_flow:
+                clean_chunk = clean_chunk[clean_chunk[flow_id_col].notna()]
+                grouped = clean_chunk.groupby(['label', flow_id_col]).groups
+                for (label, flow_id), idxs in grouped.items():
+                    label_to_flow_indices[label][str(flow_id)].extend(list(idxs))
+            else:
+                for idx, label in clean_chunk['label'].items():
+                    label_to_indices[label].append(idx)
+
             valid_rows_processed += len(clean_chunk)
-            total_rows += len(chunk) # total_rows 仍然跟踪读取的总行数
+            total_rows += len(chunk)
 
-    # [修改] 更新打印信息
-    print(f" -> 扫描完成。共 {total_rows} 条记录被读取，其中 {valid_rows_processed} 条是有效数据。")
-    print(f" -> 发现 {len(label_to_indices)} 个唯一类别")
-          
-    # --- 在内存中，对【索引】进行分层抽样 ---
-    print("\n[Pass 2/3] 正在对索引进行分层抽样...")
+    print(f" -> Scan complete. rows_read={total_rows}, valid_rows={valid_rows_processed}")
+    if split_by_flow:
+        total_flows = sum(len(v) for v in label_to_flow_indices.values())
+        print(f" -> Labels={len(label_to_flow_indices)}, flows={total_flows}")
+    else:
+        print(f" -> Labels={len(label_to_indices)}")
+
+    print('\n[Pass 2/3] Splitting indices ...')
     train_indices, val_indices, test_indices = [], [], []
 
-    for label, indices in tqdm(label_to_indices.items(), desc="Splitting indices"):
-        # 第一次分割：分出测试集索引
-        try:
-            remaining_idx, test_idx = train_test_split(indices, test_size=test_size, random_state=42)
-        except ValueError: # 如果某个类别的样本太少，无法分割，则全部放入训练集
-            train_indices.extend(indices)
-            continue
-            
-        # 第二次分割：从剩余索引中分出验证集索引
-        val_split_ratio = validation_size / (1.0 - test_size)
-        try:
-            train_idx, val_idx = train_test_split(remaining_idx, test_size=val_split_ratio, random_state=42)
-        except ValueError:
-            train_indices.extend(remaining_idx)
+    if split_by_flow:
+        for _, flow_map in tqdm(label_to_flow_indices.items(), desc='Splitting flow ids'):
+            flow_ids = list(flow_map.keys())
+            if len(flow_ids) < 3:
+                for fid in flow_ids:
+                    train_indices.extend(flow_map[fid])
+                continue
+
+            try:
+                remaining_flow_ids, test_flow_ids = train_test_split(
+                    flow_ids, test_size=test_size, random_state=42
+                )
+            except ValueError:
+                for fid in flow_ids:
+                    train_indices.extend(flow_map[fid])
+                continue
+
+            val_split_ratio = validation_size / (1.0 - test_size)
+            try:
+                train_flow_ids, val_flow_ids = train_test_split(
+                    remaining_flow_ids, test_size=val_split_ratio, random_state=42
+                )
+            except ValueError:
+                train_flow_ids = remaining_flow_ids
+                val_flow_ids = []
+
+            for fid in train_flow_ids:
+                train_indices.extend(flow_map[fid])
+            for fid in val_flow_ids:
+                val_indices.extend(flow_map[fid])
+            for fid in test_flow_ids:
+                test_indices.extend(flow_map[fid])
+    else:
+        for _, indices in tqdm(label_to_indices.items(), desc='Splitting indices'):
+            try:
+                remaining_idx, test_idx = train_test_split(indices, test_size=test_size, random_state=42)
+            except ValueError:
+                train_indices.extend(indices)
+                continue
+
+            val_split_ratio = validation_size / (1.0 - test_size)
+            try:
+                train_idx, val_idx = train_test_split(remaining_idx, test_size=val_split_ratio, random_state=42)
+            except ValueError:
+                train_indices.extend(remaining_idx)
+                test_indices.extend(test_idx)
+                continue
+
+            train_indices.extend(train_idx)
+            val_indices.extend(val_idx)
             test_indices.extend(test_idx)
-            continue
 
-        train_indices.extend(train_idx)
-        val_indices.extend(val_idx)
-        test_indices.extend(test_idx)
-
-    # 将索引列表转换为集合，以获得O(1)的查找速度
     train_indices_set = set(train_indices)
     val_indices_set = set(val_indices)
     test_indices_set = set(test_indices)
 
-    print("\n分割完成！各数据集规模如下:")
-    print(f" - 训练集 (Train Set): {len(train_indices_set)} 条")
-    print(f" - 验证集 (Validation Set): {len(val_indices_set)} 条")
-    print(f" - 测试集 (Test Set): {len(test_indices_set)} 条")
+    print('\nSplit complete:')
+    print(f" - Train: {len(train_indices_set)}")
+    print(f" - Validation: {len(val_indices_set)}")
+    print(f" - Test: {len(test_indices_set)}")
 
-    # --- Pass 2: 逐块读取，并将数据写入对应的文件 ---
-    print(f"\n[Pass 3/3] 正在逐块读取并写入分割后的文件...")
-    
+    print('\n[Pass 3/3] Writing split files ...')
     train_path = os.path.join(output_dir, 'train_set.csv')
     val_path = os.path.join(output_dir, 'validation_set.csv')
     test_path = os.path.join(output_dir, 'test_set.csv')
 
-    # 首先，为三个输出文件写入表头
     pd.DataFrame(columns=header).to_csv(train_path, index=False)
     pd.DataFrame(columns=header).to_csv(val_path, index=False)
     pd.DataFrame(columns=header).to_csv(test_path, index=False)
-    
+
     with pd.read_csv(source_csv_path, dtype=str, chunksize=chunk_size) as reader:
-        for chunk in tqdm(reader, desc="Writing split files"):
-            # 根据索引，筛选出属于每个集合的行
+        for chunk in tqdm(reader, desc='Writing split files'):
             train_chunk = chunk[chunk.index.isin(train_indices_set)]
             val_chunk = chunk[chunk.index.isin(val_indices_set)]
             test_chunk = chunk[chunk.index.isin(test_indices_set)]
-            
-            # 以追加模式写入，不写表头
+
             if not train_chunk.empty:
                 train_chunk.to_csv(train_path, mode='a', header=False, index=False)
             if not val_chunk.empty:
@@ -1286,13 +1305,11 @@ def global_stratified_split_memory_optimized(
             if not test_chunk.empty:
                 test_chunk.to_csv(test_path, mode='a', header=False, index=False)
 
-    print(f"\n文件写入完成！")
-    print(f" - 训练集已保存到: {train_path}")
-    print(f" - 验证集已保存到: {val_path}")
-    print(f" - 测试集已保存到: {test_path}")
-    print("\n全局数据集分割步骤已成功完成！")
-
-
+    print('\nWrite complete:')
+    print(f' - {train_path}')
+    print(f' - {val_path}')
+    print(f' - {test_path}')
+    print('Global split done.')
 def augment_main_block(
     block_dir: str, 
     main_block_name: str, 
@@ -2750,3 +2767,77 @@ def stratified_aggressive_balancing(
     
     print(f"抽样成功：原始数据 {len(df)} 行 -> 抽样后 {len(final_df)} 行 (约 {n_avg * N_classes})。")
     return final_df
+def build_stream_id_from_five_tuple(
+    input_csv_path: str,
+    output_csv_path: str,
+    chunksize: int = 200000,
+    drop_tcp_stream: bool = True,
+) -> None:
+    """
+    Build a deterministic bidirectional flow id (`stream_id`) from five-tuple:
+    (ip.src, ip.dst, tcp.srcport, tcp.dstport, ip.proto).
+
+    This function processes large CSV files chunk-by-chunk and keeps a global
+    key->id map across chunks.
+    """
+    required_cols = ['ip.src', 'ip.dst', 'tcp.srcport', 'tcp.dstport', 'ip.proto']
+
+    header = pd.read_csv(input_csv_path, nrows=0)
+    missing = [c for c in required_cols if c not in header.columns]
+    if missing:
+        raise KeyError(f"Cannot build stream_id. Missing required columns: {missing}")
+
+    flow_to_id: Dict[str, int] = {}
+    next_id = 1
+    first_chunk = True
+    total_rows = 0
+
+    reader = pd.read_csv(
+        input_csv_path,
+        dtype=str,
+        chunksize=chunksize,
+        low_memory=False,
+    )
+
+    for chunk in tqdm(reader, desc="Building stream_id"):
+        src_ip = chunk['ip.src'].fillna('0').astype(str).str.lower().str.replace('0x', '', regex=False)
+        dst_ip = chunk['ip.dst'].fillna('0').astype(str).str.lower().str.replace('0x', '', regex=False)
+        src_port = chunk['tcp.srcport'].fillna('0').astype(str).str.lower().str.replace('0x', '', regex=False)
+        dst_port = chunk['tcp.dstport'].fillna('0').astype(str).str.lower().str.replace('0x', '', regex=False)
+        proto = chunk['ip.proto'].fillna('0').astype(str).str.lower().str.replace('0x', '', regex=False)
+
+        endpoint_a = src_ip + ':' + src_port
+        endpoint_b = dst_ip + ':' + dst_port
+        swap_mask = endpoint_a > endpoint_b
+
+        left = pd.Series(np.where(swap_mask, endpoint_b, endpoint_a), index=chunk.index)
+        right = pd.Series(np.where(swap_mask, endpoint_a, endpoint_b), index=chunk.index)
+        flow_keys = (proto + '|' + left + '|' + right).tolist()
+
+        stream_ids = []
+        for key in flow_keys:
+            sid = flow_to_id.get(key)
+            if sid is None:
+                sid = next_id
+                flow_to_id[key] = sid
+                next_id += 1
+            stream_ids.append(sid)
+
+        chunk['stream_id'] = stream_ids
+
+        if drop_tcp_stream and 'tcp.stream' in chunk.columns:
+            chunk.drop(columns=['tcp.stream'], inplace=True)
+
+        chunk.to_csv(
+            output_csv_path,
+            mode='w' if first_chunk else 'a',
+            header=first_chunk,
+            index=False,
+        )
+        first_chunk = False
+        total_rows += len(chunk)
+
+    print(
+        f"stream_id build complete. rows={total_rows}, "
+        f"unique_flows={len(flow_to_id)}, output={output_csv_path}"
+    )

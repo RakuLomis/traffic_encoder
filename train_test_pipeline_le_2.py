@@ -416,7 +416,7 @@ if __name__ == '__main__':
     STRATIFIED_TRAIN_SET = True
     # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.5
+    SAMPLING_PROPORTION = 0.1
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
@@ -591,10 +591,10 @@ if __name__ == '__main__':
             # 0. 检查刚性依赖字段
             # ======================
             has_ip_len = 'ip.len' in df.columns
-            has_tcp_stream = 'tcp.stream' in df.columns
+            has_stream_id = 'stream_id' in df.columns
 
-            if not (has_ip_len and has_tcp_stream):
-                print("   [警告] 缺少 'ip.len' 或 'tcp.stream'，无法计算任何 flow 特征。")
+            if not (has_ip_len and has_stream_id):
+                print("   [警告] 缺少 'ip.len' 或 'stream_id'，无法计算任何 flow 特征。")
                 # 这里不直接 raise，让外层统一决定是否中断训练
                 if is_train_set:
                     return {}, {}
@@ -607,8 +607,8 @@ if __name__ == '__main__':
             if 'ip.len_temp_dec' not in df.columns:
                 df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
 
-            if 'tcp.stream_temp_dec' not in df.columns:
-                df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+            if 'stream_id_temp_dec' not in df.columns:
+                df['stream_id_temp_dec'] = pd.to_numeric(df['stream_id'], errors='coerce').fillna(-1).astype(np.int64)
 
             # ======================
             # 2. 时间列处理（可选）
@@ -651,7 +651,7 @@ if __name__ == '__main__':
             maps = {}
 
             print("     -> Calculating base length/count features...")
-            grouped_len = df.groupby('tcp.stream_temp_dec')
+            grouped_len = df.groupby('stream_id_temp_dec')
 
             # 3.1 与时间无关的三类特征
             maps['flow_avg_len']   = grouped_len['ip.len_temp_dec'].mean()
@@ -663,7 +663,7 @@ if __name__ == '__main__':
             large_pkts = df[df['ip.len_temp_dec'] > LARGE_PKT_THRESHOLD]
             base_large_pkt_count = (
                 large_pkts
-                .groupby('tcp.stream_temp_dec')
+                .groupby('stream_id_temp_dec')
                 .size()
                 .reindex(maps['flow_pkt_count'].index, fill_value=0)
             )
@@ -677,16 +677,16 @@ if __name__ == '__main__':
                 print("     -> Calculating IAT & duration based features...")
 
                 # 4.1 计算 IAT（按流排序）
-                df_sorted = df.sort_values(by=['tcp.stream_temp_dec', time_col_used]).copy()
+                df_sorted = df.sort_values(by=['stream_id_temp_dec', time_col_used]).copy()
                 df_sorted['iat_temp'] = (
                     df_sorted
-                    .groupby('tcp.stream_temp_dec')[time_col_used]
+                    .groupby('stream_id_temp_dec')[time_col_used]
                     .diff()
                     .fillna(0)
                 )
 
                 # 对 IAT 特征单独分组（基于排序后的 df）
-                grouped_time = df_sorted.groupby('tcp.stream_temp_dec')
+                grouped_time = df_sorted.groupby('stream_id_temp_dec')
 
                 maps['flow_avg_iat'] = grouped_time['iat_temp'].mean()
                 maps['flow_std_iat'] = grouped_time['iat_temp'].std().fillna(0)
@@ -744,7 +744,7 @@ if __name__ == '__main__':
             # 一个特征都没算出来，直接中断
                 raise RuntimeError(
                     "[致命] 当前数据集缺少计算流特征所需的基础字段 "
-                    "(至少需要 'ip.len' 与 'tcp.stream'，以及可选的时间列)，"
+                    "(至少需要 'ip.len' 与 'stream_id'，以及可选的时间列)，"
                     "无法启用 USE_FLOW_FEATURES_THIS_RUN，请关闭或更换数据集。"
                 )
 
@@ -768,12 +768,12 @@ if __name__ == '__main__':
             for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
                 if df.empty: continue
                 print(f"   -> Processing {df_name} set...")
-                if 'tcp.stream_temp_dec' not in df.columns:
-                    df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+                if 'stream_id_temp_dec' not in df.columns:
+                    df['stream_id_temp_dec'] = pd.to_numeric(df['stream_id'], errors='coerce').fillna(-1).astype(np.int64)
                 
                 for f_name in flow_feature_names:
                     # 使用 .map(train_maps) 和 .fillna(global_defaults)
-                    df[f_name] = df['tcp.stream_temp_dec'].map(train_maps[f_name]).fillna(global_defaults[f_name])
+                    df[f_name] = df['stream_id_temp_dec'].map(train_maps[f_name]).fillna(global_defaults[f_name])
 
         else:
             # --- 方案B: 黄金标准诊断 (F1=0.84 失败的实验) ---
@@ -782,7 +782,7 @@ if __name__ == '__main__':
             # 1. 加载源 CSV
             print(f" -> [Pass 0] Loading *required columns* from source file: {SOURCE_CSV_PATH}")
             try:
-                use_cols = ['tcp.stream', 'ip.len', 'tcp.options.timestamp']
+                use_cols = ['stream_id', 'ip.len', 'tcp.options.timestamp']
                 stats_df = pd.read_csv(SOURCE_CSV_PATH, usecols=use_cols, dtype=str)
             except Exception as e:
                 print(f"!!! 致命错误: 无法加载源CSV文件 '{SOURCE_CSV_PATH}'. {e}"); exit()
@@ -801,12 +801,12 @@ if __name__ == '__main__':
             for df_name, df in [('Train', train_df), ('Validation', val_df_aligned), ('Test', test_df_aligned)]:
                 if df.empty: continue
                 print(f"   -> Processing {df_name} set...")
-                if 'tcp.stream_temp_dec' not in df.columns:
-                    df['tcp.stream_temp_dec'] = df['tcp.stream'].apply(robust_hex_to_int).astype(np.int32)
+                if 'stream_id_temp_dec' not in df.columns:
+                    df['stream_id_temp_dec'] = pd.to_numeric(df['stream_id'], errors='coerce').fillna(-1).astype(np.int64)
 
                 # for f_name in flow_feature_names:
                 #     # 使用 .map(global_true_maps) 和 .fillna(0)
-                #     df[f_name] = df['tcp.stream_temp_dec'].map(global_true_maps[f_name]).fillna(0)
+                #     df[f_name] = df['stream_id_temp_dec'].map(global_true_maps[f_name]).fillna(0)
 
 
         # d) 【!! 关键清理 !!】删除所有临时列
@@ -814,7 +814,7 @@ if __name__ == '__main__':
         for df in [train_df, val_df_aligned, test_df_aligned]:
             if df is None or df.empty:
                 continue
-            for tmp_col in ['ip.len_temp_dec', 'tcp.stream_temp_dec', 'time_temp_dec', 'iat_temp']:
+            for tmp_col in ['ip.len_temp_dec', 'stream_id_temp_dec', 'time_temp_dec', 'iat_temp']:
                 if tmp_col in df.columns: 
                     df.drop(columns=[tmp_col], inplace=True)
         
