@@ -2691,6 +2691,138 @@ def stratified_hybrid_sample_from_csv_stream(
     sampled_df = sampled_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
     return sampled_df
 
+
+def stratified_flow_sample_from_csv_stream(
+    csv_path: str,
+    label_column: str,
+    flow_id_column: str,
+    proportion: float,
+    chunksize: int = 100_000,
+    random_state: Optional[int] = 42,
+    read_csv_kwargs: Optional[dict] = None,
+    min_flows_per_class: int = 1,
+) -> pd.DataFrame:
+    """
+    Streamingly sample by flow (not packet):
+    1) First pass: collect unique flow ids for each class.
+    2) For each class, sample a fixed proportion of flows.
+    3) Second pass: keep all packets that belong to sampled flows.
+    """
+    if read_csv_kwargs is None:
+        read_csv_kwargs = {}
+
+    if not (0.0 < proportion <= 1.0):
+        raise ValueError("proportion must be in (0.0, 1.0].")
+    if min_flows_per_class < 0:
+        raise ValueError("min_flows_per_class must be >= 0.")
+
+    print(
+        f"Start flow-level stratified sampling: proportion={proportion:.4f}, "
+        f"label_column='{label_column}', flow_id_column='{flow_id_column}'"
+    )
+    rng = np.random.default_rng(random_state)
+
+    label_to_flows: Dict[str, Set[str]] = defaultdict(set)
+    columns_ref: Optional[List[str]] = None
+    total_rows = 0
+    dropped_rows_pass1 = 0
+
+    print("Pass 1/2: collecting unique flows per class...")
+    for chunk in tqdm(pd.read_csv(csv_path, chunksize=chunksize, **read_csv_kwargs), desc="FlowScan-1"):
+        if columns_ref is None:
+            columns_ref = list(chunk.columns)
+            if label_column not in columns_ref:
+                raise KeyError(f"Column '{label_column}' not found in CSV.")
+            if flow_id_column not in columns_ref:
+                raise KeyError(f"Column '{flow_id_column}' not found in CSV.")
+
+        total_rows += len(chunk)
+        clean = chunk[chunk[label_column].notna() & chunk[flow_id_column].notna()]
+        dropped_rows_pass1 += (len(chunk) - len(clean))
+        if clean.empty:
+            continue
+
+        pair_df = clean[[label_column, flow_id_column]].copy()
+        pair_df[label_column] = pair_df[label_column].astype(str)
+        pair_df[flow_id_column] = pair_df[flow_id_column].astype(str)
+        pair_df = pair_df.drop_duplicates(subset=[label_column, flow_id_column])
+
+        for label, group in pair_df.groupby(label_column, sort=False):
+            label_to_flows[label].update(group[flow_id_column].tolist())
+
+    if not label_to_flows:
+        print("Warning: no valid (label, flow_id) rows were found. Return empty DataFrame.")
+        return pd.DataFrame(columns=columns_ref if columns_ref is not None else [])
+
+    sampled_flows_per_class: Dict[str, Set[str]] = {}
+    sampled_flow_total = 0
+    for label, flow_set in label_to_flows.items():
+        flow_list = list(flow_set)
+        n_flows = len(flow_list)
+        target = int(round(n_flows * proportion))
+        if proportion > 0 and n_flows > 0:
+            target = max(target, min_flows_per_class)
+        target = min(target, n_flows)
+
+        if target <= 0:
+            sampled = set()
+        elif target == n_flows:
+            sampled = set(flow_list)
+        else:
+            sampled = set(rng.choice(flow_list, size=target, replace=False).tolist())
+
+        sampled_flows_per_class[label] = sampled
+        sampled_flow_total += len(sampled)
+
+    print(
+        f"Pass 1 done: total_rows={total_rows}, dropped_rows={dropped_rows_pass1}, "
+        f"classes={len(sampled_flows_per_class)}, sampled_flows={sampled_flow_total}"
+    )
+
+    sampled_chunks: List[pd.DataFrame] = []
+    kept_rows = 0
+    dropped_rows_pass2 = 0
+
+    print("Pass 2/2: collecting packets from sampled flows...")
+    for chunk in tqdm(pd.read_csv(csv_path, chunksize=chunksize, **read_csv_kwargs), desc="FlowScan-2"):
+        if columns_ref is not None:
+            chunk = chunk.reindex(columns=columns_ref)
+
+        clean = chunk[chunk[label_column].notna() & chunk[flow_id_column].notna()].copy()
+        dropped_rows_pass2 += (len(chunk) - len(clean))
+        if clean.empty:
+            continue
+
+        clean[label_column] = clean[label_column].astype(str)
+        clean[flow_id_column] = clean[flow_id_column].astype(str)
+
+        selected_parts: List[pd.DataFrame] = []
+        for label, group in clean.groupby(label_column, sort=False):
+            selected_flows = sampled_flows_per_class.get(label)
+            if not selected_flows:
+                continue
+            sel = group[group[flow_id_column].isin(selected_flows)]
+            if not sel.empty:
+                selected_parts.append(sel)
+
+        if selected_parts:
+            kept_chunk = pd.concat(selected_parts, ignore_index=False)
+            kept_rows += len(kept_chunk)
+            sampled_chunks.append(kept_chunk)
+
+    if not sampled_chunks:
+        print("Warning: no rows matched sampled flows. Return empty DataFrame.")
+        return pd.DataFrame(columns=columns_ref if columns_ref is not None else [])
+
+    sampled_df = pd.concat(sampled_chunks, ignore_index=True)
+    sampled_df = sampled_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
+
+    print(
+        f"Flow sampling done: original_rows={total_rows}, sampled_rows={len(sampled_df)}, "
+        f"dropped_rows_pass2={dropped_rows_pass2}, kept_rows_before_shuffle={kept_rows}"
+    )
+    return sampled_df
+
 def stratified_aggressive_balancing(
     df: pd.DataFrame, 
     label_column: str, 
