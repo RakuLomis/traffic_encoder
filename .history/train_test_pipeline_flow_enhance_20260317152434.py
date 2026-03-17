@@ -510,7 +510,6 @@ if __name__ == '__main__':
     USE_PORT_THIS_RUN = False
     ENABLE_FLOW_AGG_EVAL = True
     FLOW_AGG_USE_PROB_MEAN = True
-    ENABLE_DIRECTIONAL_FLOW_CONTEXT = True
     # STRATIFIED_TRAIN_SET = True
     STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
@@ -523,8 +522,8 @@ if __name__ == '__main__':
     MAX_PACKETS_PER_FLOW_EVAL = MAX_PACKETS_PER_FLOW_TRAIN
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     FILTER_SHORT_ENTRIES = False
 
@@ -938,95 +937,11 @@ if __name__ == '__main__':
                 defaults[f_name] = default_val
             return defaults
 
-        def add_flow_directional_context_features(
-            df: pd.DataFrame,
-            split_name: str,
-        ) -> List[str]:
-            """
-            Add per-packet flow-context features:
-            - direction feature (forward/reverse sign)
-            - local iat feature
-            """
-            if df is None or df.empty:
-                return []
-            if 'stream_id' not in df.columns or 'ip.len' not in df.columns:
-                print(f"   -> [{split_name}] Skip directional context: missing stream_id/ip.len.")
-                return []
-
-            if 'stream_id_temp_dec' not in df.columns:
-                df['stream_id_temp_dec'] = pd.to_numeric(df['stream_id'], errors='coerce').fillna(-1).astype(np.int64)
-            if 'ip.len_temp_dec' not in df.columns:
-                df['ip.len_temp_dec'] = df['ip.len'].apply(robust_hex_to_int).astype(np.float32)
-
-            if 'time_temp_dec' in df.columns:
-                time_col_used = 'time_temp_dec'
-            else:
-                time_col_used = None
-                for cand in ['tcp.options.timestamp', 'frame.time_relative', 'frame.time_epoch']:
-                    if cand in df.columns:
-                        if cand == 'tcp.options.timestamp':
-                            df['time_temp_dec'] = df[cand].apply(robust_timestamp_to_tsval).astype(np.int64)
-                        else:
-                            df['time_temp_dec'] = pd.to_numeric(df[cand], errors='coerce').fillna(0).astype(np.float64)
-                        time_col_used = 'time_temp_dec'
-                        break
-
-            sort_cols = ['stream_id_temp_dec']
-            if time_col_used is not None:
-                sort_cols.append(time_col_used)
-
-            base_cols = ['stream_id_temp_dec', 'ip.len_temp_dec']
-            if time_col_used is not None:
-                base_cols.append(time_col_used)
-            if 'ip.src' in df.columns and 'ip.dst' in df.columns:
-                base_cols.extend(['ip.src', 'ip.dst'])
-            elif 'tcp.srcport' in df.columns and 'tcp.dstport' in df.columns:
-                base_cols.extend(['tcp.srcport', 'tcp.dstport'])
-
-            work = df[base_cols].copy()
-            work['_orig_idx'] = np.arange(len(work), dtype=np.int64)
-            work = work.sort_values(sort_cols, kind='mergesort')
-            grouped = work.groupby('stream_id_temp_dec', sort=False)
-
-            # Direction sign: +1 means same direction as first packet of this flow.
-            if 'ip.src' in work.columns and 'ip.dst' in work.columns:
-                src = work['ip.src'].fillna('').astype(str)
-                dst = work['ip.dst'].fillna('').astype(str)
-                first_src = grouped['ip.src'].transform('first').fillna('').astype(str)
-                first_dst = grouped['ip.dst'].transform('first').fillna('').astype(str)
-                work['flow_dir_sign'] = np.where((src == first_src) & (dst == first_dst), 1.0, -1.0).astype(np.float32)
-            elif 'tcp.srcport' in work.columns and 'tcp.dstport' in work.columns:
-                src = work['tcp.srcport'].fillna('').astype(str)
-                dst = work['tcp.dstport'].fillna('').astype(str)
-                first_src = grouped['tcp.srcport'].transform('first').fillna('').astype(str)
-                first_dst = grouped['tcp.dstport'].transform('first').fillna('').astype(str)
-                work['flow_dir_sign'] = np.where((src == first_src) & (dst == first_dst), 1.0, -1.0).astype(np.float32)
-            else:
-                work['flow_dir_sign'] = np.zeros(len(work), dtype=np.float32)
-
-            feature_names = ['flow_dir_sign']
-
-            if time_col_used is not None:
-                work['flow_iat_local'] = grouped[time_col_used].diff().fillna(0).astype(np.float32)
-                feature_names.append('flow_iat_local')
-            else:
-                work['flow_iat_local'] = np.zeros(len(work), dtype=np.float32)
-                feature_names.append('flow_iat_local')
-
-            work = work.sort_values('_orig_idx')
-            for f_name in feature_names:
-                df[f_name] = work[f_name].to_numpy()
-
-            print(f"   -> [{split_name}] Added directional context features: {feature_names}")
-            return feature_names
-
         split_full_and_target = [
             ('Train', train_df_full_for_flow_stats, train_df, train_maps, train_defaults),
             ('Validation', val_df_full_for_flow_stats, val_df_aligned, None, None),
             ('Test', test_df_full_for_flow_stats, test_df_aligned, None, None),
         ]
-
-        context_feature_names: List[str] = []
 
         for split_name, full_df, target_df, known_maps, known_defaults in split_full_and_target:
             if target_df is None or target_df.empty:
@@ -1049,17 +964,6 @@ if __name__ == '__main__':
                     target_df[f_name] = target_df['stream_id_temp_dec'].map(feature_map).fillna(
                         split_defaults.get(f_name, 0.0)
                     )
-
-            if ENABLE_DIRECTIONAL_FLOW_CONTEXT:
-                added_features = add_flow_directional_context_features(
-                    target_df,
-                    split_name=split_name,
-                )
-                if added_features:
-                    context_feature_names = list(dict.fromkeys(context_feature_names + added_features))
-
-        if ENABLE_DIRECTIONAL_FLOW_CONTEXT and context_feature_names:
-            flow_feature_names = list(dict.fromkeys(flow_feature_names + context_feature_names))
 
         del train_df_full_for_flow_stats, val_df_full_for_flow_stats, test_df_full_for_flow_stats
         gc.collect()
