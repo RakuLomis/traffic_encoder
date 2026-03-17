@@ -1166,6 +1166,8 @@ def global_stratified_split_memory_optimized(
     chunk_size: int = 100000,
     split_by_flow: bool = False,
     flow_id_col: str = 'stream_id',
+    stratify_by_flow_length: bool = False,
+    flow_length_bins: int = 4,
 ):
     """
     Memory-optimized global split.
@@ -1173,6 +1175,9 @@ def global_stratified_split_memory_optimized(
     - split_by_flow=False: stratified split by packet indices within each label.
     - split_by_flow=True: split by flow ids within each label, then assign all
       packets from the selected flows to each subset.
+    - stratify_by_flow_length=True (only valid when split_by_flow=True):
+      use (label, flow_length_bin) style stratification inside each label to
+      better match flow-length distributions across train/val/test.
     """
     print('=' * 60)
     print('### Start global split (memory optimized) ###')
@@ -1183,6 +1188,7 @@ def global_stratified_split_memory_optimized(
     print(f"\n[Pass 1/3] Scanning labels from {source_csv_path} ...")
     label_to_indices = defaultdict(list)
     label_to_flow_indices = defaultdict(lambda: defaultdict(list))
+    label_to_flow_pkt_counts = defaultdict(lambda: defaultdict(int))
     header = None
     total_rows = 0
     valid_rows_processed = 0
@@ -1205,6 +1211,7 @@ def global_stratified_split_memory_optimized(
                 grouped = clean_chunk.groupby(['label', flow_id_col]).groups
                 for (label, flow_id), idxs in grouped.items():
                     label_to_flow_indices[label][str(flow_id)].extend(list(idxs))
+                    label_to_flow_pkt_counts[label][str(flow_id)] += int(len(idxs))
             else:
                 for idx, label in clean_chunk['label'].items():
                     label_to_indices[label].append(idx)
@@ -1223,30 +1230,76 @@ def global_stratified_split_memory_optimized(
     train_indices, val_indices, test_indices = [], [], []
 
     if split_by_flow:
-        for _, flow_map in tqdm(label_to_flow_indices.items(), desc='Splitting flow ids'):
+        for label, flow_map in tqdm(label_to_flow_indices.items(), desc='Splitting flow ids'):
             flow_ids = list(flow_map.keys())
             if len(flow_ids) < 3:
                 for fid in flow_ids:
                     train_indices.extend(flow_map[fid])
                 continue
 
-            try:
-                remaining_flow_ids, test_flow_ids = train_test_split(
-                    flow_ids, test_size=test_size, random_state=42
-                )
-            except ValueError:
-                for fid in flow_ids:
-                    train_indices.extend(flow_map[fid])
-                continue
+            train_flow_ids, val_flow_ids, test_flow_ids = None, None, None
 
-            val_split_ratio = validation_size / (1.0 - test_size)
-            try:
-                train_flow_ids, val_flow_ids = train_test_split(
-                    remaining_flow_ids, test_size=val_split_ratio, random_state=42
+            if stratify_by_flow_length:
+                # Build packet-count array for each flow.
+                pkt_counts = np.array(
+                    [label_to_flow_pkt_counts[label].get(fid, len(flow_map[fid])) for fid in flow_ids],
+                    dtype=np.int64
                 )
-            except ValueError:
-                train_flow_ids = remaining_flow_ids
-                val_flow_ids = []
+
+                # Try progressively fewer bins if stratified split is infeasible.
+                max_bins = max(1, min(int(flow_length_bins), len(flow_ids)))
+                for n_bins in range(max_bins, 0, -1):
+                    try:
+                        # qcut with duplicates='drop' can reduce bin count automatically.
+                        flow_bins = pd.qcut(
+                            pkt_counts,
+                            q=n_bins,
+                            labels=False,
+                            duplicates='drop',
+                        )
+                    except ValueError:
+                        continue
+
+                    # If all flows collapse into one bin, stratification is not useful.
+                    if flow_bins is None or len(set(flow_bins.tolist())) < 2:
+                        continue
+
+                    try:
+                        rem_ids, test_flow_ids, rem_bins, _ = train_test_split(
+                            flow_ids, flow_bins, test_size=test_size, random_state=42, stratify=flow_bins
+                        )
+                    except ValueError:
+                        continue
+
+                    val_split_ratio = validation_size / (1.0 - test_size)
+                    try:
+                        train_flow_ids, val_flow_ids = train_test_split(
+                            rem_ids, test_size=val_split_ratio, random_state=42, stratify=rem_bins
+                        )
+                        break
+                    except ValueError:
+                        train_flow_ids, val_flow_ids = rem_ids, []
+                        break
+
+            # Fallback to non-stratified-by-length split.
+            if train_flow_ids is None or val_flow_ids is None or test_flow_ids is None:
+                try:
+                    remaining_flow_ids, test_flow_ids = train_test_split(
+                        flow_ids, test_size=test_size, random_state=42
+                    )
+                except ValueError:
+                    for fid in flow_ids:
+                        train_indices.extend(flow_map[fid])
+                    continue
+
+                val_split_ratio = validation_size / (1.0 - test_size)
+                try:
+                    train_flow_ids, val_flow_ids = train_test_split(
+                        remaining_flow_ids, test_size=val_split_ratio, random_state=42
+                    )
+                except ValueError:
+                    train_flow_ids = remaining_flow_ids
+                    val_flow_ids = []
 
             for fid in train_flow_ids:
                 train_indices.extend(flow_map[fid])
@@ -2701,6 +2754,8 @@ def stratified_flow_sample_from_csv_stream(
     random_state: Optional[int] = 42,
     read_csv_kwargs: Optional[dict] = None,
     min_flows_per_class: int = 1,
+    prefer_long_flows: bool = False,
+    long_flow_priority_ratio: float = 0.5,
 ) -> pd.DataFrame:
     """
     Streamingly sample by flow (not packet):
@@ -2715,19 +2770,23 @@ def stratified_flow_sample_from_csv_stream(
         raise ValueError("proportion must be in (0.0, 1.0].")
     if min_flows_per_class < 0:
         raise ValueError("min_flows_per_class must be >= 0.")
+    if not (0.0 <= long_flow_priority_ratio <= 1.0):
+        raise ValueError("long_flow_priority_ratio must be in [0.0, 1.0].")
 
     print(
         f"Start flow-level stratified sampling: proportion={proportion:.4f}, "
-        f"label_column='{label_column}', flow_id_column='{flow_id_column}'"
+        f"label_column='{label_column}', flow_id_column='{flow_id_column}', "
+        f"prefer_long_flows={prefer_long_flows}, long_flow_priority_ratio={long_flow_priority_ratio:.2f}"
     )
     rng = np.random.default_rng(random_state)
 
-    label_to_flows: Dict[str, Set[str]] = defaultdict(set)
+    # label -> flow_id -> packet_count
+    label_to_flow_counts: Dict[str, Dict[str, int]] = defaultdict(dict)
     columns_ref: Optional[List[str]] = None
     total_rows = 0
     dropped_rows_pass1 = 0
 
-    print("Pass 1/2: collecting unique flows per class...")
+    print("Pass 1/2: collecting flow packet counts per class...")
     for chunk in tqdm(pd.read_csv(csv_path, chunksize=chunksize, **read_csv_kwargs), desc="FlowScan-1"):
         if columns_ref is None:
             columns_ref = list(chunk.columns)
@@ -2745,19 +2804,21 @@ def stratified_flow_sample_from_csv_stream(
         pair_df = clean[[label_column, flow_id_column]].copy()
         pair_df[label_column] = pair_df[label_column].astype(str)
         pair_df[flow_id_column] = pair_df[flow_id_column].astype(str)
-        pair_df = pair_df.drop_duplicates(subset=[label_column, flow_id_column])
+        pair_counts = pair_df.groupby([label_column, flow_id_column], sort=False).size()
+        for (label, flow_id), cnt in pair_counts.items():
+            flow_map = label_to_flow_counts[label]
+            flow_map[flow_id] = int(flow_map.get(flow_id, 0) + int(cnt))
 
-        for label, group in pair_df.groupby(label_column, sort=False):
-            label_to_flows[label].update(group[flow_id_column].tolist())
-
-    if not label_to_flows:
+    if not label_to_flow_counts:
         print("Warning: no valid (label, flow_id) rows were found. Return empty DataFrame.")
         return pd.DataFrame(columns=columns_ref if columns_ref is not None else [])
 
     sampled_flows_per_class: Dict[str, Set[str]] = {}
     sampled_flow_total = 0
-    for label, flow_set in label_to_flows.items():
-        flow_list = list(flow_set)
+    for label, flow_count_map in label_to_flow_counts.items():
+        # sorted list of (flow_id, packet_count), high packet count first
+        flow_items = sorted(flow_count_map.items(), key=lambda x: x[1], reverse=True)
+        flow_list = [fid for fid, _ in flow_items]
         n_flows = len(flow_list)
         target = int(round(n_flows * proportion))
         if proportion > 0 and n_flows > 0:
@@ -2769,7 +2830,31 @@ def stratified_flow_sample_from_csv_stream(
         elif target == n_flows:
             sampled = set(flow_list)
         else:
-            sampled = set(rng.choice(flow_list, size=target, replace=False).tolist())
+            if prefer_long_flows and target > 0:
+                # Define long-flow pool as top half flows by packet count.
+                long_pool_size = max(1, int(np.ceil(n_flows * 0.5)))
+                long_pool = flow_list[:long_pool_size]
+                short_pool = flow_list[long_pool_size:]
+
+                # At least this many sampled flows come from long-flow pool.
+                target_from_long = int(np.ceil(target * long_flow_priority_ratio))
+                target_from_long = min(target_from_long, target, len(long_pool))
+
+                chosen_long = []
+                if target_from_long > 0:
+                    chosen_long = rng.choice(long_pool, size=target_from_long, replace=False).tolist()
+
+                remaining = target - len(chosen_long)
+                chosen_rest = []
+                if remaining > 0:
+                    remaining_candidates = [fid for fid in short_pool if fid not in set(chosen_long)]
+                    if len(remaining_candidates) < remaining:
+                        remaining_candidates = [fid for fid in flow_list if fid not in set(chosen_long)]
+                    chosen_rest = rng.choice(remaining_candidates, size=remaining, replace=False).tolist()
+
+                sampled = set(chosen_long + chosen_rest)
+            else:
+                sampled = set(rng.choice(flow_list, size=target, replace=False).tolist())
 
         sampled_flows_per_class[label] = sampled
         sampled_flow_total += len(sampled)

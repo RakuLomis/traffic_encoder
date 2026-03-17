@@ -405,7 +405,7 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = True
     # USE_FLOW_FEATURES_THIS_RUN = False
     USE_MAC_ADDRESS_THIS_RUN = True
     # USE_MAC_ADDRESS_THIS_RUN = False
@@ -413,15 +413,14 @@ if __name__ == '__main__':
     # USE_IP_ADDRESS_THIS_RUN = False
     USE_PORT_THIS_RUN = True
     # USE_PORT_THIS_RUN = False
-    # STRATIFIED_TRAIN_SET = True
-    STRATIFIED_TRAIN_SET = False
-    STRATIFIED_VAL_TEST_SET = False
-    # STRATIFIED_VAL_TEST_SET = True
+    STRATIFIED_TRAIN_SET = True
+    # STRATIFIED_TRAIN_SET = False
+    STRATIFIED_VAL_TEST_SET = True
     SAMPLING_PROPORTION = 0.5
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
     MAX_PACKETS_PER_FLOW_TRAIN = 256
-    MAX_PACKETS_PER_FLOW_EVAL = 256
+    MAX_PACKETS_PER_FLOW_EVAL = None
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
     ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']

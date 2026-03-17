@@ -419,6 +419,9 @@ if __name__ == '__main__':
     STRATIFIED_VAL_TEST_SET = True
     SAMPLING_PROPORTION = 0.05
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
+    MIN_FLOWS_PER_CLASS = 5
+    PREFER_LONG_FLOWS = True
+    LONG_FLOW_PRIORITY_RATIO = 0.5
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
@@ -522,7 +525,9 @@ if __name__ == '__main__':
                 proportion=SAMPLING_PROPORTION,
                 chunksize=200000,
                 random_state=SEED,
-                min_flows_per_class=1,
+                min_flows_per_class=MIN_FLOWS_PER_CLASS,
+                prefer_long_flows=PREFER_LONG_FLOWS,
+                long_flow_priority_ratio=LONG_FLOW_PRIORITY_RATIO,
                 read_csv_kwargs={
                     "dtype": str,
                     "low_memory": False,

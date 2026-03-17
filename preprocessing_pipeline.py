@@ -91,6 +91,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                         paths['split_dir'],
                         split_by_flow=True,
                         flow_id_col='stream_id',
+                        stratify_by_flow_length=True,
+                        flow_length_bins=4,
                     )
 
                     print("\n  -> Sub-step 3.2: Field block truncation")
@@ -117,6 +119,8 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                         paths['split_dir'],
                         split_by_flow=True,
                         flow_id_col='stream_id',
+                        stratify_by_flow_length=True,
+                        flow_length_bins=4,
                     )
 
             print(" -> Step 3 done.")

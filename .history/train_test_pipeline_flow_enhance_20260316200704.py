@@ -405,27 +405,26 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
     USE_MAC_ADDRESS_THIS_RUN = True
     # USE_MAC_ADDRESS_THIS_RUN = False
     USE_IP_ADDRESS_THIS_RUN = True
     # USE_IP_ADDRESS_THIS_RUN = False
     USE_PORT_THIS_RUN = True
     # USE_PORT_THIS_RUN = False
-    # STRATIFIED_TRAIN_SET = True
-    STRATIFIED_TRAIN_SET = False
-    STRATIFIED_VAL_TEST_SET = False
-    # STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.5
+    STRATIFIED_TRAIN_SET = True
+    # STRATIFIED_TRAIN_SET = False
+    STRATIFIED_VAL_TEST_SET = True
+    SAMPLING_PROPORTION = 0.05
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
     MAX_PACKETS_PER_FLOW_TRAIN = 256
-    MAX_PACKETS_PER_FLOW_EVAL = 256
+    MAX_PACKETS_PER_FLOW_EVAL = None
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
-    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     FILTER_SHORT_ENTRIES = False
 
@@ -447,10 +446,10 @@ if __name__ == '__main__':
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
-    # dataset_name = 'dataset_29_d1' 
+    dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
-    dataset_name = 'cstnet_tls_1.3'
+    # dataset_name = 'cstnet_tls_1.3'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
