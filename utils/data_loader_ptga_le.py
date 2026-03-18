@@ -246,6 +246,7 @@ class GNNTrafficDataset(Dataset):
                 tsval_hex = s[4:12]
                 return int(tsval_hex, 16)
             except (ValueError, TypeError): return 0
+
         processed_data_dict = {}
         
         # ?
@@ -336,7 +337,7 @@ class GNNTrafficDataset(Dataset):
                         values = values * (1 + noise)
 
                     processed_data_dict[field_name] = values.astype(np.float32)
-            
+
             else:
                  print(f"{field_name}: {field_type}")
             
