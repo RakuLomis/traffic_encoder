@@ -180,7 +180,6 @@ def train_one_epoch(
     flow_agg_method: str = 'mean_logits',
     flow_loss_use_packet_aux: bool = True,
     flow_packet_aux_weight: float = 0.1,
-    collect_dual_level_metrics: bool = False,
 ) -> (Dict, torch.Tensor): # type: ignore 
     """
     Run one training epoch for the HierarchicalMoE model.
@@ -191,14 +190,8 @@ def train_one_epoch(
     running_loss = 0.0
     running_items = 0
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
-    packet_confusion_matrix = (
-        torch.zeros(num_classes, num_classes, dtype=torch.long)
-        if collect_dual_level_metrics else None
-    )
-    flow_confusion_matrix = (
-        torch.zeros(num_classes, num_classes, dtype=torch.long)
-        if collect_dual_level_metrics else None
-    )
+    packet_confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
+    flow_confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
     
      
      
@@ -302,30 +295,30 @@ def train_one_epoch(
 
          
          
-        if collect_dual_level_metrics:
-            # Optional dual-level metrics (adds overhead).
-            _, packet_pred = torch.max(outputs.data, 1)
-            packet_labels_cpu = labels.detach().cpu()
-            packet_pred_cpu = packet_pred.detach().cpu()
-            for t, p in zip(packet_labels_cpu.view(-1), packet_pred_cpu.view(-1)):
-                if t < num_classes and p < num_classes:
-                    packet_confusion_matrix[t.long(), p.long()] += 1
+        # Always track packet-level metrics for analysis.
+        _, packet_pred = torch.max(outputs.data, 1)
+        packet_labels_cpu = labels.detach().cpu()
+        packet_pred_cpu = packet_pred.detach().cpu()
+        for t, p in zip(packet_labels_cpu.view(-1), packet_pred_cpu.view(-1)):
+            if t < num_classes and p < num_classes:
+                packet_confusion_matrix[t.long(), p.long()] += 1
 
-            if flow_ids is not None:
-                flow_logits_m, flow_labels_m, _ = aggregate_logits_by_flow_tensor(
-                    packet_logits=outputs.detach(),
-                    packet_labels=labels.detach(),
-                    flow_ids=flow_ids.detach(),
-                    num_classes=num_classes,
-                    method=flow_agg_method,
-                )
-                if flow_logits_m.size(0) > 0:
-                    _, flow_pred_m = torch.max(flow_logits_m.data, 1)
-                    flow_labels_cpu_m = flow_labels_m.detach().cpu()
-                    flow_pred_cpu_m = flow_pred_m.detach().cpu()
-                    for t, p in zip(flow_labels_cpu_m.view(-1), flow_pred_cpu_m.view(-1)):
-                        if t < num_classes and p < num_classes:
-                            flow_confusion_matrix[t.long(), p.long()] += 1
+        # Track flow-level metrics when flow_ids are available.
+        if flow_ids is not None:
+            flow_logits_m, flow_labels_m, _ = aggregate_logits_by_flow_tensor(
+                packet_logits=outputs.detach(),
+                packet_labels=labels.detach(),
+                flow_ids=flow_ids.detach(),
+                num_classes=num_classes,
+                method=flow_agg_method,
+            )
+            if flow_logits_m.size(0) > 0:
+                _, flow_pred_m = torch.max(flow_logits_m.data, 1)
+                flow_labels_cpu_m = flow_labels_m.detach().cpu()
+                flow_pred_cpu_m = flow_pred_m.detach().cpu()
+                for t, p in zip(flow_labels_cpu_m.view(-1), flow_pred_cpu_m.view(-1)):
+                    if t < num_classes and p < num_classes:
+                        flow_confusion_matrix[t.long(), p.long()] += 1
 
         if train_target == 'flow':
             running_loss += classification_loss.item() * flow_labels.size(0)
@@ -348,29 +341,19 @@ def train_one_epoch(
     
     epoch_metrics = calculate_metrics(confusion_matrix)
     epoch_metrics['loss'] = epoch_loss
-    if collect_dual_level_metrics:
-        packet_metrics = calculate_metrics(packet_confusion_matrix)
-        epoch_metrics['packet_accuracy'] = packet_metrics['accuracy']
-        epoch_metrics['packet_f1_macro'] = packet_metrics['f1_macro']
-        epoch_metrics['packet_f1_weighted'] = packet_metrics['f1_weighted']
-        epoch_metrics['packet_samples'] = int(packet_confusion_matrix.sum().item())
+    packet_metrics = calculate_metrics(packet_confusion_matrix)
+    epoch_metrics['packet_accuracy'] = packet_metrics['accuracy']
+    epoch_metrics['packet_f1_macro'] = packet_metrics['f1_macro']
+    epoch_metrics['packet_f1_weighted'] = packet_metrics['f1_weighted']
+    epoch_metrics['packet_samples'] = int(packet_confusion_matrix.sum().item())
 
-        if flow_confusion_matrix.sum().item() > 0:
-            flow_metrics = calculate_metrics(flow_confusion_matrix)
-            epoch_metrics['flow_accuracy'] = flow_metrics['accuracy']
-            epoch_metrics['flow_f1_macro'] = flow_metrics['f1_macro']
-            epoch_metrics['flow_f1_weighted'] = flow_metrics['f1_weighted']
-            epoch_metrics['flow_samples'] = int(flow_confusion_matrix.sum().item())
-        else:
-            epoch_metrics['flow_accuracy'] = float('nan')
-            epoch_metrics['flow_f1_macro'] = float('nan')
-            epoch_metrics['flow_f1_weighted'] = float('nan')
-            epoch_metrics['flow_samples'] = 0
+    if flow_confusion_matrix.sum().item() > 0:
+        flow_metrics = calculate_metrics(flow_confusion_matrix)
+        epoch_metrics['flow_accuracy'] = flow_metrics['accuracy']
+        epoch_metrics['flow_f1_macro'] = flow_metrics['f1_macro']
+        epoch_metrics['flow_f1_weighted'] = flow_metrics['f1_weighted']
+        epoch_metrics['flow_samples'] = int(flow_confusion_matrix.sum().item())
     else:
-        epoch_metrics['packet_accuracy'] = float('nan')
-        epoch_metrics['packet_f1_macro'] = float('nan')
-        epoch_metrics['packet_f1_weighted'] = float('nan')
-        epoch_metrics['packet_samples'] = 0
         epoch_metrics['flow_accuracy'] = float('nan')
         epoch_metrics['flow_f1_macro'] = float('nan')
         epoch_metrics['flow_f1_weighted'] = float('nan')
@@ -388,7 +371,6 @@ def evaluate(
     loss_fn: nn.Module,
     eval_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
-    collect_dual_level_metrics: bool = False,
 ) -> Tuple[Dict, torch.Tensor]:  #, torch.Tensor]:
     """
     Evaluate one epoch for the HierarchicalMoE model.
@@ -400,10 +382,8 @@ def evaluate(
     running_loss = 0.0
     running_items = 0
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
-    packet_confusion_matrix = (
-        torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
-        if collect_dual_level_metrics else None
-    )
+    packet_confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
+    flow_confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
     all_logits = []
     all_labels = []
     all_flow_ids = []
@@ -446,11 +426,11 @@ def evaluate(
          
         outputs, _ = model(batch_dict)   
 
-        if collect_dual_level_metrics:
-            _, packet_pred = torch.max(outputs.data, 1)
-            for t, p in zip(labels.view(-1), packet_pred.view(-1)):
-                if t < num_classes and p < num_classes:
-                    packet_confusion_matrix[t, p] += 1
+        # Always collect packet-level confusion matrix.
+        _, packet_pred = torch.max(outputs.data, 1)
+        for t, p in zip(labels.view(-1), packet_pred.view(-1)):
+            if t < num_classes and p < num_classes:
+                packet_confusion_matrix[t, p] += 1
         
          
         # loss = base_loss_fn(outputs, labels)
@@ -462,6 +442,18 @@ def evaluate(
             all_logits.append(outputs.detach().cpu())
             all_labels.append(labels.detach().cpu())
             all_flow_ids.append(flow_ids.detach().cpu())
+            flow_logits_b, flow_labels_b, _ = aggregate_logits_by_flow_tensor(
+                packet_logits=outputs.detach(),
+                packet_labels=labels.detach(),
+                flow_ids=flow_ids.detach(),
+                num_classes=num_classes,
+                method=flow_agg_method,
+            )
+            if flow_logits_b.size(0) > 0:
+                _, flow_pred_b = torch.max(flow_logits_b.data, 1)
+                for t, p in zip(flow_labels_b.view(-1), flow_pred_b.view(-1)):
+                    if t < num_classes and p < num_classes:
+                        flow_confusion_matrix[t, p] += 1
         else:
             loss = loss_fn(outputs, labels)   
             running_loss += loss.item() * labels.size(0)
@@ -502,30 +494,21 @@ def evaluate(
     cm_cpu = confusion_matrix.cpu()
     epoch_metrics = calculate_metrics(cm_cpu)   
     epoch_metrics['loss'] = epoch_loss
-    if collect_dual_level_metrics:
-        packet_cm_cpu = packet_confusion_matrix.cpu()
-        packet_metrics = calculate_metrics(packet_cm_cpu)
-        epoch_metrics['packet_accuracy'] = packet_metrics['accuracy']
-        epoch_metrics['packet_f1_macro'] = packet_metrics['f1_macro']
-        epoch_metrics['packet_f1_weighted'] = packet_metrics['f1_weighted']
-        epoch_metrics['packet_samples'] = int(packet_cm_cpu.sum().item())
+    packet_cm_cpu = packet_confusion_matrix.cpu()
+    packet_metrics = calculate_metrics(packet_cm_cpu)
+    epoch_metrics['packet_accuracy'] = packet_metrics['accuracy']
+    epoch_metrics['packet_f1_macro'] = packet_metrics['f1_macro']
+    epoch_metrics['packet_f1_weighted'] = packet_metrics['f1_weighted']
+    epoch_metrics['packet_samples'] = int(packet_cm_cpu.sum().item())
 
-        if eval_target == 'flow':
-            # Keep identical global flow definition as main metric.
-            epoch_metrics['flow_accuracy'] = epoch_metrics['accuracy']
-            epoch_metrics['flow_f1_macro'] = epoch_metrics['f1_macro']
-            epoch_metrics['flow_f1_weighted'] = epoch_metrics['f1_weighted']
-            epoch_metrics['flow_samples'] = int(cm_cpu.sum().item())
-        else:
-            epoch_metrics['flow_accuracy'] = float('nan')
-            epoch_metrics['flow_f1_macro'] = float('nan')
-            epoch_metrics['flow_f1_weighted'] = float('nan')
-            epoch_metrics['flow_samples'] = 0
+    flow_cm_cpu = flow_confusion_matrix.cpu()
+    if flow_cm_cpu.sum().item() > 0:
+        flow_metrics = calculate_metrics(flow_cm_cpu)
+        epoch_metrics['flow_accuracy'] = flow_metrics['accuracy']
+        epoch_metrics['flow_f1_macro'] = flow_metrics['f1_macro']
+        epoch_metrics['flow_f1_weighted'] = flow_metrics['f1_weighted']
+        epoch_metrics['flow_samples'] = int(flow_cm_cpu.sum().item())
     else:
-        epoch_metrics['packet_accuracy'] = float('nan')
-        epoch_metrics['packet_f1_macro'] = float('nan')
-        epoch_metrics['packet_f1_weighted'] = float('nan')
-        epoch_metrics['packet_samples'] = 0
         epoch_metrics['flow_accuracy'] = float('nan')
         epoch_metrics['flow_f1_macro'] = float('nan')
         epoch_metrics['flow_f1_weighted'] = float('nan')
@@ -729,12 +712,10 @@ if __name__ == '__main__':
     ENABLE_FLOW_AGG_EVAL = True
     FLOW_AGG_USE_PROB_MEAN = True
     ENABLE_DIRECTIONAL_FLOW_CONTEXT = True
-    # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
-    ENABLE_DUAL_LEVEL_METRICS = False
     TRAIN_TARGET = 'flow'  # 'packet' or 'flow'
     FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'mean_probs' | 'logsumexp'
     FLOW_LOSS_USE_PACKET_AUX = True
-    FLOW_PACKET_AUX_WEIGHT = 0.1
+    FLOW_PACKET_AUX_WEIGHT = 0.3
     # STRATIFIED_TRAIN_SET = True
     STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
@@ -1490,16 +1471,14 @@ if __name__ == '__main__':
                                                train_target=TRAIN_TARGET,
                                                flow_agg_method=FLOW_AGG_METHOD,
                                                flow_loss_use_packet_aux=FLOW_LOSS_USE_PACKET_AUX,
-                                               flow_packet_aux_weight=FLOW_PACKET_AUX_WEIGHT,
-                                               collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS)
+                                               flow_packet_aux_weight=FLOW_PACKET_AUX_WEIGHT)
                                             #    dynamic_weights=dynamic_weights)
             # val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
             #                           device, num_classes)
             val_metrics, _ = evaluate(pta_model, val_loader, # loss_fn, 
                                       device, num_classes, loss_fn,
                                       eval_target=TRAIN_TARGET,
-                                      flow_agg_method=FLOW_AGG_METHOD,
-                                      collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS)
+                                      flow_agg_method=FLOW_AGG_METHOD)
             
             # beta = 2.0 
             # new_weights = (1.0 - val_per_class_f1)**beta
@@ -1526,16 +1505,15 @@ if __name__ == '__main__':
             print(f"Epoch {epoch+1} Summary:")
             print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.4f} | Train F1 (macro): {train_metrics['f1_macro']:.4f}")
             print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.4f} | Val F1 (macro): {val_metrics['f1_macro']:.4f}")
-            if ENABLE_DUAL_LEVEL_METRICS:
-                print(
-                    f"  Train Packet F1: {train_metrics['packet_f1_macro']:.4f} | "
-                    f"Train Flow F1: {train_metrics['flow_f1_macro']:.4f} | "
-                    f"Target: {TRAIN_TARGET}"
-                )
-                print(
-                    f"  Val   Packet F1: {val_metrics['packet_f1_macro']:.4f} | "
-                    f"Val   Flow F1: {val_metrics['flow_f1_macro']:.4f}"
-                )
+            print(
+                f"  Train Packet F1: {train_metrics['packet_f1_macro']:.4f} | "
+                f"Train Flow F1: {train_metrics['flow_f1_macro']:.4f} | "
+                f"Target: {TRAIN_TARGET}"
+            )
+            print(
+                f"  Val   Packet F1: {val_metrics['packet_f1_macro']:.4f} | "
+                f"Val   Flow F1: {val_metrics['flow_f1_macro']:.4f}"
+            )
 
             current_lr = optimizer.param_groups[0]['lr']
             print(f"Epoch {epoch+1} Summary (Current LR: {current_lr:.1e}):")
@@ -1551,14 +1529,14 @@ if __name__ == '__main__':
                 'train_recall_weighted': train_metrics['recall_weighted'], 
                 'train_precision_weighted': train_metrics['precision_weighted'], 
                 'train_f1_weighted': train_metrics['f1_weighted'], 
-                'train_packet_acc': train_metrics['packet_accuracy'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_packet_f1_macro': train_metrics['packet_f1_macro'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_packet_f1_weighted': train_metrics['packet_f1_weighted'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_packet_samples': train_metrics['packet_samples'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_flow_acc': train_metrics['flow_accuracy'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_flow_f1_macro': train_metrics['flow_f1_macro'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_flow_f1_weighted': train_metrics['flow_f1_weighted'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'train_flow_samples': train_metrics['flow_samples'] if ENABLE_DUAL_LEVEL_METRICS else None,
+                'train_packet_acc': train_metrics['packet_accuracy'],
+                'train_packet_f1_macro': train_metrics['packet_f1_macro'],
+                'train_packet_f1_weighted': train_metrics['packet_f1_weighted'],
+                'train_packet_samples': train_metrics['packet_samples'],
+                'train_flow_acc': train_metrics['flow_accuracy'],
+                'train_flow_f1_macro': train_metrics['flow_f1_macro'],
+                'train_flow_f1_weighted': train_metrics['flow_f1_weighted'],
+                'train_flow_samples': train_metrics['flow_samples'],
                 'val_loss': val_metrics['loss'],
                 'val_acc': val_metrics['accuracy'], 
                 'val_recall_macro': val_metrics['recall_macro'], 
@@ -1567,14 +1545,14 @@ if __name__ == '__main__':
                 'val_recall_weighted': val_metrics['recall_weighted'], 
                 'val_precision_weighted': val_metrics['precision_weighted'], 
                 'val_f1_weighted': val_metrics['f1_weighted'], 
-                'val_packet_acc': val_metrics['packet_accuracy'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_packet_f1_macro': val_metrics['packet_f1_macro'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_packet_f1_weighted': val_metrics['packet_f1_weighted'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_packet_samples': val_metrics['packet_samples'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_flow_acc': val_metrics['flow_accuracy'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_flow_f1_macro': val_metrics['flow_f1_macro'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_flow_f1_weighted': val_metrics['flow_f1_weighted'] if ENABLE_DUAL_LEVEL_METRICS else None,
-                'val_flow_samples': val_metrics['flow_samples'] if ENABLE_DUAL_LEVEL_METRICS else None,
+                'val_packet_acc': val_metrics['packet_accuracy'],
+                'val_packet_f1_macro': val_metrics['packet_f1_macro'],
+                'val_packet_f1_weighted': val_metrics['packet_f1_weighted'],
+                'val_packet_samples': val_metrics['packet_samples'],
+                'val_flow_acc': val_metrics['flow_accuracy'],
+                'val_flow_f1_macro': val_metrics['flow_f1_macro'],
+                'val_flow_f1_weighted': val_metrics['flow_f1_weighted'],
+                'val_flow_samples': val_metrics['flow_samples'],
             })
 
             current_val_f1_macro = val_metrics['f1_macro']

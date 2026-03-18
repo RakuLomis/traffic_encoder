@@ -41,6 +41,15 @@ class GNNTrafficDataset(Dataset):
         with open(vocab_path, 'r') as f:
             self.vocab_maps = yaml.safe_load(f)
         self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
+        # Keep per-packet flow id for flow-level loss/evaluation aggregation.
+        if 'stream_id' in dataframe.columns:
+            flow_codes, _ = pd.factorize(
+                dataframe['stream_id'].fillna('__MISSING_STREAM__').astype(str),
+                sort=False
+            )
+            self.flow_ids = torch.tensor(flow_codes, dtype=torch.long)
+        else:
+            self.flow_ids = torch.arange(len(dataframe), dtype=torch.long)
         self.TORCH_LONG_MAX = torch.iinfo(torch.long).max
         # self.decimal_fields = {'tcp.stream'}
 
@@ -427,6 +436,7 @@ class GNNTrafficDataset(Dataset):
         idx = torch.as_tensor(batch_indices, dtype=torch.long)
         batch_size = idx.numel()
         labels = self.labels.index_select(0, idx)
+        flow_ids = self.flow_ids.index_select(0, idx)
         batched: Dict[str, Any] = {}
 
         for expert_name, graph_info in self.expert_graphs.items():
@@ -465,6 +475,7 @@ class GNNTrafficDataset(Dataset):
                 for f in self.flow_feature_names
             ]
             batched['flow_stats'] = torch.stack(flow_cols, dim=1).contiguous()
+        batched['flow_ids'] = flow_ids
 
         return batched
 
