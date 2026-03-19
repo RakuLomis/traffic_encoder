@@ -116,6 +116,8 @@ def aggregate_logits_by_flow_tensor(
     flow_ids: torch.Tensor,
     num_classes: int,
     method: str = 'mean_logits',
+    topk: int = 8,
+    soft_temp: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Aggregate packet logits to flow logits using flow_ids.
@@ -175,7 +177,17 @@ def aggregate_logits_by_flow_tensor(
             y = torch.argmax(binc)
             inconsistent += 1
 
-        if method == 'mean_probs':
+        if method == 'soft_weighted_logits':
+            temp = max(float(soft_temp), 1e-4)
+            confidence = logits_f.max(dim=1).values
+            alpha = torch.softmax(confidence / temp, dim=0)
+            z = torch.sum(alpha.unsqueeze(-1) * logits_f, dim=0)
+        elif method == 'topk_mean_logits':
+            k = max(1, min(int(topk), logits_f.size(0)))
+            confidence = logits_f.max(dim=1).values
+            topk_idx = torch.topk(confidence, k=k, largest=True).indices
+            z = logits_f.index_select(0, topk_idx).mean(dim=0)
+        elif method == 'mean_probs':
             z = torch.softmax(logits_f, dim=1).mean(dim=0)
         elif method == 'logsumexp':
             z = torch.logsumexp(logits_f, dim=0) - torch.log(
@@ -210,6 +222,8 @@ def train_one_epoch(
     alpha: float = 1e-4,
     train_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
+    flow_topk: int = 8,
+    flow_soft_temp: float = 1.0,
     flow_loss_use_packet_aux: bool = True,
     flow_packet_aux_weight: float = 0.1,
     collect_dual_level_metrics: bool = False,
@@ -306,6 +320,8 @@ def train_one_epoch(
                     flow_ids=flow_ids,
                     num_classes=num_classes,
                     method=flow_agg_method,
+                    topk=flow_topk,
+                    soft_temp=flow_soft_temp,
                 )
                 classification_loss = loss_fn(flow_logits, flow_labels)
                 if flow_loss_use_packet_aux:
@@ -360,6 +376,8 @@ def train_one_epoch(
                     flow_ids=flow_ids.detach(),
                     num_classes=num_classes,
                     method=flow_agg_method,
+                    topk=flow_topk,
+                    soft_temp=flow_soft_temp,
                 )
                 if flow_logits_m.size(0) > 0:
                     _, flow_pred_m = torch.max(flow_logits_m.data, 1)
@@ -430,6 +448,8 @@ def evaluate(
     loss_fn: nn.Module,
     eval_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
+    flow_topk: int = 8,
+    flow_soft_temp: float = 1.0,
     collect_dual_level_metrics: bool = False,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
@@ -537,6 +557,8 @@ def evaluate(
                 flow_ids=flow_ids_tensor,
                 num_classes=num_classes,
                 method=flow_agg_method,
+                topk=flow_topk,
+                soft_temp=flow_soft_temp,
             )
             flow_loss = loss_fn(flow_logits, flow_labels)
             running_loss = flow_loss.item() * flow_labels.size(0)
@@ -790,7 +812,9 @@ if __name__ == '__main__':
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
     ENABLE_DUAL_LEVEL_METRICS = False
     TRAIN_TARGET = 'flow'  # 'packet' or 'flow' 
-    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'mean_probs' | 'logsumexp' 
+    FLOW_AGG_METHOD = 'soft_weighted_logits'  # 'mean_logits' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
+    FLOW_TOPK = 8
+    FLOW_SOFT_TEMP = 1.2
     FLOW_LOSS_USE_PACKET_AUX = True
     FLOW_PACKET_AUX_WEIGHT = 0.05
     # STRATIFIED_TRAIN_SET = True
@@ -837,6 +861,7 @@ if __name__ == '__main__':
         f"Throughput profile: {THROUGHPUT_PROFILE}; workers: {NUM_WORKERS}; "
         f"prefetch: {DATALOADER_PREFETCH}; persistent_workers: {PERSISTENT_WORKERS}"
     )
+    print(f"Flow aggregation: {FLOW_AGG_METHOD} (topk={FLOW_TOPK}, soft_temp={FLOW_SOFT_TEMP})")
      
      
     # dataset_name = 'ISCX-VPN'
@@ -1570,6 +1595,8 @@ if __name__ == '__main__':
                                                device, num_classes, loss_fn,
                                                train_target=TRAIN_TARGET,
                                                flow_agg_method=FLOW_AGG_METHOD,
+                                               flow_topk=FLOW_TOPK,
+                                               flow_soft_temp=FLOW_SOFT_TEMP,
                                                flow_loss_use_packet_aux=FLOW_LOSS_USE_PACKET_AUX,
                                                flow_packet_aux_weight=FLOW_PACKET_AUX_WEIGHT,
                                                collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
@@ -1583,6 +1610,8 @@ if __name__ == '__main__':
                                       device, num_classes, loss_fn,
                                       eval_target=TRAIN_TARGET,
                                       flow_agg_method=FLOW_AGG_METHOD,
+                                      flow_topk=FLOW_TOPK,
+                                      flow_soft_temp=FLOW_SOFT_TEMP,
                                       collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
                                       use_amp=use_amp_this_run,
                                       amp_dtype=amp_dtype)
@@ -1775,6 +1804,8 @@ if __name__ == '__main__':
             pta_model, test_loader, device, num_classes, loss_fn,
             eval_target=TRAIN_TARGET,
             flow_agg_method=FLOW_AGG_METHOD,
+            flow_topk=FLOW_TOPK,
+            flow_soft_temp=FLOW_SOFT_TEMP,
             use_amp=use_amp_this_run,
             amp_dtype=amp_dtype
         )
@@ -1922,6 +1953,8 @@ if __name__ == '__main__':
             loss_fn,
             eval_target=TRAIN_TARGET,
             flow_agg_method=FLOW_AGG_METHOD,
+            flow_topk=FLOW_TOPK,
+            flow_soft_temp=FLOW_SOFT_TEMP,
             use_amp=use_amp_this_run,
             amp_dtype=amp_dtype
         )
