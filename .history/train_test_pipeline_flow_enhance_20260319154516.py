@@ -2,7 +2,6 @@ from typing import Dict, Tuple, List
 import torch
 import torch.optim as optim 
 import torch.nn as nn 
-import torch.nn.functional as F
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
 from torch.utils.data import Dataset, DataLoader
@@ -127,35 +126,6 @@ def aggregate_logits_by_flow_tensor(
         raise ValueError("packet_labels/flow_ids must be [N].")
     if packet_logits.size(0) != packet_labels.size(0) or packet_logits.size(0) != flow_ids.size(0):
         raise ValueError("packet_logits, packet_labels, flow_ids must share same N.")
-
-    # Fast vectorized path for the common methods to reduce Python-loop overhead.
-    if method in ('mean_logits', 'mean_probs'):
-        values = packet_logits if method == 'mean_logits' else torch.softmax(packet_logits, dim=1)
-        unique_flow_ids, inverse = torch.unique(flow_ids, sorted=False, return_inverse=True)
-        n_flows = unique_flow_ids.numel()
-
-        if n_flows == 0:
-            return (
-                torch.empty((0, num_classes), device=packet_logits.device, dtype=packet_logits.dtype),
-                torch.empty((0,), device=packet_labels.device, dtype=packet_labels.dtype),
-                0,
-            )
-
-        flow_logits = torch.zeros(
-            (n_flows, num_classes), device=values.device, dtype=values.dtype
-        )
-        flow_logits.index_add_(0, inverse, values)
-        flow_counts = torch.bincount(inverse, minlength=n_flows).to(values.dtype).unsqueeze(1).clamp_min(1.0)
-        flow_logits = flow_logits / flow_counts
-
-        label_onehot = F.one_hot(packet_labels, num_classes=num_classes).to(torch.long)
-        label_counts = torch.zeros(
-            (n_flows, num_classes), device=packet_labels.device, dtype=torch.long
-        )
-        label_counts.index_add_(0, inverse, label_onehot)
-        flow_labels = torch.argmax(label_counts, dim=1).long()
-        inconsistent = int((label_counts.gt(0).sum(dim=1) > 1).sum().item())
-        return flow_logits, flow_labels, inconsistent
 
     unique_flow_ids = torch.unique(flow_ids)
     agg_logits = []
@@ -766,9 +736,7 @@ if __name__ == '__main__':
     NUM_WORKERS = 4
     USE_AMP = True
     AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'
-    THROUGHPUT_PROFILE = 'cuda_low_ram'  # 'base' | 'high' | 'cuda_low_ram'
-    DATALOADER_PREFETCH = 2
-    PERSISTENT_WORKERS = True
+    THROUGHPUT_PROFILE = 'high'  # 'base' or 'high'
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
@@ -814,12 +782,6 @@ if __name__ == '__main__':
         BATCH_SIZE = 2048 // SCALE_FACTOR
         NUM_WORKERS = max(NUM_WORKERS, min(8, (os.cpu_count() or 8)))
         print("[Throughput] High profile enabled.")
-    elif THROUGHPUT_PROFILE == 'cuda_low_ram':
-        # Keep memory footprint moderate while maintaining GPU-friendly throughput.
-        BATCH_SIZE = 1024 // SCALE_FACTOR
-        NUM_WORKERS = min(NUM_WORKERS, max(2, min(6, (os.cpu_count() or 6))))
-        DATALOADER_PREFETCH = 2
-        print("[Throughput] CUDA low-RAM profile enabled.")
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
@@ -833,10 +795,6 @@ if __name__ == '__main__':
     EARLY_STOP_PATIENCE = ROLLBACK_PATIENCE + 5
     MIN_LR_FOR_TRAINING = 1e-6
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
-    print(
-        f"Throughput profile: {THROUGHPUT_PROFILE}; workers: {NUM_WORKERS}; "
-        f"prefetch: {DATALOADER_PREFETCH}; persistent_workers: {PERSISTENT_WORKERS}"
-    )
      
      
     # dataset_name = 'ISCX-VPN'
@@ -1490,21 +1448,21 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
                               drop_last=True, 
-                              persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                              prefetch_factor=DATALOADER_PREFETCH, 
+                              persistent_workers=(NUM_WORKERS > 0),
+                              prefetch_factor=8, 
                               collate_fn=train_dataset.collate_from_index,
                               )
                             #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                            prefetch_factor=DATALOADER_PREFETCH, 
+                            persistent_workers=(NUM_WORKERS > 0),
+                            prefetch_factor=8, 
                             collate_fn=val_dataset.collate_from_index,
                             )
                             # collate_fn=custom_collate_flat_dict)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                            prefetch_factor=DATALOADER_PREFETCH, 
+                            persistent_workers=(NUM_WORKERS > 0),
+                            prefetch_factor=8, 
                             collate_fn=test_dataset.collate_from_index,
                             )
                             #  collate_fn=custom_collate_flat_dict)

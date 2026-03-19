@@ -2,7 +2,6 @@ from typing import Dict, Tuple, List
 import torch
 import torch.optim as optim 
 import torch.nn as nn 
-import torch.nn.functional as F
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
 from torch.utils.data import Dataset, DataLoader
@@ -78,7 +77,7 @@ def robust_timestamp_to_tsval(x):
     except (ValueError, TypeError):
         return 0   
 
-def set_seed(seed_value: int, deterministic: bool = True):
+def set_seed(seed_value: int):
     """
     Set all relevant random seeds for reproducibility.
     """
@@ -91,13 +90,11 @@ def set_seed(seed_value: int, deterministic: bool = True):
         torch.cuda.manual_seed(seed_value)
         torch.cuda.manual_seed_all(seed_value)   
         
-        # Deterministic mode is reproducible but often slower.
-        if deterministic:
-            torch.backends.cudnn.benchmark = False
-            torch.backends.cudnn.deterministic = True
-        else:
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
+         
+         
+        torch.backends.cudnn.benchmark = False
+         
+        torch.backends.cudnn.deterministic = True
 
 def seed_worker(worker_id):
     """
@@ -127,35 +124,6 @@ def aggregate_logits_by_flow_tensor(
         raise ValueError("packet_labels/flow_ids must be [N].")
     if packet_logits.size(0) != packet_labels.size(0) or packet_logits.size(0) != flow_ids.size(0):
         raise ValueError("packet_logits, packet_labels, flow_ids must share same N.")
-
-    # Fast vectorized path for the common methods to reduce Python-loop overhead.
-    if method in ('mean_logits', 'mean_probs'):
-        values = packet_logits if method == 'mean_logits' else torch.softmax(packet_logits, dim=1)
-        unique_flow_ids, inverse = torch.unique(flow_ids, sorted=False, return_inverse=True)
-        n_flows = unique_flow_ids.numel()
-
-        if n_flows == 0:
-            return (
-                torch.empty((0, num_classes), device=packet_logits.device, dtype=packet_logits.dtype),
-                torch.empty((0,), device=packet_labels.device, dtype=packet_labels.dtype),
-                0,
-            )
-
-        flow_logits = torch.zeros(
-            (n_flows, num_classes), device=values.device, dtype=values.dtype
-        )
-        flow_logits.index_add_(0, inverse, values)
-        flow_counts = torch.bincount(inverse, minlength=n_flows).to(values.dtype).unsqueeze(1).clamp_min(1.0)
-        flow_logits = flow_logits / flow_counts
-
-        label_onehot = F.one_hot(packet_labels, num_classes=num_classes).to(torch.long)
-        label_counts = torch.zeros(
-            (n_flows, num_classes), device=packet_labels.device, dtype=torch.long
-        )
-        label_counts.index_add_(0, inverse, label_onehot)
-        flow_labels = torch.argmax(label_counts, dim=1).long()
-        inconsistent = int((label_counts.gt(0).sum(dim=1) > 1).sum().item())
-        return flow_logits, flow_labels, inconsistent
 
     unique_flow_ids = torch.unique(flow_ids)
     agg_logits = []
@@ -213,9 +181,6 @@ def train_one_epoch(
     flow_loss_use_packet_aux: bool = True,
     flow_packet_aux_weight: float = 0.1,
     collect_dual_level_metrics: bool = False,
-    use_amp: bool = False,
-    amp_dtype: torch.dtype = torch.float16,
-    scaler: torch.cuda.amp.GradScaler = None,
 ) -> (Dict, torch.Tensor): # type: ignore 
     """
     Run one training epoch for the HierarchicalMoE model.
@@ -250,10 +215,7 @@ def train_one_epoch(
         try:
             for key, value in batch_dict.items():
                 if hasattr(value, 'to'):   
-                    try:
-                        batch_dict[key] = value.to(device, non_blocking=True)
-                    except TypeError:
-                        batch_dict[key] = value.to(device)
+                    batch_dict[key] = value.to(device)
         except Exception as e:
               
              print(f"Warning: failed to move batch item '{key}' to device. Error: {e}")
@@ -281,12 +243,7 @@ def train_one_epoch(
          
         #    outputs = logits
         #    gates_dict = {'eth': gate_tensor, 'ip': gate_tensor, ...}
-        with torch.autocast(
-            device_type='cuda',
-            dtype=amp_dtype,
-            enabled=(use_amp and device.type == 'cuda')
-        ):
-            outputs, gates_dict = model(batch_dict)
+        outputs, gates_dict = model(batch_dict)
         
          
         # classification_loss_per_sample = base_loss_fn(outputs, labels)
@@ -296,47 +253,48 @@ def train_one_epoch(
         # sample_weights = dynamic_weights[labels]
          
         # classification_loss = (classification_loss_per_sample * sample_weights).mean()
-            packet_loss = loss_fn(outputs, labels)
-            if train_target == 'flow':
-                if flow_ids is None:
-                    raise RuntimeError("flow_ids missing in batch_dict while train_target='flow'.")
-                flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
-                    packet_logits=outputs,
-                    packet_labels=labels,
-                    flow_ids=flow_ids,
-                    num_classes=num_classes,
-                    method=flow_agg_method,
-                )
-                classification_loss = loss_fn(flow_logits, flow_labels)
-                if flow_loss_use_packet_aux:
-                    classification_loss = classification_loss + flow_packet_aux_weight * packet_loss
-            else:
-                classification_loss = packet_loss
-            
-            total_mask_entropy_loss = 0.0
-            num_experts_with_gate = len(gates_dict)   
-            
-            if num_experts_with_gate > 0:
-                for name, gate in gates_dict.items():
-                    total_mask_entropy_loss += -(gate * torch.log(gate + 1e-8) + 
-                                                (1 - gate) * torch.log(1 - gate + 1e-8)).mean()
-                
-                total_mask_entropy_loss = total_mask_entropy_loss / num_experts_with_gate
-            
-            total_loss = classification_loss + alpha * total_mask_entropy_loss
+        packet_loss = loss_fn(outputs, labels)
+        if train_target == 'flow':
+            if flow_ids is None:
+                raise RuntimeError("flow_ids missing in batch_dict while train_target='flow'.")
+            flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
+                packet_logits=outputs,
+                packet_labels=labels,
+                flow_ids=flow_ids,
+                num_classes=num_classes,
+                method=flow_agg_method,
+            )
+            classification_loss = loss_fn(flow_logits, flow_labels)
+            if flow_loss_use_packet_aux:
+                classification_loss = classification_loss + flow_packet_aux_weight * packet_loss
+        else:
+            classification_loss = packet_loss
         
          
-        optimizer.zero_grad(set_to_none=True)
-        if scaler is not None and scaler.is_enabled():
-            scaler.scale(total_loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+        total_mask_entropy_loss = 0.0
+        num_experts_with_gate = len(gates_dict)   
+        
+        if num_experts_with_gate > 0:
+            for name, gate in gates_dict.items():
+                 
+                total_mask_entropy_loss += -(gate * torch.log(gate + 1e-8) + 
+                                             (1 - gate) * torch.log(1 - gate + 1e-8)).mean()
+            
+             
+            total_mask_entropy_loss = total_mask_entropy_loss / num_experts_with_gate
+        
+         
+        total_loss = classification_loss + alpha * total_mask_entropy_loss
+        
+         
+        optimizer.zero_grad()
+        total_loss.backward()
+        
+         
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+         
+        optimizer.step()
         
          
          
@@ -431,8 +389,6 @@ def evaluate(
     eval_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
     collect_dual_level_metrics: bool = False,
-    use_amp: bool = False,
-    amp_dtype: torch.dtype = torch.float16,
 ) -> Tuple[Dict, torch.Tensor]:  #, torch.Tensor]:
     """
     Evaluate one epoch for the HierarchicalMoE model.
@@ -463,10 +419,7 @@ def evaluate(
         try:
             for key, value in batch_dict.items():
                 if hasattr(value, 'to'):   
-                    try:
-                        batch_dict[key] = value.to(device, non_blocking=True)
-                    except TypeError:
-                        batch_dict[key] = value.to(device)
+                    batch_dict[key] = value.to(device)
         except Exception as e:
               
              print(f"Warning: failed to move batch item '{key}' to device. Error: {e}")
@@ -491,12 +444,7 @@ def evaluate(
         # =====================================================================
         
          
-        with torch.autocast(
-            device_type='cuda',
-            dtype=amp_dtype,
-            enabled=(use_amp and device.type == 'cuda')
-        ):
-            outputs, _ = model(batch_dict)   
+        outputs, _ = model(batch_dict)   
 
         if collect_dual_level_metrics:
             _, packet_pred = torch.max(outputs.data, 1)
@@ -751,8 +699,7 @@ def compute_dataset_expert_importance(model, dataloader, device):
 # =====================================================================
 if __name__ == '__main__':
     SEED = 42
-    DETERMINISTIC_TRAINING = False
-    set_seed(SEED, deterministic=DETERMINISTIC_TRAINING)
+    set_seed(SEED)
 
      
     NUM_EPOCHS = 100
@@ -764,11 +711,6 @@ if __name__ == '__main__':
     MAX_LEARNING_RATE = 1e-3
     DROPOUT_RATE = 0.5
     NUM_WORKERS = 4
-    USE_AMP = True
-    AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'
-    THROUGHPUT_PROFILE = 'cuda_low_ram'  # 'base' | 'high' | 'cuda_low_ram'
-    DATALOADER_PREFETCH = 2
-    PERSISTENT_WORKERS = True
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
@@ -789,8 +731,8 @@ if __name__ == '__main__':
     ENABLE_DIRECTIONAL_FLOW_CONTEXT = True
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
     ENABLE_DUAL_LEVEL_METRICS = False
-    TRAIN_TARGET = 'flow'  # 'packet' or 'flow' 
-    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'mean_probs' | 'logsumexp' 
+    TRAIN_TARGET = 'flow'  # 'packet' or 'flow'
+    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'mean_probs' | 'logsumexp'
     FLOW_LOSS_USE_PACKET_AUX = True
     FLOW_PACKET_AUX_WEIGHT = 0.05
     # STRATIFIED_TRAIN_SET = True
@@ -800,8 +742,8 @@ if __name__ == '__main__':
     SAMPLING_PROPORTION = 0.5
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
-    MAX_PACKETS_PER_FLOW_TRAIN = 256
-    # MAX_PACKETS_PER_FLOW_EVAL = 256
+    # MAX_PACKETS_PER_FLOW_TRAIN = 32
+    MAX_PACKETS_PER_FLOW_EVAL = 256
     MAX_PACKETS_PER_FLOW_EVAL = MAX_PACKETS_PER_FLOW_TRAIN
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
@@ -809,17 +751,6 @@ if __name__ == '__main__':
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     FILTER_SHORT_ENTRIES = False
-
-    if THROUGHPUT_PROFILE == 'high':
-        BATCH_SIZE = 2048 // SCALE_FACTOR
-        NUM_WORKERS = max(NUM_WORKERS, min(8, (os.cpu_count() or 8)))
-        print("[Throughput] High profile enabled.")
-    elif THROUGHPUT_PROFILE == 'cuda_low_ram':
-        # Keep memory footprint moderate while maintaining GPU-friendly throughput.
-        BATCH_SIZE = 1024 // SCALE_FACTOR
-        NUM_WORKERS = min(NUM_WORKERS, max(2, min(6, (os.cpu_count() or 6))))
-        DATALOADER_PREFETCH = 2
-        print("[Throughput] CUDA low-RAM profile enabled.")
 
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
@@ -833,10 +764,6 @@ if __name__ == '__main__':
     EARLY_STOP_PATIENCE = ROLLBACK_PATIENCE + 5
     MIN_LR_FOR_TRAINING = 1e-6
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
-    print(
-        f"Throughput profile: {THROUGHPUT_PROFILE}; workers: {NUM_WORKERS}; "
-        f"prefetch: {DATALOADER_PREFETCH}; persistent_workers: {PERSISTENT_WORKERS}"
-    )
      
      
     # dataset_name = 'ISCX-VPN'
@@ -847,7 +774,6 @@ if __name__ == '__main__':
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
     dataset_name = 'cstnet_tls_1.3'
-    # dataset_name = 'CipherSpectrum'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -1445,9 +1371,6 @@ if __name__ == '__main__':
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
-    amp_dtype = torch.float16 if AMP_DTYPE_STR.lower() == 'fp16' else torch.bfloat16
-    use_amp_this_run = bool(USE_AMP and device.type == 'cuda')
-    print(f"AMP enabled: {use_amp_this_run} (dtype={AMP_DTYPE_STR})")
 
      
     
@@ -1490,21 +1413,18 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
                               drop_last=True, 
-                              persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                              prefetch_factor=DATALOADER_PREFETCH, 
+                              prefetch_factor=8, 
                               collate_fn=train_dataset.collate_from_index,
                               )
                             #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                            prefetch_factor=DATALOADER_PREFETCH, 
+                            prefetch_factor=8, 
                             collate_fn=val_dataset.collate_from_index,
                             )
                             # collate_fn=custom_collate_flat_dict)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                            prefetch_factor=DATALOADER_PREFETCH, 
+                            prefetch_factor=8, 
                             collate_fn=test_dataset.collate_from_index,
                             )
                             #  collate_fn=custom_collate_flat_dict)
@@ -1535,7 +1455,6 @@ if __name__ == '__main__':
     pta_model.to(device)
 
     optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp_this_run)
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -1572,10 +1491,7 @@ if __name__ == '__main__':
                                                flow_agg_method=FLOW_AGG_METHOD,
                                                flow_loss_use_packet_aux=FLOW_LOSS_USE_PACKET_AUX,
                                                flow_packet_aux_weight=FLOW_PACKET_AUX_WEIGHT,
-                                               collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
-                                               use_amp=use_amp_this_run,
-                                               amp_dtype=amp_dtype,
-                                               scaler=scaler)
+                                               collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS)
                                             #    dynamic_weights=dynamic_weights)
             # val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
             #                           device, num_classes)
@@ -1583,9 +1499,7 @@ if __name__ == '__main__':
                                       device, num_classes, loss_fn,
                                       eval_target=TRAIN_TARGET,
                                       flow_agg_method=FLOW_AGG_METHOD,
-                                      collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
-                                      use_amp=use_amp_this_run,
-                                      amp_dtype=amp_dtype)
+                                      collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS)
             
             # beta = 2.0 
             # new_weights = (1.0 - val_per_class_f1)**beta
@@ -1774,9 +1688,7 @@ if __name__ == '__main__':
         test_metrics, test_confusion_matrix = evaluate(
             pta_model, test_loader, device, num_classes, loss_fn,
             eval_target=TRAIN_TARGET,
-            flow_agg_method=FLOW_AGG_METHOD,
-            use_amp=use_amp_this_run,
-            amp_dtype=amp_dtype
+            flow_agg_method=FLOW_AGG_METHOD
         )
         print(f"\nFinal Test Performance:")
         print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Macro): {test_metrics['f1_macro']:.4f}")
@@ -1921,9 +1833,7 @@ if __name__ == '__main__':
             num_classes,
             loss_fn,
             eval_target=TRAIN_TARGET,
-            flow_agg_method=FLOW_AGG_METHOD,
-            use_amp=use_amp_this_run,
-            amp_dtype=amp_dtype
+            flow_agg_method=FLOW_AGG_METHOD
         )
         print("Final Test (Eval-Only):")
         print(f"  Test Loss: {test_metrics['loss']:.4f}")

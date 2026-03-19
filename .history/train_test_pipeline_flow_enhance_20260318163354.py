@@ -1,11 +1,10 @@
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 import torch
 import torch.optim as optim 
 import torch.nn as nn 
-import torch.nn.functional as F
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
 from models.ProtocolTreeAttention import ProtocolTreeAttention 
@@ -78,7 +77,7 @@ def robust_timestamp_to_tsval(x):
     except (ValueError, TypeError):
         return 0   
 
-def set_seed(seed_value: int, deterministic: bool = True):
+def set_seed(seed_value: int):
     """
     Set all relevant random seeds for reproducibility.
     """
@@ -91,13 +90,11 @@ def set_seed(seed_value: int, deterministic: bool = True):
         torch.cuda.manual_seed(seed_value)
         torch.cuda.manual_seed_all(seed_value)   
         
-        # Deterministic mode is reproducible but often slower.
-        if deterministic:
-            torch.backends.cudnn.benchmark = False
-            torch.backends.cudnn.deterministic = True
-        else:
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cudnn.deterministic = False
+         
+         
+        torch.backends.cudnn.benchmark = False
+         
+        torch.backends.cudnn.deterministic = True
 
 def seed_worker(worker_id):
     """
@@ -109,6 +106,94 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
+class FlowPacketAttentionPool(nn.Module):
+    """
+    Learn packet importance weights inside each flow and aggregate packet logits.
+    """
+    def __init__(self, input_dim: int, hidden_dim: int = 64, dropout: float = 0.0):
+        super().__init__()
+        self.scorer = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, packet_logits: torch.Tensor) -> torch.Tensor:
+        # packet_logits: [N_flow_packets, C] -> scores: [N_flow_packets]
+        return self.scorer(packet_logits).squeeze(-1)
+
+
+class FlowBatchSampler(Sampler[List[int]]):
+    """
+    Build packet index batches by complete flows to avoid splitting one flow
+    into multiple random batches during flow-target training.
+    """
+    def __init__(
+        self,
+        flow_ids: torch.Tensor,
+        max_packets_per_batch: int,
+        shuffle_flows: bool = True,
+        drop_last: bool = False,
+    ):
+        if flow_ids.ndim != 1:
+            raise ValueError("flow_ids must be a 1D tensor.")
+        self.max_packets_per_batch = int(max_packets_per_batch)
+        self.shuffle_flows = bool(shuffle_flows)
+        self.drop_last = bool(drop_last)
+
+        # Pre-group sample indices by flow id once.
+        flow_to_indices: Dict[int, List[int]] = {}
+        for i, fid in enumerate(flow_ids.tolist()):
+            k = int(fid)
+            if k not in flow_to_indices:
+                flow_to_indices[k] = []
+            flow_to_indices[k].append(i)
+        self._flows: List[List[int]] = list(flow_to_indices.values())
+
+    def __iter__(self):
+        flow_order = list(range(len(self._flows)))
+        if self.shuffle_flows:
+            random.shuffle(flow_order)
+
+        current_batch: List[int] = []
+        current_size = 0
+
+        for flow_idx in flow_order:
+            flow_indices = self._flows[flow_idx]
+            flow_len = len(flow_indices)
+
+            # If a flow is larger than max batch, chunk it conservatively.
+            if flow_len > self.max_packets_per_batch:
+                if current_size > 0:
+                    yield current_batch
+                    current_batch = []
+                    current_size = 0
+                for start in range(0, flow_len, self.max_packets_per_batch):
+                    chunk = flow_indices[start:start + self.max_packets_per_batch]
+                    if len(chunk) == self.max_packets_per_batch or not self.drop_last:
+                        yield chunk
+                continue
+
+            if current_size + flow_len > self.max_packets_per_batch and current_size > 0:
+                yield current_batch
+                current_batch = []
+                current_size = 0
+
+            current_batch.extend(flow_indices)
+            current_size += flow_len
+
+        if current_size > 0 and (not self.drop_last):
+            yield current_batch
+
+    def __len__(self):
+        # Conservative estimate for progress bars.
+        total = int(sum(len(x) for x in self._flows))
+        if self.drop_last:
+            return total // max(1, self.max_packets_per_batch)
+        return (total + self.max_packets_per_batch - 1) // max(1, self.max_packets_per_batch)
+
+
 
 def aggregate_logits_by_flow_tensor(
     packet_logits: torch.Tensor,
@@ -116,6 +201,7 @@ def aggregate_logits_by_flow_tensor(
     flow_ids: torch.Tensor,
     num_classes: int,
     method: str = 'mean_logits',
+    packet_weighter: Optional[nn.Module] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Aggregate packet logits to flow logits using flow_ids.
@@ -127,35 +213,6 @@ def aggregate_logits_by_flow_tensor(
         raise ValueError("packet_labels/flow_ids must be [N].")
     if packet_logits.size(0) != packet_labels.size(0) or packet_logits.size(0) != flow_ids.size(0):
         raise ValueError("packet_logits, packet_labels, flow_ids must share same N.")
-
-    # Fast vectorized path for the common methods to reduce Python-loop overhead.
-    if method in ('mean_logits', 'mean_probs'):
-        values = packet_logits if method == 'mean_logits' else torch.softmax(packet_logits, dim=1)
-        unique_flow_ids, inverse = torch.unique(flow_ids, sorted=False, return_inverse=True)
-        n_flows = unique_flow_ids.numel()
-
-        if n_flows == 0:
-            return (
-                torch.empty((0, num_classes), device=packet_logits.device, dtype=packet_logits.dtype),
-                torch.empty((0,), device=packet_labels.device, dtype=packet_labels.dtype),
-                0,
-            )
-
-        flow_logits = torch.zeros(
-            (n_flows, num_classes), device=values.device, dtype=values.dtype
-        )
-        flow_logits.index_add_(0, inverse, values)
-        flow_counts = torch.bincount(inverse, minlength=n_flows).to(values.dtype).unsqueeze(1).clamp_min(1.0)
-        flow_logits = flow_logits / flow_counts
-
-        label_onehot = F.one_hot(packet_labels, num_classes=num_classes).to(torch.long)
-        label_counts = torch.zeros(
-            (n_flows, num_classes), device=packet_labels.device, dtype=torch.long
-        )
-        label_counts.index_add_(0, inverse, label_onehot)
-        flow_labels = torch.argmax(label_counts, dim=1).long()
-        inconsistent = int((label_counts.gt(0).sum(dim=1) > 1).sum().item())
-        return flow_logits, flow_labels, inconsistent
 
     unique_flow_ids = torch.unique(flow_ids)
     agg_logits = []
@@ -175,7 +232,13 @@ def aggregate_logits_by_flow_tensor(
             y = torch.argmax(binc)
             inconsistent += 1
 
-        if method == 'mean_probs':
+        if method == 'learned_attn':
+            if packet_weighter is None:
+                raise ValueError("packet_weighter is required when method='learned_attn'.")
+            scores = packet_weighter(logits_f)  # [n_packets_in_flow]
+            alpha = torch.softmax(scores, dim=0)
+            z = torch.sum(alpha.unsqueeze(-1) * logits_f, dim=0)
+        elif method == 'mean_probs':
             z = torch.softmax(logits_f, dim=1).mean(dim=0)
         elif method == 'logsumexp':
             z = torch.logsumexp(logits_f, dim=0) - torch.log(
@@ -210,12 +273,10 @@ def train_one_epoch(
     alpha: float = 1e-4,
     train_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
+    flow_packet_weighter: Optional[nn.Module] = None,
     flow_loss_use_packet_aux: bool = True,
     flow_packet_aux_weight: float = 0.1,
     collect_dual_level_metrics: bool = False,
-    use_amp: bool = False,
-    amp_dtype: torch.dtype = torch.float16,
-    scaler: torch.cuda.amp.GradScaler = None,
 ) -> (Dict, torch.Tensor): # type: ignore 
     """
     Run one training epoch for the HierarchicalMoE model.
@@ -223,6 +284,8 @@ def train_one_epoch(
     Returns aggregated metrics and the confusion matrix.
     """
     model.train()
+    if flow_packet_weighter is not None:
+        flow_packet_weighter.train()
     running_loss = 0.0
     running_items = 0
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
@@ -250,10 +313,7 @@ def train_one_epoch(
         try:
             for key, value in batch_dict.items():
                 if hasattr(value, 'to'):   
-                    try:
-                        batch_dict[key] = value.to(device, non_blocking=True)
-                    except TypeError:
-                        batch_dict[key] = value.to(device)
+                    batch_dict[key] = value.to(device)
         except Exception as e:
               
              print(f"Warning: failed to move batch item '{key}' to device. Error: {e}")
@@ -281,12 +341,7 @@ def train_one_epoch(
          
         #    outputs = logits
         #    gates_dict = {'eth': gate_tensor, 'ip': gate_tensor, ...}
-        with torch.autocast(
-            device_type='cuda',
-            dtype=amp_dtype,
-            enabled=(use_amp and device.type == 'cuda')
-        ):
-            outputs, gates_dict = model(batch_dict)
+        outputs, gates_dict = model(batch_dict)
         
          
         # classification_loss_per_sample = base_loss_fn(outputs, labels)
@@ -296,47 +351,52 @@ def train_one_epoch(
         # sample_weights = dynamic_weights[labels]
          
         # classification_loss = (classification_loss_per_sample * sample_weights).mean()
-            packet_loss = loss_fn(outputs, labels)
-            if train_target == 'flow':
-                if flow_ids is None:
-                    raise RuntimeError("flow_ids missing in batch_dict while train_target='flow'.")
-                flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
-                    packet_logits=outputs,
-                    packet_labels=labels,
-                    flow_ids=flow_ids,
-                    num_classes=num_classes,
-                    method=flow_agg_method,
-                )
-                classification_loss = loss_fn(flow_logits, flow_labels)
-                if flow_loss_use_packet_aux:
-                    classification_loss = classification_loss + flow_packet_aux_weight * packet_loss
-            else:
-                classification_loss = packet_loss
-            
-            total_mask_entropy_loss = 0.0
-            num_experts_with_gate = len(gates_dict)   
-            
-            if num_experts_with_gate > 0:
-                for name, gate in gates_dict.items():
-                    total_mask_entropy_loss += -(gate * torch.log(gate + 1e-8) + 
-                                                (1 - gate) * torch.log(1 - gate + 1e-8)).mean()
-                
-                total_mask_entropy_loss = total_mask_entropy_loss / num_experts_with_gate
-            
-            total_loss = classification_loss + alpha * total_mask_entropy_loss
+        packet_loss = loss_fn(outputs, labels)
+        if train_target == 'flow':
+            if flow_ids is None:
+                raise RuntimeError("flow_ids missing in batch_dict while train_target='flow'.")
+            flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
+                packet_logits=outputs,
+                packet_labels=labels,
+                flow_ids=flow_ids,
+                num_classes=num_classes,
+                method=flow_agg_method,
+                packet_weighter=flow_packet_weighter,
+            )
+            classification_loss = loss_fn(flow_logits, flow_labels)
+            if flow_loss_use_packet_aux:
+                classification_loss = classification_loss + flow_packet_aux_weight * packet_loss
+        else:
+            classification_loss = packet_loss
         
          
-        optimizer.zero_grad(set_to_none=True)
-        if scaler is not None and scaler.is_enabled():
-            scaler.scale(total_loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+        total_mask_entropy_loss = 0.0
+        num_experts_with_gate = len(gates_dict)   
+        
+        if num_experts_with_gate > 0:
+            for name, gate in gates_dict.items():
+                 
+                total_mask_entropy_loss += -(gate * torch.log(gate + 1e-8) + 
+                                             (1 - gate) * torch.log(1 - gate + 1e-8)).mean()
+            
+             
+            total_mask_entropy_loss = total_mask_entropy_loss / num_experts_with_gate
+        
+         
+        total_loss = classification_loss + alpha * total_mask_entropy_loss
+        
+         
+        optimizer.zero_grad()
+        total_loss.backward()
+        
+         
+        params_to_clip = list(model.parameters())
+        if flow_packet_weighter is not None:
+            params_to_clip += list(flow_packet_weighter.parameters())
+        torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
+        
+         
+        optimizer.step()
         
          
          
@@ -360,6 +420,7 @@ def train_one_epoch(
                     flow_ids=flow_ids.detach(),
                     num_classes=num_classes,
                     method=flow_agg_method,
+                    packet_weighter=flow_packet_weighter,
                 )
                 if flow_logits_m.size(0) > 0:
                     _, flow_pred_m = torch.max(flow_logits_m.data, 1)
@@ -430,9 +491,8 @@ def evaluate(
     loss_fn: nn.Module,
     eval_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
+    flow_packet_weighter: Optional[nn.Module] = None,
     collect_dual_level_metrics: bool = False,
-    use_amp: bool = False,
-    amp_dtype: torch.dtype = torch.float16,
 ) -> Tuple[Dict, torch.Tensor]:  #, torch.Tensor]:
     """
     Evaluate one epoch for the HierarchicalMoE model.
@@ -440,6 +500,8 @@ def evaluate(
     Returns metrics and confusion matrix.
     """
     model.eval()   
+    if flow_packet_weighter is not None:
+        flow_packet_weighter.eval()
     
     running_loss = 0.0
     running_items = 0
@@ -463,10 +525,7 @@ def evaluate(
         try:
             for key, value in batch_dict.items():
                 if hasattr(value, 'to'):   
-                    try:
-                        batch_dict[key] = value.to(device, non_blocking=True)
-                    except TypeError:
-                        batch_dict[key] = value.to(device)
+                    batch_dict[key] = value.to(device)
         except Exception as e:
               
              print(f"Warning: failed to move batch item '{key}' to device. Error: {e}")
@@ -491,12 +550,7 @@ def evaluate(
         # =====================================================================
         
          
-        with torch.autocast(
-            device_type='cuda',
-            dtype=amp_dtype,
-            enabled=(use_amp and device.type == 'cuda')
-        ):
-            outputs, _ = model(batch_dict)   
+        outputs, _ = model(batch_dict)   
 
         if collect_dual_level_metrics:
             _, packet_pred = torch.max(outputs.data, 1)
@@ -537,6 +591,7 @@ def evaluate(
                 flow_ids=flow_ids_tensor,
                 num_classes=num_classes,
                 method=flow_agg_method,
+                packet_weighter=flow_packet_weighter,
             )
             flow_loss = loss_fn(flow_logits, flow_labels)
             running_loss = flow_loss.item() * flow_labels.size(0)
@@ -751,8 +806,7 @@ def compute_dataset_expert_importance(model, dataloader, device):
 # =====================================================================
 if __name__ == '__main__':
     SEED = 42
-    DETERMINISTIC_TRAINING = False
-    set_seed(SEED, deterministic=DETERMINISTIC_TRAINING)
+    set_seed(SEED)
 
      
     NUM_EPOCHS = 100
@@ -764,11 +818,6 @@ if __name__ == '__main__':
     MAX_LEARNING_RATE = 1e-3
     DROPOUT_RATE = 0.5
     NUM_WORKERS = 4
-    USE_AMP = True
-    AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'
-    THROUGHPUT_PROFILE = 'cuda_low_ram'  # 'base' | 'high' | 'cuda_low_ram'
-    DATALOADER_PREFETCH = 2
-    PERSISTENT_WORKERS = True
     GNN_INPUT_DIM = 32 
     GNN_HIDDEN_DIM = 128
     PATIENCE = 5
@@ -789,10 +838,12 @@ if __name__ == '__main__':
     ENABLE_DIRECTIONAL_FLOW_CONTEXT = True
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
     ENABLE_DUAL_LEVEL_METRICS = False
-    TRAIN_TARGET = 'flow'  # 'packet' or 'flow' 
-    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'mean_probs' | 'logsumexp' 
+    TRAIN_TARGET = 'flow'  # 'packet' or 'flow'
+    FLOW_AGG_METHOD = 'learned_attn'  # 'mean_logits' | 'mean_probs' | 'logsumexp' | 'learned_attn'
+    FLOW_PACKET_ATTN_HIDDEN_DIM = 64
+    FLOW_PACKET_ATTN_DROPOUT = 0.1
     FLOW_LOSS_USE_PACKET_AUX = True
-    FLOW_PACKET_AUX_WEIGHT = 0.05
+    FLOW_PACKET_AUX_WEIGHT = 0.1
     # STRATIFIED_TRAIN_SET = True
     STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
@@ -810,17 +861,6 @@ if __name__ == '__main__':
 
     FILTER_SHORT_ENTRIES = False
 
-    if THROUGHPUT_PROFILE == 'high':
-        BATCH_SIZE = 2048 // SCALE_FACTOR
-        NUM_WORKERS = max(NUM_WORKERS, min(8, (os.cpu_count() or 8)))
-        print("[Throughput] High profile enabled.")
-    elif THROUGHPUT_PROFILE == 'cuda_low_ram':
-        # Keep memory footprint moderate while maintaining GPU-friendly throughput.
-        BATCH_SIZE = 1024 // SCALE_FACTOR
-        NUM_WORKERS = min(NUM_WORKERS, max(2, min(6, (os.cpu_count() or 6))))
-        DATALOADER_PREFETCH = 2
-        print("[Throughput] CUDA low-RAM profile enabled.")
-
     OBFUSCATION_CONFIG = {
         "len_noise": 0.1,
         "iat_noise": 0.005,
@@ -833,10 +873,6 @@ if __name__ == '__main__':
     EARLY_STOP_PATIENCE = ROLLBACK_PATIENCE + 5
     MIN_LR_FOR_TRAINING = 1e-6
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
-    print(
-        f"Throughput profile: {THROUGHPUT_PROFILE}; workers: {NUM_WORKERS}; "
-        f"prefetch: {DATALOADER_PREFETCH}; persistent_workers: {PERSISTENT_WORKERS}"
-    )
      
      
     # dataset_name = 'ISCX-VPN'
@@ -847,7 +883,6 @@ if __name__ == '__main__':
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
     dataset_name = 'cstnet_tls_1.3'
-    # dataset_name = 'CipherSpectrum'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
     train_dir = os.path.join(root_path, 'datasets_final')
@@ -1445,9 +1480,6 @@ if __name__ == '__main__':
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nUsing device: {device}")
-    amp_dtype = torch.float16 if AMP_DTYPE_STR.lower() == 'fp16' else torch.bfloat16
-    use_amp_this_run = bool(USE_AMP and device.type == 'cuda')
-    print(f"AMP enabled: {use_amp_this_run} (dtype={AMP_DTYPE_STR})")
 
      
     
@@ -1487,24 +1519,39 @@ if __name__ == '__main__':
     g.manual_seed(SEED)
 
      
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-                              num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
-                              drop_last=True, 
-                              persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                              prefetch_factor=DATALOADER_PREFETCH, 
-                              collate_fn=train_dataset.collate_from_index,
-                              )
-                            #   collate_fn=custom_collate_flat_dict)
+    if TRAIN_TARGET == 'flow':
+        print("Using FlowBatchSampler for train_loader (flow-complete batches).")
+        train_flow_batch_sampler = FlowBatchSampler(
+            flow_ids=train_dataset.flow_ids,
+            max_packets_per_batch=BATCH_SIZE,
+            shuffle_flows=True,
+            drop_last=True,
+        )
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_flow_batch_sampler,
+            num_workers=NUM_WORKERS,
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+            prefetch_factor=8,
+            collate_fn=train_dataset.collate_from_index,
+        )
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+                                num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
+                                drop_last=True, 
+                                prefetch_factor=8, 
+                                collate_fn=train_dataset.collate_from_index,
+                                )
+                                #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                            prefetch_factor=DATALOADER_PREFETCH, 
+                            prefetch_factor=8, 
                             collate_fn=val_dataset.collate_from_index,
                             )
                             # collate_fn=custom_collate_flat_dict)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                            prefetch_factor=DATALOADER_PREFETCH, 
+                            prefetch_factor=8, 
                             collate_fn=test_dataset.collate_from_index,
                             )
                             #  collate_fn=custom_collate_flat_dict)
@@ -1533,9 +1580,23 @@ if __name__ == '__main__':
         torch.set_float32_matmul_precision('high')  
 
     pta_model.to(device)
+    flow_packet_weighter = None
+    if TRAIN_TARGET == 'flow' and FLOW_AGG_METHOD == 'learned_attn':
+        flow_packet_weighter = FlowPacketAttentionPool(
+            input_dim=num_classes,
+            hidden_dim=FLOW_PACKET_ATTN_HIDDEN_DIM,
+            dropout=FLOW_PACKET_ATTN_DROPOUT,
+        ).to(device)
+        print(
+            f"Flow packet weighter enabled: learned_attn (hidden={FLOW_PACKET_ATTN_HIDDEN_DIM}, "
+            f"dropout={FLOW_PACKET_ATTN_DROPOUT})"
+        )
 
-    optimizer = optim.AdamW(pta_model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp_this_run)
+    optim_params = list(pta_model.parameters())
+    if flow_packet_weighter is not None:
+        optim_params += list(flow_packet_weighter.parameters())
+
+    optimizer = optim.AdamW(optim_params, lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # add weight_decay
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -1557,7 +1618,8 @@ if __name__ == '__main__':
         epochs_since_best = 0 
         epochs_needs_early_stop = 0
         best_epoch = -1
-        best_model_state = None   
+        best_model_state = None
+        best_flow_weighter_state = None
         for epoch in range(NUM_EPOCHS): 
             if stop_training:
                 print("Learning rate too low. Stopping training early.")
@@ -1570,12 +1632,10 @@ if __name__ == '__main__':
                                                device, num_classes, loss_fn,
                                                train_target=TRAIN_TARGET,
                                                flow_agg_method=FLOW_AGG_METHOD,
+                                               flow_packet_weighter=flow_packet_weighter,
                                                flow_loss_use_packet_aux=FLOW_LOSS_USE_PACKET_AUX,
                                                flow_packet_aux_weight=FLOW_PACKET_AUX_WEIGHT,
-                                               collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
-                                               use_amp=use_amp_this_run,
-                                               amp_dtype=amp_dtype,
-                                               scaler=scaler)
+                                               collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS)
                                             #    dynamic_weights=dynamic_weights)
             # val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
             #                           device, num_classes)
@@ -1583,9 +1643,8 @@ if __name__ == '__main__':
                                       device, num_classes, loss_fn,
                                       eval_target=TRAIN_TARGET,
                                       flow_agg_method=FLOW_AGG_METHOD,
-                                      collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
-                                      use_amp=use_amp_this_run,
-                                      amp_dtype=amp_dtype)
+                                      flow_packet_weighter=flow_packet_weighter,
+                                      collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS)
             
             # beta = 2.0 
             # new_weights = (1.0 - val_per_class_f1)**beta
@@ -1673,7 +1732,14 @@ if __name__ == '__main__':
                 best_epoch = epoch + 1
                  
                 best_model_state = copy.deepcopy(pta_model.state_dict())
+                if flow_packet_weighter is not None:
+                    best_flow_weighter_state = copy.deepcopy(flow_packet_weighter.state_dict())
                 torch.save(pta_model.state_dict(), os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_model.pth'))
+                if flow_packet_weighter is not None:
+                    torch.save(
+                        flow_packet_weighter.state_dict(),
+                        os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_flow_packet_weighter.pth')
+                    )
                 epochs_since_best = 0
                 epochs_needs_early_stop = 0
             else:
@@ -1688,6 +1754,8 @@ if __name__ == '__main__':
                     if best_model_state:
                          
                         pta_model.load_state_dict(best_model_state)
+                        if flow_packet_weighter is not None and best_flow_weighter_state is not None:
+                            flow_packet_weighter.load_state_dict(best_flow_weighter_state)
 
                          
                         # print("   -> Aggressively reducing current learning rate by half...")
@@ -1771,12 +1839,20 @@ if __name__ == '__main__':
          
         pta_model.load_state_dict(torch.load(os.path.join(res_path, dataset_name + '_' + train_set_name + '_best_model.pth')))
         pta_model.to(device)
+        if flow_packet_weighter is not None:
+            best_weighter_path = os.path.join(
+                res_path, dataset_name + '_' + train_set_name + '_best_flow_packet_weighter.pth'
+            )
+            if os.path.exists(best_weighter_path):
+                flow_packet_weighter.load_state_dict(torch.load(best_weighter_path, map_location=device))
+                flow_packet_weighter.to(device)
+            else:
+                print(f"Warning: flow weighter checkpoint not found: {best_weighter_path}")
         test_metrics, test_confusion_matrix = evaluate(
             pta_model, test_loader, device, num_classes, loss_fn,
             eval_target=TRAIN_TARGET,
             flow_agg_method=FLOW_AGG_METHOD,
-            use_amp=use_amp_this_run,
-            amp_dtype=amp_dtype
+            flow_packet_weighter=flow_packet_weighter,
         )
         print(f"\nFinal Test Performance:")
         print(f"  Test Loss: {test_metrics['loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 (Macro): {test_metrics['f1_macro']:.4f}")
@@ -1911,6 +1987,15 @@ if __name__ == '__main__':
         print("Loading saved model...")
         pta_model.load_state_dict(torch.load(best_model_path, map_location=device))
         pta_model.to(device)
+        if flow_packet_weighter is not None:
+            best_weighter_path = os.path.join(
+                res_path, dataset_name + '_' + train_set_name + '_best_flow_packet_weighter.pth'
+            )
+            if os.path.exists(best_weighter_path):
+                flow_packet_weighter.load_state_dict(torch.load(best_weighter_path, map_location=device))
+                flow_packet_weighter.to(device)
+            else:
+                print(f"Warning: flow weighter checkpoint not found: {best_weighter_path}")
         pta_model.eval()
         print("Model loaded successfully.\n")
 
@@ -1922,8 +2007,7 @@ if __name__ == '__main__':
             loss_fn,
             eval_target=TRAIN_TARGET,
             flow_agg_method=FLOW_AGG_METHOD,
-            use_amp=use_amp_this_run,
-            amp_dtype=amp_dtype
+            flow_packet_weighter=flow_packet_weighter,
         )
         print("Final Test (Eval-Only):")
         print(f"  Test Loss: {test_metrics['loss']:.4f}")
