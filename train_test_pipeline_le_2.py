@@ -125,6 +125,7 @@ def train_one_epoch(
     """
     model.train()
     running_loss = 0.0
+    running_items = 0
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long)
     
     # 【关键】在函数内部创建最基础的损失函数
@@ -142,7 +143,10 @@ def train_one_epoch(
         try:
             for key, value in batch_dict.items():
                 if hasattr(value, 'to'): # 检查这个值是否有.to方法
-                    batch_dict[key] = value.to(device)
+                    try:
+                        batch_dict[key] = value.to(device, non_blocking=True)
+                    except TypeError:
+                        batch_dict[key] = value.to(device)
         except Exception as e:
              # 这是一个备用安全网
              print(f"警告: 无法将批处理项 {key} 移动到 device. 错误: {e}")
@@ -214,6 +218,7 @@ def train_one_epoch(
         # 12. 统计指标
         #    【新】使用 labels.size(0) 作为批次大小
         running_loss += classification_loss.item() * labels.size(0)
+        running_items += labels.size(0)
         _, predicted = torch.max(outputs.data, 1)
         
         # 累积结果到混淆矩阵
@@ -224,8 +229,7 @@ def train_one_epoch(
                 confusion_matrix[t.long(), p.long()] += 1
 
     # 在epoch结束后，进行一次性的性能计算
-    total_samples = confusion_matrix.sum().item()
-    epoch_loss = running_loss / len(dataloader.dataset) if len(dataloader.dataset) > 0 else 0
+    epoch_loss = running_loss / running_items if running_items > 0 else 0
     
     epoch_metrics = calculate_metrics(confusion_matrix)
     epoch_metrics['loss'] = epoch_loss
@@ -249,6 +253,7 @@ def evaluate(
     model.eval() # 将模型设置为评估模式
     
     running_loss = 0.0
+    running_items = 0
     confusion_matrix = torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
     
     # 我们在内部创建一个简单的损失函数，只用于【报告】损失值
@@ -262,7 +267,10 @@ def evaluate(
         try:
             for key, value in batch_dict.items():
                 if hasattr(value, 'to'): # 检查这个值是否有.to方法
-                    batch_dict[key] = value.to(device)
+                    try:
+                        batch_dict[key] = value.to(device, non_blocking=True)
+                    except TypeError:
+                        batch_dict[key] = value.to(device)
         except Exception as e:
              # 这是一个备用安全网
              print(f"警告: 无法将批处理项 {key} 移动到 device. 错误: {e}")
@@ -294,6 +302,7 @@ def evaluate(
         # 4. 【修改】计算并累积损失
         loss = loss_fn(outputs, labels) # <-- 使用传入的 loss_fn
         running_loss += loss.item() * labels.size(0)
+        running_items += labels.size(0)
         
         # 5. 计算预测
         _, predicted = torch.max(outputs.data, 1)
@@ -306,7 +315,7 @@ def evaluate(
     # --- 在epoch结束后，进行一次性的性能计算 ---
     
     # 1. 计算总损失
-    epoch_loss = running_loss / len(dataloader.dataset) if len(dataloader.dataset) > 0 else 0
+    epoch_loss = running_loss / running_items if running_items > 0 else 0
     
     # 2. 从混淆矩阵计算P/R/F1等指标
     #    【重要】将混淆矩阵移回CPU进行numpy/sklearn计算
@@ -406,6 +415,8 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
+    # Packet-split baseline profile (legacy experiment reproduction).
+    EXPERIMENT_PROFILE = 'packet_split_baseline'  # 'packet_split_baseline' | 'custom'
     # USE_FLOW_FEATURES_THIS_RUN = True
     USE_FLOW_FEATURES_THIS_RUN = False
     # USE_MAC_ADDRESS_THIS_RUN = True
@@ -414,14 +425,15 @@ if __name__ == '__main__':
     USE_IP_ADDRESS_THIS_RUN = False
     # USE_PORT_THIS_RUN = True
     USE_PORT_THIS_RUN = False
-    STRATIFIED_TRAIN_SET = True
-    # STRATIFIED_TRAIN_SET = False
-    STRATIFIED_VAL_TEST_SET = True
+    STRATIFIED_TRAIN_SET = False
+    STRATIFIED_VAL_TEST_SET = False
     SAMPLING_PROPORTION = 0.05
-    SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
+    SAMPLING_GRANULARITY = 'packet'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
+    USE_AMP = True
+    AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
@@ -438,7 +450,22 @@ if __name__ == '__main__':
     ROLLBACK_PATIENCE = NUM_EPOCHS // 10
     EARLY_STOP_PATIENCE = ROLLBACK_PATIENCE + 5
     MIN_LR_FOR_TRAINING = 1e-6
+    if EXPERIMENT_PROFILE == 'packet_split_baseline':
+        # Reproduce the original packet-level split workflow:
+        # use pre-split csv files directly, no additional flow-level re-sampling.
+        STRATIFIED_TRAIN_SET = False
+        STRATIFIED_VAL_TEST_SET = False
+        SAMPLING_GRANULARITY = 'packet'
+        USE_FLOW_FEATURES_THIS_RUN = False
+
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
+    print(
+        f"Experiment profile: {EXPERIMENT_PROFILE}; "
+        f"stratified_train={STRATIFIED_TRAIN_SET}; "
+        f"stratified_val_test={STRATIFIED_VAL_TEST_SET}; "
+        f"sampling_granularity={SAMPLING_GRANULARITY}; "
+        f"use_flow_features={USE_FLOW_FEATURES_THIS_RUN}"
+    )
     # --- 2. 准备数据 ---
     # 假设 train_df, val_df, test_df 已经创建好
     # dataset_name = 'ISCX-VPN'
@@ -488,31 +515,33 @@ if __name__ == '__main__':
         if 'label' not in df.columns:
             print(" - Missing column: label")
             return
-        if 'stream_id' not in df.columns:
-            print(" - Missing column: stream_id")
-            return
 
         total_packets = len(df)
-        total_flows = df['stream_id'].nunique(dropna=True)
+        has_stream = 'stream_id' in df.columns
+        total_flows = df['stream_id'].nunique(dropna=True) if has_stream else 0
         print(f" - Total packets: {total_packets}")
-        print(f" - Total flows: {total_flows}")
+        if has_stream:
+            print(f" - Total flows: {total_flows}")
         print(f" - Total classes: {df['label'].nunique(dropna=True)}")
 
         rows = []
         grouped = df.groupby('label', dropna=False)
         for label, g in grouped:
-            rows.append({
+            row = {
                 'label': label,
-                'flows': g['stream_id'].nunique(dropna=True),
                 'packets': len(g),
-            })
+            }
+            if has_stream:
+                row['flows'] = g['stream_id'].nunique(dropna=True)
+            rows.append(row)
 
         if not rows:
             print(" - No class rows to display.")
             return
 
         stat_df = pd.DataFrame(rows).sort_values(by='packets', ascending=False).reset_index(drop=True)
-        stat_df['flow_ratio'] = (stat_df['flows'] / max(total_flows, 1)).map(lambda x: f"{x:.4f}")
+        if has_stream:
+            stat_df['flow_ratio'] = (stat_df['flows'] / max(total_flows, 1)).map(lambda x: f"{x:.4f}")
         stat_df['packet_ratio'] = (stat_df['packets'] / max(total_packets, 1)).map(lambda x: f"{x:.4f}")
         print(stat_df.to_string(index=False))
 
@@ -606,6 +635,15 @@ if __name__ == '__main__':
 
     val_df_aligned['label_id'] = val_df_aligned['label'].map(label_to_int).fillna(-1).astype(int) # .fillna(-1)处理未见过的标签
     test_df_aligned['label_id'] = test_df_aligned['label'].map(label_to_int).fillna(-1).astype(int) 
+    # Drop unseen labels in val/test to avoid invalid CE targets (-1).
+    if (val_df_aligned['label_id'] < 0).any():
+        dropped = int((val_df_aligned['label_id'] < 0).sum())
+        print(f"[Warning] Validation set contains {dropped} unseen-label rows. They will be dropped.")
+        val_df_aligned = val_df_aligned[val_df_aligned['label_id'] >= 0].copy()
+    if (test_df_aligned['label_id'] < 0).any():
+        dropped = int((test_df_aligned['label_id'] < 0).sum())
+        print(f"[Warning] Test set contains {dropped} unseen-label rows. They will be dropped.")
+        test_df_aligned = test_df_aligned[test_df_aligned['label_id'] >= 0].copy()
     
     if USE_FLOW_FEATURES_THIS_RUN:
         print("\n[2.5/4] Performing Feature Engineering 5.0 (Correct OPEN_WORLD branching)...")
@@ -976,17 +1014,20 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
                               num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
                               drop_last=True, 
+                              persistent_workers=(NUM_WORKERS > 0),
                               prefetch_factor=8, 
                               collate_fn=train_dataset.collate_from_index,
                               )
                             #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
+                            persistent_workers=(NUM_WORKERS > 0),
                             prefetch_factor=8, 
                             collate_fn=val_dataset.collate_from_index,
                             )
                             # collate_fn=custom_collate_flat_dict)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
+                            persistent_workers=(NUM_WORKERS > 0),
                             prefetch_factor=8, 
                             collate_fn=test_dataset.collate_from_index,
                             )

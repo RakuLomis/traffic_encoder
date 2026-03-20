@@ -512,11 +512,9 @@ def evaluate(
         torch.zeros(num_classes, num_classes, dtype=torch.long, device=device)
         if collect_dual_level_metrics else None
     )
-    # Memory-safe accumulators for flow-level evaluation on large datasets.
-    flow_num_dict: Dict[int, torch.Tensor] = {}
-    flow_den_dict: Dict[int, float] = {}
-    flow_topk_dict: Dict[int, List[Tuple[float, torch.Tensor]]] = {}
-    flow_label_count_dict: Dict[int, Dict[int, int]] = {}
+    all_logits = []
+    all_labels = []
+    all_flow_ids = []
     
      
     # base_loss_fn = nn.CrossEntropyLoss()
@@ -577,74 +575,9 @@ def evaluate(
         if eval_target == 'flow':
             if flow_ids is None:
                 raise RuntimeError("flow_ids missing in batch_dict while eval_target='flow'.")
-            logits_cpu = outputs.detach().float().cpu()
-            labels_cpu = labels.detach().cpu()
-            flow_ids_cpu = flow_ids.detach().cpu()
-
-            if flow_agg_method == 'topk_mean_logits':
-                confidences = logits_cpu.max(dim=1).values
-                k = max(1, int(flow_topk))
-                for i in range(logits_cpu.size(0)):
-                    fid = int(flow_ids_cpu[i].item())
-                    y = int(labels_cpu[i].item())
-                    conf = float(confidences[i].item())
-                    if fid not in flow_topk_dict:
-                        flow_topk_dict[fid] = []
-                        flow_label_count_dict[fid] = {}
-                    flow_topk_dict[fid].append((conf, logits_cpu[i]))
-                    flow_label_count_dict[fid][y] = flow_label_count_dict[fid].get(y, 0) + 1
-                # Trim per-flow candidates to top-k incrementally.
-                for fid in list(flow_topk_dict.keys()):
-                    cand = flow_topk_dict[fid]
-                    if len(cand) > k * 2:
-                        cand.sort(key=lambda x: x[0], reverse=True)
-                        flow_topk_dict[fid] = cand[:k]
-            else:
-                if flow_agg_method == 'mean_logits':
-                    values_cpu = logits_cpu
-                    weights_cpu = torch.ones(logits_cpu.size(0), dtype=torch.float32)
-                elif flow_agg_method == 'mean_probs':
-                    values_cpu = torch.softmax(logits_cpu, dim=1)
-                    weights_cpu = torch.ones(logits_cpu.size(0), dtype=torch.float32)
-                elif flow_agg_method == 'soft_weighted_logits':
-                    temp = max(float(flow_soft_temp), 1e-4)
-                    conf = logits_cpu.max(dim=1).values
-                    weights_cpu = torch.exp(conf / temp).float()
-                    values_cpu = logits_cpu
-                elif flow_agg_method == 'learned_attn_logits':
-                    if flow_packet_weighter is None:
-                        raise RuntimeError("flow_packet_weighter is required for learned_attn_logits.")
-                    scores = flow_packet_weighter(outputs.detach()).detach().float().cpu()
-                    weights_cpu = torch.exp(scores).float()
-                    values_cpu = logits_cpu
-                elif flow_agg_method == 'logsumexp':
-                    values_cpu = logits_cpu
-                    weights_cpu = torch.ones(logits_cpu.size(0), dtype=torch.float32)
-                else:
-                    values_cpu = logits_cpu
-                    weights_cpu = torch.ones(logits_cpu.size(0), dtype=torch.float32)
-
-                for i in range(values_cpu.size(0)):
-                    fid = int(flow_ids_cpu[i].item())
-                    y = int(labels_cpu[i].item())
-                    w = float(weights_cpu[i].item())
-                    v = values_cpu[i]
-                    if fid not in flow_num_dict:
-                        if flow_agg_method == 'logsumexp':
-                            flow_num_dict[fid] = v.clone()
-                            flow_den_dict[fid] = 1.0
-                        else:
-                            flow_num_dict[fid] = v * w
-                            flow_den_dict[fid] = w
-                        flow_label_count_dict[fid] = {y: 1}
-                    else:
-                        if flow_agg_method == 'logsumexp':
-                            flow_num_dict[fid] = torch.logaddexp(flow_num_dict[fid], v)
-                            flow_den_dict[fid] += 1.0
-                        else:
-                            flow_num_dict[fid] += v * w
-                            flow_den_dict[fid] += w
-                        flow_label_count_dict[fid][y] = flow_label_count_dict[fid].get(y, 0) + 1
+            all_logits.append(outputs.detach().cpu())
+            all_labels.append(labels.detach().cpu())
+            all_flow_ids.append(flow_ids.detach().cpu())
         else:
             loss = loss_fn(outputs, labels)   
             running_loss += loss.item() * labels.size(0)
@@ -658,39 +591,20 @@ def evaluate(
     
      
     if eval_target == 'flow':
-        flow_logits_list: List[torch.Tensor] = []
-        flow_labels_list: List[int] = []
-
-        if flow_agg_method == 'topk_mean_logits':
-            k = max(1, int(flow_topk))
-            for fid, cand in flow_topk_dict.items():
-                if len(cand) == 0:
-                    continue
-                cand.sort(key=lambda x: x[0], reverse=True)
-                chosen = cand[:k]
-                logits_stack = torch.stack([x[1] for x in chosen], dim=0)
-                flow_logits_list.append(logits_stack.mean(dim=0))
-                label_count = flow_label_count_dict.get(fid, {})
-                y = max(label_count.items(), key=lambda kv: kv[1])[0]
-                flow_labels_list.append(int(y))
-        elif flow_agg_method == 'logsumexp':
-            for fid, lse in flow_num_dict.items():
-                n = max(flow_den_dict.get(fid, 1.0), 1.0)
-                flow_logits_list.append(lse - torch.log(torch.tensor(n, dtype=lse.dtype)))
-                label_count = flow_label_count_dict.get(fid, {})
-                y = max(label_count.items(), key=lambda kv: kv[1])[0]
-                flow_labels_list.append(int(y))
-        else:
-            for fid, num in flow_num_dict.items():
-                den = max(flow_den_dict.get(fid, 0.0), 1e-12)
-                flow_logits_list.append(num / den)
-                label_count = flow_label_count_dict.get(fid, {})
-                y = max(label_count.items(), key=lambda kv: kv[1])[0]
-                flow_labels_list.append(int(y))
-
-        if len(flow_logits_list) > 0:
-            flow_logits = torch.stack(flow_logits_list, dim=0).to(device)
-            flow_labels = torch.tensor(flow_labels_list, dtype=torch.long, device=device)
+        if len(all_logits) > 0:
+            packet_logits = torch.cat(all_logits, dim=0).to(device)
+            packet_labels = torch.cat(all_labels, dim=0).to(device)
+            flow_ids_tensor = torch.cat(all_flow_ids, dim=0).to(device)
+            flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
+                packet_logits=packet_logits,
+                packet_labels=packet_labels,
+                flow_ids=flow_ids_tensor,
+                num_classes=num_classes,
+                method=flow_agg_method,
+                topk=flow_topk,
+                soft_temp=flow_soft_temp,
+                packet_weighter=flow_packet_weighter,
+            )
             flow_loss = loss_fn(flow_logits, flow_labels)
             running_loss = flow_loss.item() * flow_labels.size(0)
             running_items = flow_labels.size(0)
@@ -950,9 +864,9 @@ if __name__ == '__main__':
     FLOW_ATTN_DROPOUT = 0.1
     FLOW_LOSS_USE_PACKET_AUX = True
     FLOW_PACKET_AUX_WEIGHT = 0.05
-    # STRATIFIED_TRAIN_SET = False
+    # STRATIFIED_TRAIN_SET = True
+    STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
-    STRATIFIED_TRAIN_SET = True
     # STRATIFIED_VAL_TEST_SET = True
     SAMPLING_PROPORTION = 0.5
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
@@ -989,7 +903,6 @@ if __name__ == '__main__':
     ROLLBACK_PATIENCE = NUM_EPOCHS // 10
     EARLY_STOP_PATIENCE = ROLLBACK_PATIENCE + 5
     MIN_LR_FOR_TRAINING = 1e-6
-    LOG_FLUSH_EVERY_EPOCH = 1
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
     print(
         f"Throughput profile: {THROUGHPUT_PROFILE}; workers: {NUM_WORKERS}; "
@@ -999,14 +912,14 @@ if __name__ == '__main__':
     print(f"Flow attn config: hidden={FLOW_ATTN_HIDDEN_DIM}, dropout={FLOW_ATTN_DROPOUT}")
      
      
-    dataset_name = 'ISCX-VPN'
+    # dataset_name = 'ISCX-VPN'
     # dataset_name = 'ISCX-TOR-Acctivity'
     # dataset_name = 'ISCX-TOR-Application'
     # dataset_name = 'USTC-TFC2016-Benign'
     # dataset_name = 'dataset_29_d1' 
     # dataset_name = 'dataset_20_d2'
     # dataset_name = 'USTC-TFC2016-Malware'
-    # dataset_name = 'cstnet_tls_1.3'
+    dataset_name = 'cstnet_tls_1.3'
     # dataset_name = 'CipherSpectrum'
     root_path = os.path.join('..', 'TrafficData', 'datasets_csv_add2')
     val_test_dir = os.path.join(root_path, 'datasets_split', dataset_name) 
@@ -1840,14 +1753,6 @@ if __name__ == '__main__':
                 'val_flow_f1_weighted': val_metrics['flow_f1_weighted'] if ENABLE_DUAL_LEVEL_METRICS else None,
                 'val_flow_samples': val_metrics['flow_samples'] if ENABLE_DUAL_LEVEL_METRICS else None,
             })
-            if (epoch + 1) % LOG_FLUSH_EVERY_EPOCH == 0:
-                try:
-                    pd.DataFrame(training_results).to_csv(
-                        os.path.join(res_path, dataset_name + '_' + train_set_name + '_training_log.csv'),
-                        index=False
-                    )
-                except Exception as e:
-                    print(f"[Warning] Failed to flush training log at epoch {epoch+1}: {e}")
 
             current_val_f1_macro = val_metrics['f1_macro']
             scheduler.step(current_val_f1_macro)
