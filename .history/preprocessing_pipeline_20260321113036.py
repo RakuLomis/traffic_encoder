@@ -67,28 +67,18 @@ def run_full_pipeline(raw_data_root: str, output_root: str, force_overwrite: boo
                 print(f" -> Skip: consolidated file exists: {paths['consolidated_csv']}")
             else:
                 consolidate_raw_csvs_memory_optimized(paths['raw_csv_dir'], paths['consolidated_csv'])
-                print("\n>>> Step 2.5/3: Build stream_id and drop tcp.stream")
-                stream_tmp_path = paths['consolidated_csv'] + '.tmp_stream_id.csv'
-                build_stream_id_from_five_tuple(
-                    input_csv_path=paths['consolidated_csv'],
-                    output_csv_path=stream_tmp_path,
-                    chunksize=200000,
-                    drop_tcp_stream=True,
-                )
-                os.replace(stream_tmp_path, paths['consolidated_csv'])
-                print(" -> Step 2.5 done.")
             print(" -> Step 2 done.")
 
-            # print("\n>>> Step 2.5/3: Build stream_id and drop tcp.stream")
-            # stream_tmp_path = paths['consolidated_csv'] + '.tmp_stream_id.csv'
-            # build_stream_id_from_five_tuple(
-            #     input_csv_path=paths['consolidated_csv'],
-            #     output_csv_path=stream_tmp_path,
-            #     chunksize=200000,
-            #     drop_tcp_stream=True,
-            # )
-            # os.replace(stream_tmp_path, paths['consolidated_csv'])
-            # print(" -> Step 2.5 done.")
+            print("\n>>> Step 2.5/3: Build stream_id and drop tcp.stream")
+            stream_tmp_path = paths['consolidated_csv'] + '.tmp_stream_id.csv'
+            build_stream_id_from_five_tuple(
+                input_csv_path=paths['consolidated_csv'],
+                output_csv_path=stream_tmp_path,
+                chunksize=200000,
+                drop_tcp_stream=True,
+            )
+            os.replace(stream_tmp_path, paths['consolidated_csv'])
+            print(" -> Step 2.5 done.")
 
             print("\n>>> Step 3/3: Final Processing (Split / FBT / Merge / Augment)")
             if NEED_CHIEF_BLOCK:

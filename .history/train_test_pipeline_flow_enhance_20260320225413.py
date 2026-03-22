@@ -929,14 +929,14 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
-    # USE_MAC_ADDRESS_THIS_RUN = True
-    USE_MAC_ADDRESS_THIS_RUN = False
-    # USE_IP_ADDRESS_THIS_RUN = True
-    USE_IP_ADDRESS_THIS_RUN = False
-    # USE_PORT_THIS_RUN = True
-    USE_PORT_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
+    USE_MAC_ADDRESS_THIS_RUN = True
+    # USE_MAC_ADDRESS_THIS_RUN = False
+    USE_IP_ADDRESS_THIS_RUN = True
+    # USE_IP_ADDRESS_THIS_RUN = False
+    USE_PORT_THIS_RUN = True
+    # USE_PORT_THIS_RUN = False
     ENABLE_FLOW_AGG_EVAL = True
     FLOW_AGG_USE_PROB_MEAN = True
     ENABLE_DIRECTIONAL_FLOW_CONTEXT = True
@@ -950,11 +950,11 @@ if __name__ == '__main__':
     FLOW_ATTN_DROPOUT = 0.1
     FLOW_LOSS_USE_PACKET_AUX = True
     FLOW_PACKET_AUX_WEIGHT = 0.05
-    STRATIFIED_TRAIN_SET = False
+    # STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
-    # STRATIFIED_TRAIN_SET = True
+    STRATIFIED_TRAIN_SET = True
     # STRATIFIED_VAL_TEST_SET = True
-    SAMPLING_PROPORTION = 0.6
+    SAMPLING_PROPORTION = 0.5
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
     MAX_PACKETS_PER_FLOW_TRAIN = 256
@@ -962,8 +962,8 @@ if __name__ == '__main__':
     MAX_PACKETS_PER_FLOW_EVAL = MAX_PACKETS_PER_FLOW_TRAIN
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
 
     FILTER_SHORT_ENTRIES = False
 
