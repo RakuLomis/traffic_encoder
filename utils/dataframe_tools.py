@@ -420,13 +420,25 @@ def find_fields_by_prefix_logically(layers: list, layer_prefixes: dict, fields: 
                     next_layers.append(current_layer) 
     return layer_prefixes, next_layers 
 
-def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], logical_tree =True): 
+def protocol_tree(
+    list_fields: list,
+    list_layers: Optional[List[str]] = None,
+    logical_tree: bool = True
+): 
     """
     Find the hierarchy structure of protocols by handling the csv columns. 
     """
+    if list_layers is None:
+        inferred = sorted({
+            str(f).split('.')[0]
+            for f in list_fields
+            if isinstance(f, str) and len(str(f)) > 0
+        })
+        list_layers = inferred
+
     dict_protocol_tree = {item: [] for item in list_layers} 
     dict_protocol_tree['statistics'] = [] 
-    lens = [len(item.split('.')) for item in list_fields]
+    lens = [len(item.split('.')) for item in list_fields] if len(list_fields) > 0 else [1]
     len_prefix = 1 # length of current prefix, i.e. eth 
     max_field_len = max(lens) 
     if logical_tree: 
@@ -440,9 +452,29 @@ def protocol_tree(list_fields: list, list_layers = ['eth', 'ip', 'tcp', 'tls'], 
             len_prefix += 1
     return dict_protocol_tree 
 
-def add_root_layer(ptree: Dict[str, List[str]]): 
-    protocols = ['eth', 'ip', 'tcp', 'tls'] 
-    ptree['root'] = [p for p in protocols if p in ptree] 
+def add_root_layer(ptree: Dict[str, List[str]], mode: str = 'protocol_only'):
+    """
+    Add a robust root layer.
+    mode:
+      - 'protocol_only': root connects only to top-level protocol nodes (no dot in name).
+      - 'all_top': root connects to all top-level nodes.
+    """
+    if not ptree:
+        ptree['root'] = []
+        return
+
+    parent_nodes = set(ptree.keys()) - {'root', 'statistics'}
+    child_nodes = set()
+    for children in ptree.values():
+        child_nodes.update(children)
+    child_nodes -= {'root', 'statistics'}
+
+    top_level_nodes = sorted(list(parent_nodes - child_nodes))
+    if mode == 'protocol_only':
+        protocol_nodes = [n for n in top_level_nodes if isinstance(n, str) and '.' not in n]
+        ptree['root'] = protocol_nodes if len(protocol_nodes) > 0 else top_level_nodes
+    else:
+        ptree['root'] = top_level_nodes
 
 # def add_root_layer(ptree: Dict[str, List[str]]):
 #     """

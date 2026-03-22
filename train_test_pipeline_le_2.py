@@ -436,6 +436,7 @@ if __name__ == '__main__':
     AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
     ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    BACKBONE_MODE = 'expert_local'  # 'expert_local' | 'global'
 
     FILTER_SHORT_ENTRIES = False
 
@@ -459,6 +460,7 @@ if __name__ == '__main__':
         USE_FLOW_FEATURES_THIS_RUN = False
 
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
+    print(f"Backbone mode: {BACKBONE_MODE}")
     print(
         f"Experiment profile: {EXPERIMENT_PROFILE}; "
         f"stratified_train={STRATIFIED_TRAIN_SET}; "
@@ -964,10 +966,13 @@ if __name__ == '__main__':
     
     # a) 实例化 GNNTrafficDataset
     train_dataset = GNNTrafficDataset(train_df, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
+                                      backbone_mode=BACKBONE_MODE,
                                       use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN, obfuscation_config=None)
     val_dataset = GNNTrafficDataset(val_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
+                                    backbone_mode=BACKBONE_MODE,
                                     use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN, obfuscation_config=None)
     test_dataset = GNNTrafficDataset(test_df_aligned, config_path, vocab_path, use_flow_features=USE_FLOW_FEATURES_THIS_RUN, enabled_layers=ABLATION_LAYERS, 
+                                     backbone_mode=BACKBONE_MODE,
                                      use_ip_address=USE_IP_ADDRESS_THIS_RUN, use_mac_address=USE_MAC_ADDRESS_THIS_RUN, use_port=USE_PORT_THIS_RUN, obfuscation_config=None)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1390,6 +1395,7 @@ if __name__ == '__main__':
                 vocab_path,
                 use_flow_features=USE_FLOW_FEATURES_THIS_RUN,
                 enabled_layers=ABLATION_LAYERS,
+                backbone_mode=BACKBONE_MODE,
                 use_ip_address=USE_IP_ADDRESS_THIS_RUN,
                 use_mac_address=USE_MAC_ADDRESS_THIS_RUN,
                 use_port=USE_PORT_THIS_RUN,

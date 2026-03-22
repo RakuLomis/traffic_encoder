@@ -26,6 +26,7 @@ class GNNTrafficDataset(Dataset):
                 node_feature_dim: int=128, 
                 use_flow_features: bool = False, use_ip_address: bool = True, use_mac_address: bool = True, 
                 use_port: bool = True, 
+                backbone_mode: str = 'expert_local',
                 obfuscation_config: Optional[Dict[str, Any]] = None):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
@@ -33,6 +34,7 @@ class GNNTrafficDataset(Dataset):
         self.use_ip_address = use_ip_address 
         self.use_mac_address = use_mac_address 
         self.use_port = use_port 
+        self.backbone_mode = backbone_mode
         self.obfuscation_config = obfuscation_config
 
 
@@ -161,8 +163,13 @@ class GNNTrafficDataset(Dataset):
                 continue
 
             # ?
-            ptree = protocol_tree(real_nodes_for_expert)
-            add_root_layer(ptree)
+            if self.backbone_mode == 'expert_local':
+                # Expert-local backbone: root -> protocol_of_this_expert -> its fields.
+                ptree = protocol_tree(real_nodes_for_expert, list_layers=None, logical_tree=True)
+            else:
+                # Compatibility mode with legacy global protocol layers.
+                ptree = protocol_tree(real_nodes_for_expert, list_layers=['eth', 'ip', 'tcp', 'tls'], logical_tree=True)
+            add_root_layer(ptree, mode='protocol_only')
             
             # ?
             ptree_nodes = set(ptree.keys())
