@@ -950,10 +950,10 @@ if __name__ == '__main__':
     FLOW_ATTN_DROPOUT = 0.1
     FLOW_LOSS_USE_PACKET_AUX = True
     FLOW_PACKET_AUX_WEIGHT = 0.05
-    STRATIFIED_TRAIN_SET = False
-    STRATIFIED_VAL_TEST_SET = False
-    # STRATIFIED_TRAIN_SET = True
-    # STRATIFIED_VAL_TEST_SET = True
+    # STRATIFIED_TRAIN_SET = False
+    # STRATIFIED_VAL_TEST_SET = False
+    STRATIFIED_TRAIN_SET = True
+    STRATIFIED_VAL_TEST_SET = True
     SAMPLING_PROPORTION = 0.6
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
@@ -962,8 +962,8 @@ if __name__ == '__main__':
     MAX_PACKETS_PER_FLOW_EVAL = MAX_PACKETS_PER_FLOW_TRAIN
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
     BACKBONE_MODE = 'expert_local'  # 'expert_local' | 'global'
 
     FILTER_SHORT_ENTRIES = False
