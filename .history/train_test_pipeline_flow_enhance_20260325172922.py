@@ -381,7 +381,7 @@ def train_one_epoch(
     num_classes: int, 
      
     loss_fn: nn.Module, # for focal_loss
-    alpha: float = 1e-5,
+    alpha: float = 1e-4,
     train_target: str = 'packet',
     flow_agg_method: str = 'mean_logits',
     flow_topk: int = 8,
@@ -1084,7 +1084,7 @@ if __name__ == '__main__':
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4
     MAX_LEARNING_RATE = 1e-3
-    DROPOUT_RATE = 0.1
+    DROPOUT_RATE = 0.5
     NUM_WORKERS = 4
     USE_AMP = True
     AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'
@@ -1112,7 +1112,7 @@ if __name__ == '__main__':
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
     ENABLE_DUAL_LEVEL_METRICS = False
     TRAIN_TARGET = 'flow'  # 'packet' or 'flow' 
-    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'learned_attn_logits' | 'repr_logits_attn' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
+    FLOW_AGG_METHOD = 'repr_logits_attn'  # 'mean_logits' | 'learned_attn_logits' | 'repr_logits_attn' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
     FLOW_TOPK = 8
     FLOW_SOFT_TEMP = 1.2
     FLOW_ATTN_HIDDEN_DIM = 64
@@ -1161,8 +1161,6 @@ if __name__ == '__main__':
     # Clamp alpha to avoid extreme gradient spikes on ultra-rare classes.
     FOCAL_ALPHA_CLAMP_MIN = 0.1
     FOCAL_ALPHA_CLAMP_MAX = 10.0
-    MASK_ENTROPY_REG_ALPHA = 1e-5
-    EXPERT_GATE_NOISE_STD = 0.01
     EPSILON = 1e-6 
 
     ROLLBACK_PATIENCE = NUM_EPOCHS // 10
@@ -1180,10 +1178,6 @@ if __name__ == '__main__':
     print(
         f"Focal alpha config: smoothing={FOCAL_ALPHA_SMOOTHING}, "
         f"clamp=[{FOCAL_ALPHA_CLAMP_MIN}, {FOCAL_ALPHA_CLAMP_MAX}]"
-    )
-    print(
-        f"Mask entropy alpha: {MASK_ENTROPY_REG_ALPHA}; "
-        f"expert gate noise std: {EXPERT_GATE_NOISE_STD}"
     )
      
      
@@ -1905,8 +1899,7 @@ if __name__ == '__main__':
         use_flow_features=USE_FLOW_FEATURES_THIS_RUN,
         num_flow_features=len(train_dataset.flow_feature_names) if USE_FLOW_FEATURES_THIS_RUN else 0,
         hidden_dim=GNN_HIDDEN_DIM, 
-        dropout_rate=DROPOUT_RATE,
-        expert_gate_noise_std=EXPERT_GATE_NOISE_STD,
+        dropout_rate=DROPOUT_RATE
     )#.to(device)
 
      
@@ -1971,7 +1964,6 @@ if __name__ == '__main__':
             train_metrics, _ = train_one_epoch(pta_model, train_loader, # loss_fn, 
                                                optimizer, # scheduler, 
                                                device, num_classes, loss_fn,
-                                               alpha=MASK_ENTROPY_REG_ALPHA,
                                                train_target=TRAIN_TARGET,
                                                flow_agg_method=FLOW_AGG_METHOD,
                                                flow_topk=FLOW_TOPK,

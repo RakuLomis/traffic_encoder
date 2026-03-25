@@ -1084,7 +1084,7 @@ if __name__ == '__main__':
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 1e-4
     MAX_LEARNING_RATE = 1e-3
-    DROPOUT_RATE = 0.1
+    DROPOUT_RATE = 0.5
     NUM_WORKERS = 4
     USE_AMP = True
     AMP_DTYPE_STR = 'fp16'  # 'fp16' or 'bf16'

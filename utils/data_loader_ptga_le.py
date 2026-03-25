@@ -352,6 +352,10 @@ class GNNTrafficDataset(Dataset):
                         )
                         values = values * (1 + noise)
 
+                    # Stabilize numerical scale for length-like hex fields.
+                    values = np.clip(values, a_min=0.0, a_max=None)
+                    values = np.log1p(values)
+
                     processed_data_dict[field_name] = values.astype(np.float32)
 
             else:

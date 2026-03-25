@@ -286,12 +286,14 @@ class HierarchicalMoE(nn.Module):
                  num_flow_features: int = 0,
                  hidden_dim: int = 128,
                  num_heads: int = 4,
-                 dropout_rate: float = 0.3):
+                 dropout_rate: float = 0.3,
+                 expert_gate_noise_std: float = 0.0):
 
         super().__init__()
 
         self.use_flow_features = use_flow_features
         self.hidden_dim = hidden_dim
+        self.expert_gate_noise_std = float(expert_gate_noise_std)
 
         self.shared_field_embedder = FieldEmbedding(config_path, vocab_path)
 
@@ -387,6 +389,9 @@ class HierarchicalMoE(nn.Module):
         z_concat = torch.cat(expert_embeddings, dim=1)
         gating_logits = self.gating_network(z_concat)
         expert_weights = torch.sigmoid(gating_logits)
+        if self.training and self.expert_gate_noise_std > 0.0:
+            noise = torch.randn_like(expert_weights) * self.expert_gate_noise_std
+            expert_weights = torch.clamp(expert_weights + noise, 0.0, 1.0)
 
         # 缓存当前 batch 的 expert weights
         self._latest_expert_weights = expert_weights.detach()
