@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
 from models.ProtocolTreeAttention import ProtocolTreeAttention 
@@ -109,6 +109,113 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
+class FlowMicroBatchSampler(Sampler[List[int]]):
+    """
+    Yield one variable-length micro-batch per flow (or per flow chunk),
+    so that each micro-batch contains packets from the same flow only.
+    """
+    def __init__(
+        self,
+        flow_ids: torch.Tensor,
+        max_packets_per_flow: int = 256,
+        shuffle_flows: bool = True,
+        min_packets_per_flow: int = 1,
+    ):
+        if flow_ids.ndim != 1:
+            raise ValueError("flow_ids must be a 1D tensor.")
+        self.max_packets_per_flow = int(max_packets_per_flow)
+        self.shuffle_flows = bool(shuffle_flows)
+        self.min_packets_per_flow = int(min_packets_per_flow)
+
+        flow_to_indices: Dict[int, List[int]] = {}
+        for i, fid in enumerate(flow_ids.tolist()):
+            k = int(fid)
+            if k not in flow_to_indices:
+                flow_to_indices[k] = []
+            flow_to_indices[k].append(i)
+
+        self._microbatches: List[List[int]] = []
+        for _, idxs in flow_to_indices.items():
+            if len(idxs) < self.min_packets_per_flow:
+                continue
+            # Use first-K packets as one flow micro-batch.
+            if self.max_packets_per_flow > 0:
+                idxs = idxs[: self.max_packets_per_flow]
+            if len(idxs) > 0:
+                self._microbatches.append(idxs)
+
+    def __iter__(self):
+        order = list(range(len(self._microbatches)))
+        if self.shuffle_flows:
+            random.shuffle(order)
+        for i in order:
+            yield self._microbatches[i]
+
+    def __len__(self):
+        return len(self._microbatches)
+
+    @property
+    def microbatches(self) -> List[List[int]]:
+        return self._microbatches
+
+
+class FlowMacroBatchSampler(Sampler[List[int]]):
+    """
+    Pack multiple flow micro-batches into one macro-batch while keeping
+    each flow internally intact.
+    """
+    def __init__(
+        self,
+        microbatches: List[List[int]],
+        max_packets_per_batch: int,
+        max_flows_per_batch: int = 0,
+        shuffle_batches: bool = True,
+    ):
+        self._microbatches = microbatches
+        self.max_packets_per_batch = max(1, int(max_packets_per_batch))
+        self.max_flows_per_batch = int(max_flows_per_batch)
+        self.shuffle_batches = bool(shuffle_batches)
+
+    def __iter__(self):
+        order = list(range(len(self._microbatches)))
+        random.shuffle(order)
+
+        current: List[int] = []
+        current_packets = 0
+        current_flows = 0
+
+        for i in order:
+            mb = self._microbatches[i]
+            mb_packets = len(mb)
+            if mb_packets == 0:
+                continue
+
+            exceed_packets = (current_packets + mb_packets > self.max_packets_per_batch)
+            exceed_flows = (self.max_flows_per_batch > 0 and current_flows + 1 > self.max_flows_per_batch)
+            if (exceed_packets or exceed_flows) and current_packets > 0:
+                yield current
+                current = []
+                current_packets = 0
+                current_flows = 0
+
+            if mb_packets > self.max_packets_per_batch:
+                # single large micro-batch, emit alone (already truncated by max_packets_per_flow in practice)
+                yield mb
+                continue
+
+            current.extend(mb)
+            current_packets += mb_packets
+            current_flows += 1
+
+        if current_packets > 0:
+            yield current
+
+    def __len__(self):
+        # Rough upper bound for progress display.
+        total_packets = sum(len(mb) for mb in self._microbatches)
+        return max(1, (total_packets + self.max_packets_per_batch - 1) // self.max_packets_per_batch)
+
+
 class FlowLogitAttentionPool(nn.Module):
     """
     Learn packet importance from packet logits for flow-level aggregation.
@@ -132,46 +239,6 @@ class FlowLogitAttentionPool(nn.Module):
         return self.score_mlp(x).squeeze(-1)
 
 
-class FlowReprLogitAggregator(nn.Module):
-    """
-    Learnable flow-level aggregator over variable-length packet sets.
-    Input per packet: fused packet representation + packet logits.
-    """
-    def __init__(
-        self,
-        repr_dim: int,
-        num_classes: int,
-        hidden_dim: int = 128,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.repr_proj = nn.Linear(repr_dim, hidden_dim)
-        self.logit_proj = nn.Linear(num_classes, hidden_dim)
-        self.fuse_mlp = nn.Sequential(
-            nn.LayerNorm(hidden_dim * 2),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-        )
-        self.attn_head = nn.Linear(hidden_dim, 1)
-        self.flow_head = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
-
-    def forward(self, packet_repr: torch.Tensor, packet_logits: torch.Tensor) -> torch.Tensor:
-        target_dtype = self.repr_proj.weight.dtype
-        r = self.repr_proj(packet_repr.to(dtype=target_dtype))
-        l = self.logit_proj(packet_logits.to(dtype=target_dtype))
-        h = self.fuse_mlp(torch.cat([r, l], dim=-1))
-        alpha = torch.softmax(self.attn_head(h).squeeze(-1), dim=0)
-        flow_repr = torch.sum(alpha.unsqueeze(-1) * h, dim=0)
-        return self.flow_head(flow_repr)
-
-
 
 def aggregate_logits_by_flow_tensor(
     packet_logits: torch.Tensor,
@@ -181,7 +248,6 @@ def aggregate_logits_by_flow_tensor(
     method: str = 'mean_logits',
     topk: int = 8,
     soft_temp: float = 1.0,
-    packet_repr: Optional[torch.Tensor] = None,
     packet_weighter: Optional[nn.Module] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
@@ -194,43 +260,6 @@ def aggregate_logits_by_flow_tensor(
         raise ValueError("packet_labels/flow_ids must be [N].")
     if packet_logits.size(0) != packet_labels.size(0) or packet_logits.size(0) != flow_ids.size(0):
         raise ValueError("packet_logits, packet_labels, flow_ids must share same N.")
-    if method == 'repr_logits_attn':
-        if packet_weighter is None:
-            raise RuntimeError("packet_weighter (FlowReprLogitAggregator) is required for repr_logits_attn.")
-        if packet_repr is None:
-            raise RuntimeError("packet_repr is required for repr_logits_attn.")
-        if packet_repr.size(0) != packet_logits.size(0):
-            raise ValueError("packet_repr and packet_logits must share same N.")
-
-        unique_flow_ids, inverse = torch.unique(flow_ids, sorted=False, return_inverse=True)
-        agg_logits: List[torch.Tensor] = []
-        agg_labels: List[torch.Tensor] = []
-        inconsistent = 0
-        for i in range(unique_flow_ids.numel()):
-            mask = (inverse == i)
-            logits_f = packet_logits[mask]
-            repr_f = packet_repr[mask]
-            labels_f = packet_labels[mask]
-            uniq = torch.unique(labels_f)
-            if uniq.numel() == 0:
-                continue
-            if uniq.numel() > 1:
-                inconsistent += 1
-            y = uniq[0].long()
-            z = packet_weighter(repr_f, logits_f)
-            agg_logits.append(z)
-            agg_labels.append(y)
-
-        if len(agg_logits) == 0:
-            return (
-                torch.empty((0, num_classes), device=packet_logits.device, dtype=packet_logits.dtype),
-                torch.empty((0,), device=packet_labels.device, dtype=packet_labels.dtype),
-                0,
-            )
-
-        flow_logits = torch.stack(agg_logits, dim=0)
-        flow_labels = torch.stack(agg_labels, dim=0).long()
-        return flow_logits, flow_labels, inconsistent
 
     # Fast vectorized path for the common methods to reduce Python-loop overhead.
     if method in ('mean_logits', 'mean_probs'):
@@ -339,6 +368,7 @@ def train_one_epoch(
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
     scaler: torch.cuda.amp.GradScaler = None,
+    grad_accum_steps: int = 1,
 ) -> (Dict, torch.Tensor): # type: ignore 
     """
     Run one training epoch for the HierarchicalMoE model.
@@ -364,6 +394,8 @@ def train_one_epoch(
      
     # base_loss_fn = nn.CrossEntropyLoss(reduction='none')
 
+    grad_accum_steps = max(1, int(grad_accum_steps))
+    optimizer.zero_grad(set_to_none=True)
     for i, batch_dict in enumerate(tqdm(dataloader, desc="Training")):
          
         # batch_dict = batch_dict.to(device)
@@ -411,13 +443,7 @@ def train_one_epoch(
             dtype=amp_dtype,
             enabled=(use_amp and device.type == 'cuda')
         ):
-            need_packet_repr = (train_target == 'flow' and flow_agg_method == 'repr_logits_attn')
-            model_out = model(batch_dict, return_packet_repr=need_packet_repr)
-            if need_packet_repr:
-                outputs, gates_dict, packet_repr = model_out
-            else:
-                outputs, gates_dict = model_out
-                packet_repr = None
+            outputs, gates_dict = model(batch_dict)
         
          
         # classification_loss_per_sample = base_loss_fn(outputs, labels)
@@ -439,7 +465,6 @@ def train_one_epoch(
                     method=flow_agg_method,
                     topk=flow_topk,
                     soft_temp=flow_soft_temp,
-                    packet_repr=packet_repr,
                     packet_weighter=flow_packet_weighter,
                 )
                 classification_loss = loss_fn(flow_logits, flow_labels)
@@ -461,23 +486,27 @@ def train_one_epoch(
             total_loss = classification_loss + alpha * total_mask_entropy_loss
         
          
-        optimizer.zero_grad(set_to_none=True)
+        loss_for_backward = total_loss / grad_accum_steps
         if scaler is not None and scaler.is_enabled():
-            scaler.scale(total_loss).backward()
-            scaler.unscale_(optimizer)
-            params_to_clip = list(model.parameters())
-            if flow_packet_weighter is not None:
-                params_to_clip += list(flow_packet_weighter.parameters())
-            torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            scaler.scale(loss_for_backward).backward()
+            if ((i + 1) % grad_accum_steps == 0) or ((i + 1) == len(dataloader)):
+                scaler.unscale_(optimizer)
+                params_to_clip = list(model.parameters())
+                if flow_packet_weighter is not None:
+                    params_to_clip += list(flow_packet_weighter.parameters())
+                torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
         else:
-            total_loss.backward()
-            params_to_clip = list(model.parameters())
-            if flow_packet_weighter is not None:
-                params_to_clip += list(flow_packet_weighter.parameters())
-            torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
-            optimizer.step()
+            loss_for_backward.backward()
+            if ((i + 1) % grad_accum_steps == 0) or ((i + 1) == len(dataloader)):
+                params_to_clip = list(model.parameters())
+                if flow_packet_weighter is not None:
+                    params_to_clip += list(flow_packet_weighter.parameters())
+                torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
         
          
          
@@ -503,7 +532,6 @@ def train_one_epoch(
                     method=flow_agg_method,
                     topk=flow_topk,
                     soft_temp=flow_soft_temp,
-                    packet_repr=(packet_repr.detach() if packet_repr is not None else None),
                     packet_weighter=flow_packet_weighter,
                 )
                 if flow_logits_m.size(0) > 0:
@@ -603,7 +631,6 @@ def evaluate(
     flow_den_dict: Dict[int, float] = {}
     flow_topk_dict: Dict[int, List[Tuple[float, torch.Tensor]]] = {}
     flow_label_count_dict: Dict[int, Dict[int, int]] = {}
-    batch_level_flow_eval = (eval_target == 'flow' and flow_agg_method == 'repr_logits_attn')
     
      
     # base_loss_fn = nn.CrossEntropyLoss()
@@ -649,13 +676,7 @@ def evaluate(
             dtype=amp_dtype,
             enabled=(use_amp and device.type == 'cuda')
         ):
-            need_packet_repr = (eval_target == 'flow' and flow_agg_method == 'repr_logits_attn')
-            model_out = model(batch_dict, return_packet_repr=need_packet_repr)
-            if need_packet_repr:
-                outputs, _, packet_repr = model_out
-            else:
-                outputs, _ = model_out
-                packet_repr = None
+            outputs, _ = model(batch_dict)   
 
         if collect_dual_level_metrics:
             _, packet_pred = torch.max(outputs.data, 1)
@@ -670,28 +691,6 @@ def evaluate(
         if eval_target == 'flow':
             if flow_ids is None:
                 raise RuntimeError("flow_ids missing in batch_dict while eval_target='flow'.")
-            if batch_level_flow_eval:
-                flow_logits_b, flow_labels_b, _ = aggregate_logits_by_flow_tensor(
-                    packet_logits=outputs,
-                    packet_labels=labels,
-                    flow_ids=flow_ids,
-                    num_classes=num_classes,
-                    method=flow_agg_method,
-                    topk=flow_topk,
-                    soft_temp=flow_soft_temp,
-                    packet_repr=packet_repr,
-                    packet_weighter=flow_packet_weighter,
-                )
-                if flow_logits_b.size(0) > 0:
-                    flow_loss_b = loss_fn(flow_logits_b, flow_labels_b)
-                    running_loss += flow_loss_b.item() * flow_labels_b.size(0)
-                    running_items += flow_labels_b.size(0)
-                    _, flow_pred_b = torch.max(flow_logits_b.data, 1)
-                    for t, p in zip(flow_labels_b.view(-1), flow_pred_b.view(-1)):
-                        if t < num_classes and p < num_classes:
-                            confusion_matrix[t, p] += 1
-                continue
-
             logits_cpu = outputs.detach().float().cpu()
             labels_cpu = labels.detach().cpu()
             flow_ids_cpu = flow_ids.detach().cpu()
@@ -772,7 +771,7 @@ def evaluate(
      
     
      
-    if eval_target == 'flow' and not batch_level_flow_eval:
+    if eval_target == 'flow':
         flow_logits_list: List[torch.Tensor] = []
         flow_labels_list: List[int] = []
 
@@ -1058,13 +1057,21 @@ if __name__ == '__main__':
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
     ENABLE_DUAL_LEVEL_METRICS = False
     TRAIN_TARGET = 'flow'  # 'packet' or 'flow' 
-    FLOW_AGG_METHOD = 'repr_logits_attn'  # 'mean_logits' | 'learned_attn_logits' | 'repr_logits_attn' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
+    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'learned_attn_logits' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
     FLOW_TOPK = 8
     FLOW_SOFT_TEMP = 1.2
     FLOW_ATTN_HIDDEN_DIM = 64
     FLOW_ATTN_DROPOUT = 0.1
     FLOW_LOSS_USE_PACKET_AUX = True
-    FLOW_PACKET_AUX_WEIGHT = 0.05
+    FLOW_PACKET_AUX_WEIGHT = 0.0
+    # ENABLE_FLOW_MICROBATCH = False
+    ENABLE_FLOW_MICROBATCH = True
+    ENABLE_FLOW_MACROBATCH = True
+    FLOW_MICROBATCH_MAX_PACKETS = 64
+    FLOW_MICROBATCH_MIN_PACKETS = 1
+    FLOW_MICROBATCH_ACCUM_STEPS = 1
+    FLOW_MACROBATCH_MAX_PACKETS = 1024
+    FLOW_MACROBATCH_MAX_FLOWS = 0
     STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
     # STRATIFIED_TRAIN_SET = True
@@ -1072,9 +1079,19 @@ if __name__ == '__main__':
     SAMPLING_PROPORTION = 0.6
     SAMPLING_GRANULARITY = 'flow'  # 'flow' or 'packet'
     MIN_FLOWS_PER_CLASS = 5
-    MAX_PACKETS_PER_FLOW_TRAIN = 256
+    MAX_PACKETS_PER_FLOW_TRAIN = 64
     # MAX_PACKETS_PER_FLOW_EVAL = 256
     MAX_PACKETS_PER_FLOW_EVAL = MAX_PACKETS_PER_FLOW_TRAIN
+    PACKET_CAP_STRATEGY = 'flow_random'  # 'flow_head' | 'flow_random'
+    FLOW_PACKET_ORDER_COLUMNS = [
+        'frame_num',
+        # 'frame.number',
+        'tcp.time_relative',
+        'tcp.time_delta',
+        'tcp.options.timestamp.tsval',
+        'tcp.options.timestamp.tsecr',
+        'tcp.options.timestamp',
+    ]
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
     # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
@@ -1114,6 +1131,20 @@ if __name__ == '__main__':
     )
     print(f"Flow aggregation: {FLOW_AGG_METHOD} (topk={FLOW_TOPK}, soft_temp={FLOW_SOFT_TEMP})")
     print(f"Flow attn config: hidden={FLOW_ATTN_HIDDEN_DIM}, dropout={FLOW_ATTN_DROPOUT}")
+    print(
+        f"Flow microbatch: enabled={ENABLE_FLOW_MICROBATCH}, "
+        f"max_packets={FLOW_MICROBATCH_MAX_PACKETS}, "
+        f"accum_steps={FLOW_MICROBATCH_ACCUM_STEPS}"
+    )
+    print(
+        f"Flow macrobatch: enabled={ENABLE_FLOW_MACROBATCH}, "
+        f"max_packets={FLOW_MACROBATCH_MAX_PACKETS}, "
+        f"max_flows={FLOW_MACROBATCH_MAX_FLOWS}"
+    )
+    print(
+        f"Packet cap strategy: {PACKET_CAP_STRATEGY}; "
+        f"order columns={FLOW_PACKET_ORDER_COLUMNS}"
+    )
      
      
     # dataset_name = 'ISCX-VPN'
@@ -1203,9 +1234,39 @@ if __name__ == '__main__':
 
         before_packets = len(df)
         before_flows = df['stream_id'].nunique(dropna=True)
-        shuffled = df.sample(frac=1.0, random_state=SEED).copy()
-        shuffled['_flow_pkt_rank'] = shuffled.groupby('stream_id').cumcount()
-        capped = shuffled[shuffled['_flow_pkt_rank'] < cap_per_flow].drop(columns=['_flow_pkt_rank'])
+        if PACKET_CAP_STRATEGY == 'flow_head':
+            time_col = next((c for c in FLOW_PACKET_ORDER_COLUMNS if c in df.columns), None)
+            if time_col is not None:
+                work = df.copy()
+                work['_time_order_num'] = pd.to_numeric(work[time_col], errors='coerce')
+                work['_orig_idx'] = np.arange(len(work), dtype=np.int64)
+                work = work.sort_values(
+                    by=['stream_id', '_time_order_num', '_orig_idx'],
+                    ascending=[True, True, True],
+                    kind='mergesort',
+                )
+                work['_flow_pkt_rank'] = work.groupby('stream_id', sort=False).cumcount()
+                capped = work[work['_flow_pkt_rank'] < cap_per_flow].drop(
+                    columns=['_flow_pkt_rank', '_time_order_num', '_orig_idx'],
+                    errors='ignore',
+                )
+                print(
+                    f"[Packet Cap] {split_name}: strategy=flow_head, "
+                    f"time_col='{time_col}', cap={cap_per_flow}"
+                )
+            else:
+                shuffled = df.sample(frac=1.0, random_state=SEED).copy()
+                shuffled['_flow_pkt_rank'] = shuffled.groupby('stream_id').cumcount()
+                capped = shuffled[shuffled['_flow_pkt_rank'] < cap_per_flow].drop(columns=['_flow_pkt_rank'])
+                print(
+                    f"[Packet Cap] {split_name}: strategy=flow_head fallback to flow_random "
+                    f"(no time column found), cap={cap_per_flow}"
+                )
+        else:
+            shuffled = df.sample(frac=1.0, random_state=SEED).copy()
+            shuffled['_flow_pkt_rank'] = shuffled.groupby('stream_id').cumcount()
+            capped = shuffled[shuffled['_flow_pkt_rank'] < cap_per_flow].drop(columns=['_flow_pkt_rank'])
+            print(f"[Packet Cap] {split_name}: strategy=flow_random, cap={cap_per_flow}")
         capped = capped.reset_index(drop=True)
 
         after_packets = len(capped)
@@ -1732,29 +1793,18 @@ if __name__ == '__main__':
      
     
     print("Calculating static class weights (alpha) for FocalLoss...")
-    if TRAIN_TARGET == 'flow' and 'stream_id' in train_df.columns:
-        # Align class weights with flow-level supervision target.
-        flow_label_df = train_df[['stream_id', 'label_id']].drop_duplicates(subset=['stream_id'])
-        class_counts_series = flow_label_df['label_id'].value_counts().sort_index()
-        alpha_count_level = "flow"
-    else:
-        # Packet-level fallback.
-        class_counts_series = train_df['label_id'].value_counts().sort_index()
-        alpha_count_level = "packet"
-
-    class_counts_series = class_counts_series.reindex(range(num_classes), fill_value=0)
-    class_counts_np = class_counts_series.to_numpy(dtype=np.int64)
-    class_counts_np[class_counts_np <= 0] = 1
-
-    class_weights = torch.tensor(class_counts_np, dtype=torch.float)
+     
+    class_counts = train_df['label_id'].value_counts().sort_index().values
+    
+     
+     
+    class_weights = torch.tensor(class_counts, dtype=torch.float)
     total_samples = class_weights.sum()
     class_weights = total_samples / (num_classes * class_weights)
     
      
     alpha_weights = class_weights.to(device)
     
-    print(f" -> Focal alpha count level: {alpha_count_level}")
-    print(f" -> Focal alpha class counts: {class_counts_np.tolist()}")
     print(f" -> FocalLoss Alpha (weights): {alpha_weights.cpu().numpy().round(2)}")
 
      
@@ -1778,14 +1828,46 @@ if __name__ == '__main__':
     g.manual_seed(SEED)
 
      
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-                              num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
-                              drop_last=True, 
-                              persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                              prefetch_factor=DATALOADER_PREFETCH, 
-                              collate_fn=train_dataset.collate_from_index,
-                              )
-                            #   collate_fn=custom_collate_flat_dict)
+    if ENABLE_FLOW_MICROBATCH and TRAIN_TARGET == 'flow':
+        flow_micro_sampler = FlowMicroBatchSampler(
+            flow_ids=train_dataset.flow_ids,
+            max_packets_per_flow=FLOW_MICROBATCH_MAX_PACKETS,
+            shuffle_flows=True,
+            min_packets_per_flow=FLOW_MICROBATCH_MIN_PACKETS,
+        )
+        if ENABLE_FLOW_MACROBATCH:
+            train_batch_sampler = FlowMacroBatchSampler(
+                microbatches=flow_micro_sampler.microbatches,
+                max_packets_per_batch=FLOW_MACROBATCH_MAX_PACKETS,
+                max_flows_per_batch=FLOW_MACROBATCH_MAX_FLOWS,
+                shuffle_batches=True,
+            )
+            print(
+                f"Train loader uses flow macro-batches: ~{len(train_batch_sampler)} steps/epoch "
+                f"from {len(flow_micro_sampler.microbatches)} flows"
+            )
+        else:
+            train_batch_sampler = flow_micro_sampler
+            print(f"Train loader uses flow micro-batches: {len(train_batch_sampler)} flow groups/epoch")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_batch_sampler,
+            num_workers=NUM_WORKERS,
+            pin_memory=True,
+            worker_init_fn=seed_worker,
+            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+            prefetch_factor=DATALOADER_PREFETCH,
+            collate_fn=train_dataset.collate_from_index,
+        )
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+                                num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
+                                drop_last=True, 
+                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                                prefetch_factor=DATALOADER_PREFETCH, 
+                                collate_fn=train_dataset.collate_from_index,
+                                )
+                                #   collate_fn=custom_collate_flat_dict)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
                             num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
                             persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
@@ -1832,14 +1914,6 @@ if __name__ == '__main__':
             dropout=FLOW_ATTN_DROPOUT,
         ).to(device)
         print("Flow learnable aggregator enabled (learned_attn_logits).")
-    elif TRAIN_TARGET == 'flow' and FLOW_AGG_METHOD == 'repr_logits_attn':
-        flow_packet_weighter = FlowReprLogitAggregator(
-            repr_dim=GNN_HIDDEN_DIM,
-            num_classes=num_classes,
-            hidden_dim=FLOW_ATTN_HIDDEN_DIM,
-            dropout=FLOW_ATTN_DROPOUT,
-        ).to(device)
-        print("Flow learnable aggregator enabled (repr_logits_attn).")
 
     optim_params = list(pta_model.parameters())
     if flow_packet_weighter is not None:
@@ -1889,7 +1963,12 @@ if __name__ == '__main__':
                                                collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
                                                use_amp=use_amp_this_run,
                                                amp_dtype=amp_dtype,
-                                               scaler=scaler)
+                                               scaler=scaler,
+                                               grad_accum_steps=(
+                                                   FLOW_MICROBATCH_ACCUM_STEPS
+                                                   if (ENABLE_FLOW_MICROBATCH and TRAIN_TARGET == 'flow' and not ENABLE_FLOW_MACROBATCH)
+                                                   else 1
+                                               ))
                                             #    dynamic_weights=dynamic_weights)
             # val_metrics, _, val_per_class_f1 = evaluate(pta_model, val_loader, # loss_fn, 
             #                           device, num_classes)

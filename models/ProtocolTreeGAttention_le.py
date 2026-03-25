@@ -356,7 +356,7 @@ class HierarchicalMoE(nn.Module):
     # Forward
     # =========================================================
 
-    def forward(self, batch_dict: Dict[str, Any]):
+    def forward(self, batch_dict: Dict[str, Any], return_packet_repr: bool = False):
 
         expert_embeddings = []
         all_gates = {}
@@ -398,6 +398,8 @@ class HierarchicalMoE(nn.Module):
 
         logits = self.aggregator(weighted_sum)
 
+        if return_packet_repr:
+            return logits, all_gates, weighted_sum
         return logits, all_gates
 
     # =========================================================
