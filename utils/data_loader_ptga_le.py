@@ -202,10 +202,6 @@ class GNNTrafficDataset(Dataset):
 
         # ?
         self._preload_to_tensors()
-        # Cache batched edge_index by (expert_name, batch_size).
-        self._batched_edge_index_cache: Dict[str, Dict[int, torch.Tensor]] = {
-            expert_name: {} for expert_name in self.expert_graphs
-        }
         print("Dataset initialization complete.")
 
         # # ==================== ?!  !!?====================
@@ -458,15 +454,14 @@ class GNNTrafficDataset(Dataset):
                 feature_dict[field_name] = expert_tensors[field_name].index_select(0, idx)
 
             num_nodes_per_graph = len(graph_info['all_nodes'])
-            edge_cache = self._batched_edge_index_cache[expert_name]
-            batched_edge_index = edge_cache.get(batch_size)
-            if batched_edge_index is None:
-                batched_edge_index = self._get_batched_edge_index(
-                    graph_info['edge_index'],
-                    num_nodes_per_graph=num_nodes_per_graph,
-                    batch_size=batch_size,
-                )
-                edge_cache[batch_size] = batched_edge_index
+            # Build batched edge_index on the fly.
+            # In flow-centric variable-size batching, caching by batch size can
+            # continuously grow and trigger host-memory pressure.
+            batched_edge_index = self._get_batched_edge_index(
+                graph_info['edge_index'],
+                num_nodes_per_graph=num_nodes_per_graph,
+                batch_size=batch_size,
+            )
 
             batch_vec = torch.arange(batch_size, dtype=torch.long).repeat_interleave(
                 num_nodes_per_graph

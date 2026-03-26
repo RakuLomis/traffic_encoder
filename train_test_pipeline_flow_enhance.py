@@ -1389,6 +1389,8 @@ if __name__ == '__main__':
     EARLY_STOP_PATIENCE = ROLLBACK_PATIENCE + 5
     MIN_LR_FOR_TRAINING = 1e-6
     LOG_FLUSH_EVERY_EPOCH = 1
+    EPOCH_GC_CLEANUP = True
+    EPOCH_EMPTY_CUDA_CACHE = False
     print(f"Batch size: {BATCH_SIZE}; Learning rate: {LEARNING_RATE}")
     print(f"Backbone mode: {BACKBONE_MODE}")
     print(
@@ -1423,6 +1425,10 @@ if __name__ == '__main__':
     print(
         f"Mask entropy alpha: {MASK_ENTROPY_REG_ALPHA}; "
         f"expert gate noise std: {EXPERT_GATE_NOISE_STD}"
+    )
+    print(
+        f"Epoch cleanup: gc={EPOCH_GC_CLEANUP}, "
+        f"empty_cuda_cache={EPOCH_EMPTY_CUDA_CACHE}"
     )
      
      
@@ -2469,6 +2475,11 @@ if __name__ == '__main__':
                 if epochs_needs_early_stop >= EARLY_STOP_PATIENCE: 
                     print(f"Model's performance has not involved in {epochs_needs_early_stop} epoches. Triggering final early stop.")
                     stop_training = True   
+
+            if EPOCH_GC_CLEANUP:
+                gc.collect()
+                if EPOCH_EMPTY_CUDA_CACHE and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         print("\nTraining complete!")
 
