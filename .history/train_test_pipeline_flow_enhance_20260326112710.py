@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
 from models.ProtocolTreeAttention import ProtocolTreeAttention 
@@ -112,62 +112,6 @@ def seed_worker(worker_id):
 def set_module_requires_grad(module: nn.Module, requires_grad: bool) -> None:
     for p in module.parameters():
         p.requires_grad = requires_grad
-
-
-class FlowCentricBatchSampler(Sampler[List[int]]):
-    """
-    Build packet-index batches from flow groups.
-    Each yielded batch contains K flows, each flow truncated to first-N packets.
-    """
-    def __init__(
-        self,
-        flow_ids: torch.Tensor,
-        packets_per_flow: int,
-        flows_per_batch: int,
-        shuffle_flows: bool = True,
-        drop_last: bool = False,
-    ):
-        if flow_ids.ndim != 1:
-            raise ValueError("flow_ids must be a 1D tensor")
-        self.packets_per_flow = max(1, int(packets_per_flow))
-        self.flows_per_batch = max(1, int(flows_per_batch))
-        self.shuffle_flows = bool(shuffle_flows)
-        self.drop_last = bool(drop_last)
-
-        flow_to_indices: Dict[int, List[int]] = {}
-        for idx, fid in enumerate(flow_ids.tolist()):
-            k = int(fid)
-            if k not in flow_to_indices:
-                flow_to_indices[k] = []
-            flow_to_indices[k].append(idx)
-
-        self._flow_chunks: List[List[int]] = []
-        for _, idxs in flow_to_indices.items():
-            if len(idxs) > 0:
-                self._flow_chunks.append(idxs[: self.packets_per_flow])
-
-    def __iter__(self):
-        order = list(range(len(self._flow_chunks)))
-        if self.shuffle_flows:
-            random.shuffle(order)
-        step = self.flows_per_batch
-        for start in range(0, len(order), step):
-            end = min(start + step, len(order))
-            if self.drop_last and (end - start) < step:
-                continue
-            flat: List[int] = []
-            for i in order[start:end]:
-                flat.extend(self._flow_chunks[i])
-            if len(flat) > 0:
-                yield flat
-
-    def __len__(self):
-        n = len(self._flow_chunks)
-        if n == 0:
-            return 0
-        if self.drop_last:
-            return n // self.flows_per_batch
-        return (n + self.flows_per_batch - 1) // self.flows_per_batch
 
 
 class FlowLogitAttentionPool(nn.Module):
@@ -1333,12 +1277,7 @@ if __name__ == '__main__':
     FLOW_REPR_TRAIN_AGG_ONLY_EPOCHS = 0
     FLOW_REPR_GAMMA_CLAMP_MAX = 0.2
     FLOW_LOSS_USE_PACKET_AUX = True
-    FLOW_PACKET_AUX_WEIGHT = 0.5
-    ENABLE_FLOW_CENTRIC_BATCHING = True
-    FLOW_CENTRIC_BATCH_FLOWS = 64
-    FLOW_CENTRIC_PACKETS_PER_FLOW = FLOW_REPR_FIRST_N_PACKETS
-    FLOW_CENTRIC_DROP_LAST = False
-    FLOW_CENTRIC_LOW_RAM_SAFE_MODE = True
+    FLOW_PACKET_AUX_WEIGHT = 0.3
     STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
     # STRATIFIED_TRAIN_SET = True
@@ -1408,13 +1347,6 @@ if __name__ == '__main__':
         f"permanent_detach={FLOW_REPR_PERMANENT_DETACH}, "
         f"agg_only_epochs={FLOW_REPR_TRAIN_AGG_ONLY_EPOCHS}, "
         f"gamma_clamp_max={FLOW_REPR_GAMMA_CLAMP_MAX}"
-    )
-    print(
-        f"Flow-centric batching: enabled={ENABLE_FLOW_CENTRIC_BATCHING}, "
-        f"flows_per_batch={FLOW_CENTRIC_BATCH_FLOWS}, "
-        f"packets_per_flow={FLOW_CENTRIC_PACKETS_PER_FLOW}, "
-        f"drop_last={FLOW_CENTRIC_DROP_LAST}, "
-        f"low_ram_safe_mode={FLOW_CENTRIC_LOW_RAM_SAFE_MODE}"
     )
     print(
         f"Focal alpha config: smoothing={FOCAL_ALPHA_SMOOTHING}, "
@@ -2108,93 +2040,27 @@ if __name__ == '__main__':
     g.manual_seed(SEED)
 
      
-    if ENABLE_FLOW_CENTRIC_BATCHING and TRAIN_TARGET == 'flow':
-        fc_workers = NUM_WORKERS
-        fc_pin_memory = True
-        fc_persistent_workers = (PERSISTENT_WORKERS and NUM_WORKERS > 0)
-        fc_prefetch = DATALOADER_PREFETCH
-        if FLOW_CENTRIC_LOW_RAM_SAFE_MODE:
-            # Windows + multiprocessing shared-memory path is prone to error 1455
-            # under large batches. Keep workers conservative in flow-centric mode.
-            fc_workers = 0 if os.name == 'nt' else min(NUM_WORKERS, 2)
-            fc_pin_memory = False
-            fc_persistent_workers = False
-            fc_prefetch = 1
-
-        train_batch_sampler = FlowCentricBatchSampler(
-            flow_ids=train_dataset.flow_ids,
-            packets_per_flow=FLOW_CENTRIC_PACKETS_PER_FLOW,
-            flows_per_batch=FLOW_CENTRIC_BATCH_FLOWS,
-            shuffle_flows=True,
-            drop_last=FLOW_CENTRIC_DROP_LAST,
-        )
-        val_batch_sampler = FlowCentricBatchSampler(
-            flow_ids=val_dataset.flow_ids,
-            packets_per_flow=FLOW_CENTRIC_PACKETS_PER_FLOW,
-            flows_per_batch=FLOW_CENTRIC_BATCH_FLOWS,
-            shuffle_flows=False,
-            drop_last=False,
-        )
-        test_batch_sampler = FlowCentricBatchSampler(
-            flow_ids=test_dataset.flow_ids,
-            packets_per_flow=FLOW_CENTRIC_PACKETS_PER_FLOW,
-            flows_per_batch=FLOW_CENTRIC_BATCH_FLOWS,
-            shuffle_flows=False,
-            drop_last=False,
-        )
-        print(
-            f"Flow-centric loaders: train_steps={len(train_batch_sampler)}, "
-            f"val_steps={len(val_batch_sampler)}, test_steps={len(test_batch_sampler)}; "
-            f"workers={fc_workers}, pin_memory={fc_pin_memory}, "
-            f"persistent_workers={fc_persistent_workers}, prefetch={fc_prefetch}"
-        )
-        flow_loader_kwargs = {
-            "num_workers": fc_workers,
-            "pin_memory": fc_pin_memory,
-            "worker_init_fn": seed_worker,
-            "persistent_workers": fc_persistent_workers,
-            "collate_fn": train_dataset.collate_from_index,
-        }
-        if fc_workers > 0:
-            flow_loader_kwargs["prefetch_factor"] = fc_prefetch
-        train_loader = DataLoader(
-            train_dataset,
-            batch_sampler=train_batch_sampler,
-            **flow_loader_kwargs,
-        )
-        flow_loader_kwargs_val = dict(flow_loader_kwargs)
-        flow_loader_kwargs_val["collate_fn"] = val_dataset.collate_from_index
-        val_loader = DataLoader(
-            val_dataset,
-            batch_sampler=val_batch_sampler,
-            **flow_loader_kwargs_val,
-        )
-        flow_loader_kwargs_test = dict(flow_loader_kwargs)
-        flow_loader_kwargs_test["collate_fn"] = test_dataset.collate_from_index
-        test_loader = DataLoader(
-            test_dataset,
-            batch_sampler=test_batch_sampler,
-            **flow_loader_kwargs_test,
-        )
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-                                num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
-                                drop_last=True, 
-                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                                prefetch_factor=DATALOADER_PREFETCH, 
-                                collate_fn=train_dataset.collate_from_index,
-                                )
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
-                                num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                                prefetch_factor=DATALOADER_PREFETCH, 
-                                collate_fn=val_dataset.collate_from_index,
-                                )
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                                prefetch_factor=DATALOADER_PREFETCH, 
-                                collate_fn=test_dataset.collate_from_index,
-                                )
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+                              num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
+                              drop_last=True, 
+                              persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                              prefetch_factor=DATALOADER_PREFETCH, 
+                              collate_fn=train_dataset.collate_from_index,
+                              )
+                            #   collate_fn=custom_collate_flat_dict)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
+                            num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
+                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                            prefetch_factor=DATALOADER_PREFETCH, 
+                            collate_fn=val_dataset.collate_from_index,
+                            )
+                            # collate_fn=custom_collate_flat_dict)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
+                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                            prefetch_factor=DATALOADER_PREFETCH, 
+                            collate_fn=test_dataset.collate_from_index,
+                            )
+                            #  collate_fn=custom_collate_flat_dict)
     
      
     

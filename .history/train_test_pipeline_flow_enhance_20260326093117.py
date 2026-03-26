@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm 
 from utils.data_loader import TrafficDataset
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader
 from models.FieldEmbedding import FieldEmbedding
 from utils.dataframe_tools import protocol_tree 
 from models.ProtocolTreeAttention import ProtocolTreeAttention 
@@ -109,67 +109,6 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
-def set_module_requires_grad(module: nn.Module, requires_grad: bool) -> None:
-    for p in module.parameters():
-        p.requires_grad = requires_grad
-
-
-class FlowCentricBatchSampler(Sampler[List[int]]):
-    """
-    Build packet-index batches from flow groups.
-    Each yielded batch contains K flows, each flow truncated to first-N packets.
-    """
-    def __init__(
-        self,
-        flow_ids: torch.Tensor,
-        packets_per_flow: int,
-        flows_per_batch: int,
-        shuffle_flows: bool = True,
-        drop_last: bool = False,
-    ):
-        if flow_ids.ndim != 1:
-            raise ValueError("flow_ids must be a 1D tensor")
-        self.packets_per_flow = max(1, int(packets_per_flow))
-        self.flows_per_batch = max(1, int(flows_per_batch))
-        self.shuffle_flows = bool(shuffle_flows)
-        self.drop_last = bool(drop_last)
-
-        flow_to_indices: Dict[int, List[int]] = {}
-        for idx, fid in enumerate(flow_ids.tolist()):
-            k = int(fid)
-            if k not in flow_to_indices:
-                flow_to_indices[k] = []
-            flow_to_indices[k].append(idx)
-
-        self._flow_chunks: List[List[int]] = []
-        for _, idxs in flow_to_indices.items():
-            if len(idxs) > 0:
-                self._flow_chunks.append(idxs[: self.packets_per_flow])
-
-    def __iter__(self):
-        order = list(range(len(self._flow_chunks)))
-        if self.shuffle_flows:
-            random.shuffle(order)
-        step = self.flows_per_batch
-        for start in range(0, len(order), step):
-            end = min(start + step, len(order))
-            if self.drop_last and (end - start) < step:
-                continue
-            flat: List[int] = []
-            for i in order[start:end]:
-                flat.extend(self._flow_chunks[i])
-            if len(flat) > 0:
-                yield flat
-
-    def __len__(self):
-        n = len(self._flow_chunks)
-        if n == 0:
-            return 0
-        if self.drop_last:
-            return n // self.flows_per_batch
-        return (n + self.flows_per_batch - 1) // self.flows_per_batch
-
-
 class FlowLogitAttentionPool(nn.Module):
     """
     Learn packet importance from packet logits for flow-level aggregation.
@@ -210,8 +149,6 @@ class FlowReprLogitAggregator(nn.Module):
         use_residual_mean: bool = True,
         use_logit_residual_baseline: bool = True,
         logit_residual_init: float = 0.0,
-        first_n_packets: int = 0,
-        pool_mode: str = 'attn',  # 'attn' | 'max' | 'mean'
     ):
         super().__init__()
         self.use_prob_input = bool(use_prob_input)
@@ -219,10 +156,6 @@ class FlowReprLogitAggregator(nn.Module):
         self.attn_temperature = max(float(attn_temperature), 1e-3)
         self.use_residual_mean = bool(use_residual_mean)
         self.use_logit_residual_baseline = bool(use_logit_residual_baseline)
-        self.first_n_packets = max(0, int(first_n_packets))
-        self.pool_mode = str(pool_mode).lower()
-        if self.pool_mode not in ('attn', 'max', 'mean'):
-            raise ValueError(f"Unsupported pool_mode: {self.pool_mode}")
         self.repr_ln = nn.LayerNorm(repr_dim)
         self.repr_proj = nn.Linear(repr_dim, hidden_dim)
         if self.use_logit_branch:
@@ -258,9 +191,6 @@ class FlowReprLogitAggregator(nn.Module):
             self.register_parameter('logit_residual_gamma', None)
 
     def forward(self, packet_repr: torch.Tensor, packet_logits: torch.Tensor) -> torch.Tensor:
-        if self.first_n_packets > 0 and packet_repr.size(0) > self.first_n_packets:
-            packet_repr = packet_repr[: self.first_n_packets]
-            packet_logits = packet_logits[: self.first_n_packets]
         target_dtype = self.repr_proj.weight.dtype
         repr_in = packet_repr.to(dtype=target_dtype)
         r = self.repr_proj(self.repr_ln(repr_in))
@@ -273,13 +203,8 @@ class FlowReprLogitAggregator(nn.Module):
         else:
             h_in = r
         h = self.fuse_mlp(h_in)
-        if self.pool_mode == 'attn':
-            alpha = torch.softmax(self.attn_head(h).squeeze(-1) / self.attn_temperature, dim=0)
-            attn_repr = torch.sum(alpha.unsqueeze(-1) * h, dim=0)
-        elif self.pool_mode == 'max':
-            attn_repr = torch.max(h, dim=0).values
-        else:  # mean
-            attn_repr = h.mean(dim=0)
+        alpha = torch.softmax(self.attn_head(h).squeeze(-1) / self.attn_temperature, dim=0)
+        attn_repr = torch.sum(alpha.unsqueeze(-1) * h, dim=0)
         if self.use_residual_mean:
             mean_repr = r.mean(dim=0)
             flow_repr = mean_repr + self.residual_gamma.to(dtype=attn_repr.dtype) * attn_repr
@@ -307,16 +232,6 @@ class FlowReprLogitAggregator(nn.Module):
         """
         target_dtype = self.repr_proj.weight.dtype
         inverse_flow_index = inverse_flow_index.long()
-        if self.first_n_packets > 0 and inverse_flow_index.numel() > 0:
-            keep = torch.zeros_like(inverse_flow_index, dtype=torch.bool)
-            for fid in range(num_flows):
-                idx = torch.nonzero(inverse_flow_index == fid, as_tuple=False).view(-1)
-                if idx.numel() == 0:
-                    continue
-                keep[idx[: self.first_n_packets]] = True
-            packet_repr = packet_repr[keep]
-            packet_logits = packet_logits[keep]
-            inverse_flow_index = inverse_flow_index[keep]
         repr_in = packet_repr.to(dtype=target_dtype)
         r = self.repr_proj(self.repr_ln(repr_in))
         if self.use_logit_branch:
@@ -329,41 +244,27 @@ class FlowReprLogitAggregator(nn.Module):
             h_in = r
         h = self.fuse_mlp(h_in)  # [N, H]
 
-        if self.pool_mode == 'attn':
-            scores = self.attn_head(h).squeeze(-1) / self.attn_temperature  # [N]
-            # Segment-softmax per flow id via scatter-reduce + scatter-add.
-            max_per_flow = torch.full(
-                (num_flows,),
-                float('-inf'),
-                dtype=scores.dtype,
-                device=scores.device,
-            )
-            max_per_flow.scatter_reduce_(
-                0, inverse_flow_index, scores, reduce='amax', include_self=True
-            )
-            stable = scores - max_per_flow.index_select(0, inverse_flow_index)
-            exp_scores = torch.exp(stable)
-            denom = torch.zeros((num_flows,), dtype=exp_scores.dtype, device=exp_scores.device)
-            denom.scatter_add_(0, inverse_flow_index, exp_scores)
-            eps = torch.tensor(1e-12, dtype=denom.dtype, device=denom.device)
-            alpha = exp_scores / (denom.index_select(0, inverse_flow_index) + eps)  # [N]
-            alpha = alpha.to(dtype=h.dtype)
-            attn_repr = torch.zeros((num_flows, h.size(1)), dtype=h.dtype, device=h.device)
-            attn_repr.index_add_(0, inverse_flow_index, h * alpha.unsqueeze(-1))
-        elif self.pool_mode == 'max':
-            attn_repr = torch.full((num_flows, h.size(1)), float('-inf'), dtype=h.dtype, device=h.device)
-            idx_expand = inverse_flow_index.unsqueeze(-1).expand(-1, h.size(1))
-            attn_repr.scatter_reduce_(0, idx_expand, h, reduce='amax', include_self=True)
-            zero_rows = torch.isinf(attn_repr).all(dim=1)
-            if zero_rows.any():
-                attn_repr[zero_rows] = 0.0
-        else:  # mean
-            attn_repr = torch.zeros((num_flows, h.size(1)), dtype=h.dtype, device=h.device)
-            attn_repr.index_add_(0, inverse_flow_index, h)
-            cnt_h = torch.zeros((num_flows,), dtype=h.dtype, device=h.device)
-            ones_h = torch.ones((inverse_flow_index.size(0),), dtype=h.dtype, device=h.device)
-            cnt_h.index_add_(0, inverse_flow_index, ones_h)
-            attn_repr = attn_repr / cnt_h.clamp_min(1.0).unsqueeze(-1)
+        scores = self.attn_head(h).squeeze(-1) / self.attn_temperature  # [N]
+        # Segment-softmax per flow id via scatter-reduce + scatter-add.
+        max_per_flow = torch.full(
+            (num_flows,),
+            float('-inf'),
+            dtype=scores.dtype,
+            device=scores.device,
+        )
+        max_per_flow.scatter_reduce_(
+            0, inverse_flow_index, scores, reduce='amax', include_self=True
+        )
+        stable = scores - max_per_flow.index_select(0, inverse_flow_index)
+        exp_scores = torch.exp(stable)
+        denom = torch.zeros((num_flows,), dtype=exp_scores.dtype, device=exp_scores.device)
+        denom.scatter_add_(0, inverse_flow_index, exp_scores)
+        eps = torch.tensor(1e-12, dtype=denom.dtype, device=denom.device)
+        alpha = exp_scores / (denom.index_select(0, inverse_flow_index) + eps)  # [N]
+        alpha = alpha.to(dtype=h.dtype)
+
+        attn_repr = torch.zeros((num_flows, h.size(1)), dtype=h.dtype, device=h.device)
+        attn_repr.index_add_(0, inverse_flow_index, h * alpha.unsqueeze(-1))
         if self.use_residual_mean:
             mean_repr = torch.zeros((num_flows, r.size(1)), dtype=r.dtype, device=r.device)
             mean_repr.index_add_(0, inverse_flow_index, r)
@@ -569,8 +470,6 @@ def train_one_epoch(
     flow_packet_aux_weight: float = 0.1,
     current_epoch: int = 0,
     repr_detach_warmup_epochs: int = 0,
-    repr_permanent_detach: bool = False,
-    flow_repr_gamma_clamp_max: Optional[float] = None,
     collect_dual_level_metrics: bool = False,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
@@ -671,10 +570,7 @@ def train_one_epoch(
                 if (
                     flow_agg_method == 'repr_logits_attn'
                     and packet_repr_for_agg is not None
-                    and (
-                        repr_permanent_detach
-                        or current_epoch < max(0, int(repr_detach_warmup_epochs))
-                    )
+                    and current_epoch < max(0, int(repr_detach_warmup_epochs))
                 ):
                     packet_repr_for_agg = packet_repr_for_agg.detach()
                 flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
@@ -724,17 +620,6 @@ def train_one_epoch(
                 params_to_clip += list(flow_packet_weighter.parameters())
             torch.nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
             optimizer.step()
-
-        if (
-            flow_packet_weighter is not None
-            and flow_repr_gamma_clamp_max is not None
-            and hasattr(flow_packet_weighter, "logit_residual_gamma")
-            and getattr(flow_packet_weighter, "logit_residual_gamma") is not None
-        ):
-            with torch.no_grad():
-                flow_packet_weighter.logit_residual_gamma.clamp_(
-                    min=0.0, max=float(flow_repr_gamma_clamp_max)
-                )
         
          
          
@@ -1315,7 +1200,7 @@ if __name__ == '__main__':
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
     ENABLE_DUAL_LEVEL_METRICS = False
     TRAIN_TARGET = 'flow'  # 'packet' or 'flow' 
-    FLOW_AGG_METHOD = 'repr_logits_attn'  # 'mean_logits' | 'learned_attn_logits' | 'repr_logits_attn' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
+    FLOW_AGG_METHOD = 'mean_logits'  # 'mean_logits' | 'learned_attn_logits' | 'repr_logits_attn' | 'soft_weighted_logits' | 'topk_mean_logits' | 'mean_probs' | 'logsumexp'
     FLOW_TOPK = 8
     FLOW_SOFT_TEMP = 1.2
     FLOW_ATTN_HIDDEN_DIM = 64
@@ -1323,22 +1208,12 @@ if __name__ == '__main__':
     FLOW_REPR_LOGIT_USE_PROBS = True
     FLOW_REPR_USE_LOGIT_BRANCH = False
     FLOW_REPR_ATTN_TAU = 1.5
-    FLOW_REPR_USE_RESIDUAL_MEAN = False
-    FLOW_REPR_USE_LOGIT_RESIDUAL_BASELINE = False
+    FLOW_REPR_USE_RESIDUAL_MEAN = True
+    FLOW_REPR_USE_LOGIT_RESIDUAL_BASELINE = True
     FLOW_REPR_LOGIT_RESIDUAL_INIT = 0.0
-    FLOW_REPR_FIRST_N_PACKETS = 64
-    FLOW_REPR_POOL_MODE = 'max'  # 'attn' | 'max' | 'mean'
-    FLOW_REPR_DETACH_WARMUP_EPOCHS = 0
-    FLOW_REPR_PERMANENT_DETACH = False
-    FLOW_REPR_TRAIN_AGG_ONLY_EPOCHS = 0
-    FLOW_REPR_GAMMA_CLAMP_MAX = 0.2
+    FLOW_REPR_DETACH_WARMUP_EPOCHS = 3
     FLOW_LOSS_USE_PACKET_AUX = True
-    FLOW_PACKET_AUX_WEIGHT = 0.5
-    ENABLE_FLOW_CENTRIC_BATCHING = True
-    FLOW_CENTRIC_BATCH_FLOWS = 64
-    FLOW_CENTRIC_PACKETS_PER_FLOW = FLOW_REPR_FIRST_N_PACKETS
-    FLOW_CENTRIC_DROP_LAST = False
-    FLOW_CENTRIC_LOW_RAM_SAFE_MODE = True
+    FLOW_PACKET_AUX_WEIGHT = 0.3
     STRATIFIED_TRAIN_SET = False
     STRATIFIED_VAL_TEST_SET = False
     # STRATIFIED_TRAIN_SET = True
@@ -1403,18 +1278,7 @@ if __name__ == '__main__':
         f"residual_mean={FLOW_REPR_USE_RESIDUAL_MEAN}, "
         f"logit_residual_baseline={FLOW_REPR_USE_LOGIT_RESIDUAL_BASELINE}, "
         f"logit_residual_init={FLOW_REPR_LOGIT_RESIDUAL_INIT}, "
-        f"first_n={FLOW_REPR_FIRST_N_PACKETS}, pool_mode={FLOW_REPR_POOL_MODE}, "
-        f"tau={FLOW_REPR_ATTN_TAU}, detach_warmup_epochs={FLOW_REPR_DETACH_WARMUP_EPOCHS}, "
-        f"permanent_detach={FLOW_REPR_PERMANENT_DETACH}, "
-        f"agg_only_epochs={FLOW_REPR_TRAIN_AGG_ONLY_EPOCHS}, "
-        f"gamma_clamp_max={FLOW_REPR_GAMMA_CLAMP_MAX}"
-    )
-    print(
-        f"Flow-centric batching: enabled={ENABLE_FLOW_CENTRIC_BATCHING}, "
-        f"flows_per_batch={FLOW_CENTRIC_BATCH_FLOWS}, "
-        f"packets_per_flow={FLOW_CENTRIC_PACKETS_PER_FLOW}, "
-        f"drop_last={FLOW_CENTRIC_DROP_LAST}, "
-        f"low_ram_safe_mode={FLOW_CENTRIC_LOW_RAM_SAFE_MODE}"
+        f"tau={FLOW_REPR_ATTN_TAU}, detach_warmup_epochs={FLOW_REPR_DETACH_WARMUP_EPOCHS}"
     )
     print(
         f"Focal alpha config: smoothing={FOCAL_ALPHA_SMOOTHING}, "
@@ -2108,93 +1972,27 @@ if __name__ == '__main__':
     g.manual_seed(SEED)
 
      
-    if ENABLE_FLOW_CENTRIC_BATCHING and TRAIN_TARGET == 'flow':
-        fc_workers = NUM_WORKERS
-        fc_pin_memory = True
-        fc_persistent_workers = (PERSISTENT_WORKERS and NUM_WORKERS > 0)
-        fc_prefetch = DATALOADER_PREFETCH
-        if FLOW_CENTRIC_LOW_RAM_SAFE_MODE:
-            # Windows + multiprocessing shared-memory path is prone to error 1455
-            # under large batches. Keep workers conservative in flow-centric mode.
-            fc_workers = 0 if os.name == 'nt' else min(NUM_WORKERS, 2)
-            fc_pin_memory = False
-            fc_persistent_workers = False
-            fc_prefetch = 1
-
-        train_batch_sampler = FlowCentricBatchSampler(
-            flow_ids=train_dataset.flow_ids,
-            packets_per_flow=FLOW_CENTRIC_PACKETS_PER_FLOW,
-            flows_per_batch=FLOW_CENTRIC_BATCH_FLOWS,
-            shuffle_flows=True,
-            drop_last=FLOW_CENTRIC_DROP_LAST,
-        )
-        val_batch_sampler = FlowCentricBatchSampler(
-            flow_ids=val_dataset.flow_ids,
-            packets_per_flow=FLOW_CENTRIC_PACKETS_PER_FLOW,
-            flows_per_batch=FLOW_CENTRIC_BATCH_FLOWS,
-            shuffle_flows=False,
-            drop_last=False,
-        )
-        test_batch_sampler = FlowCentricBatchSampler(
-            flow_ids=test_dataset.flow_ids,
-            packets_per_flow=FLOW_CENTRIC_PACKETS_PER_FLOW,
-            flows_per_batch=FLOW_CENTRIC_BATCH_FLOWS,
-            shuffle_flows=False,
-            drop_last=False,
-        )
-        print(
-            f"Flow-centric loaders: train_steps={len(train_batch_sampler)}, "
-            f"val_steps={len(val_batch_sampler)}, test_steps={len(test_batch_sampler)}; "
-            f"workers={fc_workers}, pin_memory={fc_pin_memory}, "
-            f"persistent_workers={fc_persistent_workers}, prefetch={fc_prefetch}"
-        )
-        flow_loader_kwargs = {
-            "num_workers": fc_workers,
-            "pin_memory": fc_pin_memory,
-            "worker_init_fn": seed_worker,
-            "persistent_workers": fc_persistent_workers,
-            "collate_fn": train_dataset.collate_from_index,
-        }
-        if fc_workers > 0:
-            flow_loader_kwargs["prefetch_factor"] = fc_prefetch
-        train_loader = DataLoader(
-            train_dataset,
-            batch_sampler=train_batch_sampler,
-            **flow_loader_kwargs,
-        )
-        flow_loader_kwargs_val = dict(flow_loader_kwargs)
-        flow_loader_kwargs_val["collate_fn"] = val_dataset.collate_from_index
-        val_loader = DataLoader(
-            val_dataset,
-            batch_sampler=val_batch_sampler,
-            **flow_loader_kwargs_val,
-        )
-        flow_loader_kwargs_test = dict(flow_loader_kwargs)
-        flow_loader_kwargs_test["collate_fn"] = test_dataset.collate_from_index
-        test_loader = DataLoader(
-            test_dataset,
-            batch_sampler=test_batch_sampler,
-            **flow_loader_kwargs_test,
-        )
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-                                num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
-                                drop_last=True, 
-                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                                prefetch_factor=DATALOADER_PREFETCH, 
-                                collate_fn=train_dataset.collate_from_index,
-                                )
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
-                                num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                                prefetch_factor=DATALOADER_PREFETCH, 
-                                collate_fn=val_dataset.collate_from_index,
-                                )
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
-                                persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
-                                prefetch_factor=DATALOADER_PREFETCH, 
-                                collate_fn=test_dataset.collate_from_index,
-                                )
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+                              num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, generator=g, 
+                              drop_last=True, 
+                              persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                              prefetch_factor=DATALOADER_PREFETCH, 
+                              collate_fn=train_dataset.collate_from_index,
+                              )
+                            #   collate_fn=custom_collate_flat_dict)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
+                            num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
+                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                            prefetch_factor=DATALOADER_PREFETCH, 
+                            collate_fn=val_dataset.collate_from_index,
+                            )
+                            # collate_fn=custom_collate_flat_dict)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=True, worker_init_fn=seed_worker, 
+                            persistent_workers=(PERSISTENT_WORKERS and NUM_WORKERS > 0),
+                            prefetch_factor=DATALOADER_PREFETCH, 
+                            collate_fn=test_dataset.collate_from_index,
+                            )
+                            #  collate_fn=custom_collate_flat_dict)
     
      
     
@@ -2241,8 +2039,6 @@ if __name__ == '__main__':
             use_residual_mean=FLOW_REPR_USE_RESIDUAL_MEAN,
             use_logit_residual_baseline=FLOW_REPR_USE_LOGIT_RESIDUAL_BASELINE,
             logit_residual_init=FLOW_REPR_LOGIT_RESIDUAL_INIT,
-            first_n_packets=FLOW_REPR_FIRST_N_PACKETS,
-            pool_mode=FLOW_REPR_POOL_MODE,
         ).to(device)
         print("Flow learnable aggregator enabled (repr_logits_attn).")
 
@@ -2280,21 +2076,6 @@ if __name__ == '__main__':
                 break
 
             print(f"\n--- Epoch {epoch+1}/{NUM_EPOCHS} ---")
-            agg_only_mode = (
-                TRAIN_TARGET == 'flow'
-                and FLOW_AGG_METHOD == 'repr_logits_attn'
-                and epoch < max(0, int(FLOW_REPR_TRAIN_AGG_ONLY_EPOCHS))
-            )
-            if agg_only_mode:
-                # Freeze backbone and only train flow aggregator for a few warmup epochs.
-                set_module_requires_grad(pta_model, False)
-                if flow_packet_weighter is not None:
-                    set_module_requires_grad(flow_packet_weighter, True)
-                print("   -> Aggregator-only warmup active: backbone frozen.")
-            else:
-                set_module_requires_grad(pta_model, True)
-                if flow_packet_weighter is not None:
-                    set_module_requires_grad(flow_packet_weighter, True)
 
             train_metrics, _ = train_one_epoch(pta_model, train_loader, # loss_fn, 
                                                optimizer, # scheduler, 
@@ -2309,8 +2090,6 @@ if __name__ == '__main__':
                                                flow_packet_aux_weight=FLOW_PACKET_AUX_WEIGHT,
                                                current_epoch=epoch,
                                                repr_detach_warmup_epochs=FLOW_REPR_DETACH_WARMUP_EPOCHS,
-                                               repr_permanent_detach=FLOW_REPR_PERMANENT_DETACH,
-                                               flow_repr_gamma_clamp_max=FLOW_REPR_GAMMA_CLAMP_MAX,
                                                collect_dual_level_metrics=ENABLE_DUAL_LEVEL_METRICS,
                                                use_amp=use_amp_this_run,
                                                amp_dtype=amp_dtype,
