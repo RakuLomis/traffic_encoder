@@ -1301,8 +1301,8 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    # USE_FLOW_FEATURES_THIS_RUN = True
-    USE_FLOW_FEATURES_THIS_RUN = False
+    USE_FLOW_FEATURES_THIS_RUN = True
+    # USE_FLOW_FEATURES_THIS_RUN = False
     # USE_MAC_ADDRESS_THIS_RUN = True
     USE_MAC_ADDRESS_THIS_RUN = False
     # USE_IP_ADDRESS_THIS_RUN = True

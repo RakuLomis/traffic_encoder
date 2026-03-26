@@ -42,6 +42,31 @@ class GNNTrafficDataset(Dataset):
             self.config = yaml.safe_load(f)['field_embedding_config']
         with open(vocab_path, 'r') as f:
             self.vocab_maps = yaml.safe_load(f)
+
+        # Physical fields are strictly constrained to YAML-defined fields that
+        # also exist in current CSV schema.
+        self.yaml_defined_fields = set(self.config.keys())
+        self.csv_fields = set(dataframe.columns)
+        self.physical_fields = self.yaml_defined_fields.intersection(self.csv_fields)
+
+        # Helpful diagnostics: protocol-like CSV columns excluded by whitelist.
+        protocol_like_prefixes = ('eth.', 'ip.', 'tcp.', 'tls.')
+        csv_protocol_like = {
+            c for c in self.csv_fields
+            if isinstance(c, str) and c.startswith(protocol_like_prefixes)
+        }
+        excluded_protocol_like = sorted(list(csv_protocol_like - self.physical_fields))
+        print(
+            f" -> Physical field whitelist active: YAML∩CSV = "
+            f"{len(self.physical_fields)} fields."
+        )
+        if excluded_protocol_like:
+            preview = ", ".join(excluded_protocol_like[:10])
+            suffix = " ..." if len(excluded_protocol_like) > 10 else ""
+            print(
+                f" -> Excluded protocol-like CSV fields not in YAML: "
+                f"{len(excluded_protocol_like)} ({preview}{suffix})"
+            )
         self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
         # Keep per-packet flow id for flow-level loss/evaluation aggregation.
         if 'stream_id' in dataframe.columns:
@@ -81,9 +106,11 @@ class GNNTrafficDataset(Dataset):
 
         # --- 2. ?(Schema) --- 
         all_available_fields = set(dataframe.columns)
-        eth_fields = {f for f in all_available_fields if f.startswith('eth.')}
-        ip_fields = {f for f in all_available_fields if f.startswith('ip.')}
-        tcp_core_fields = {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f} 
+        # IMPORTANT: experts can only consume physical fields from YAML∩CSV.
+        eligible_fields = set(self.physical_fields)
+        eth_fields = {f for f in eligible_fields if f.startswith('eth.')}
+        ip_fields = {f for f in eligible_fields if f.startswith('ip.')}
+        tcp_core_fields = {f for f in eligible_fields if f.startswith('tcp.') and 'options' not in f} 
         # ip_fields = {f for f in all_available_fields if f.startswith('ip.') and 'payload' not in f}
 
         if not use_mac_address: 
@@ -116,10 +143,10 @@ class GNNTrafficDataset(Dataset):
             # 'tcp_core': {f for f in all_available_fields if f.startswith('tcp.') and 'options' not in f 
             #                 and 'payload' not in f
             #                 and 'segment_data' not in f},
-            'tcp_options': {f for f in all_available_fields if f.startswith('tcp.options.')},
-            'tls_record': {f for f in all_available_fields if f.startswith('tls.record.')},
-            'tls_handshake': {f for f in all_available_fields if f.startswith('tls.handshake.')},
-            'tls_x509': {f for f in all_available_fields if f.startswith('tls.x509')}
+            'tcp_options': {f for f in eligible_fields if f.startswith('tcp.options.')},
+            'tls_record': {f for f in eligible_fields if f.startswith('tls.record.')},
+            'tls_handshake': {f for f in eligible_fields if f.startswith('tls.handshake.')},
+            'tls_x509': {f for f in eligible_fields if f.startswith('tls.x509')}
             # ... ?
         }
         # self.flow_feature_names = ['flow_avg_len', 'flow_std_len', 'flow_pkt_count']
@@ -157,7 +184,7 @@ class GNNTrafficDataset(Dataset):
         
         for name, expert_fields in self.expert_definitions.items():
             # chemataFrame?
-            real_nodes_for_expert = sorted(list(expert_fields.intersection(all_available_fields)))
+            real_nodes_for_expert = sorted(list(expert_fields.intersection(self.physical_fields)))
             if not real_nodes_for_expert:
                 print(f" -> Warning: expert '{name}' has no matched fields in dataframe. Skipping.")
                 continue
@@ -175,6 +202,8 @@ class GNNTrafficDataset(Dataset):
             ptree_nodes = set(ptree.keys())
             for children in ptree.values(): 
                 ptree_nodes.update(children)
+            # 'statistics' is an auxiliary bucket in protocol_tree, not a PTG node.
+            ptree_nodes.discard('statistics')
             
             all_nodes_for_expert = sorted(list(ptree_nodes))
             field_to_node_idx = {n: i for i, n in enumerate(all_nodes_for_expert)}
