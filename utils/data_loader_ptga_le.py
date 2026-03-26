@@ -27,6 +27,8 @@ class GNNTrafficDataset(Dataset):
                 use_flow_features: bool = False, use_ip_address: bool = True, use_mac_address: bool = True, 
                 use_port: bool = True, 
                 backbone_mode: str = 'expert_local',
+                enable_virtual_sink: bool = False,
+                virtual_sink_name: str = "__VIRTUAL_SINK__",
                 obfuscation_config: Optional[Dict[str, Any]] = None):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
@@ -35,6 +37,8 @@ class GNNTrafficDataset(Dataset):
         self.use_mac_address = use_mac_address 
         self.use_port = use_port 
         self.backbone_mode = backbone_mode
+        self.enable_virtual_sink = bool(enable_virtual_sink)
+        self.virtual_sink_name = str(virtual_sink_name)
         self.obfuscation_config = obfuscation_config
 
 
@@ -67,6 +71,10 @@ class GNNTrafficDataset(Dataset):
                 f" -> Excluded protocol-like CSV fields not in YAML: "
                 f"{len(excluded_protocol_like)} ({preview}{suffix})"
             )
+        print(
+            f" -> Virtual sink: enabled={self.enable_virtual_sink}, "
+            f"name={self.virtual_sink_name}"
+        )
         self.labels = torch.tensor(dataframe['label_id'].values, dtype=torch.long)
         # Keep per-packet flow id for flow-level loss/evaluation aggregation.
         if 'stream_id' in dataframe.columns:
@@ -204,16 +212,25 @@ class GNNTrafficDataset(Dataset):
                 ptree_nodes.update(children)
             # 'statistics' is an auxiliary bucket in protocol_tree, not a PTG node.
             ptree_nodes.discard('statistics')
+            if self.enable_virtual_sink:
+                ptree_nodes.add(self.virtual_sink_name)
             
             all_nodes_for_expert = sorted(list(ptree_nodes))
             field_to_node_idx = {n: i for i, n in enumerate(all_nodes_for_expert)}
+            edge_index = self._create_edge_index_from_tree(ptree, field_to_node_idx)
+            if self.enable_virtual_sink:
+                edge_index = self._augment_edge_index_with_virtual_sink(
+                    edge_index=edge_index,
+                    field_to_node_idx=field_to_node_idx,
+                    all_nodes=all_nodes_for_expert,
+                )
             
             # ?
             self.expert_graphs[name] = {
                 'real_nodes': real_nodes_for_expert, # ?
                 'all_nodes': all_nodes_for_expert,  # ??
                 'field_to_node_idx': field_to_node_idx,
-                'edge_index': self._create_edge_index_from_tree(ptree, field_to_node_idx)
+                'edge_index': edge_index
             }
             # ?
             self.all_feature_cols_to_process.update(real_nodes_for_expert)
@@ -261,6 +278,37 @@ class GNNTrafficDataset(Dataset):
         if not edge_list: 
             return torch.empty((2, 0), dtype=torch.long)
         return torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+
+    def _augment_edge_index_with_virtual_sink(
+        self,
+        edge_index: torch.Tensor,
+        field_to_node_idx: Dict[str, int],
+        all_nodes: List[str],
+    ) -> torch.Tensor:
+        """
+        Add bidirectional edges between virtual sink and all other nodes.
+        """
+        sink_idx = field_to_node_idx.get(self.virtual_sink_name)
+        if sink_idx is None:
+            return edge_index
+
+        sink_edges: List[List[int]] = []
+        for n in all_nodes:
+            if n == self.virtual_sink_name:
+                continue
+            ni = field_to_node_idx.get(n)
+            if ni is None:
+                continue
+            sink_edges.append([sink_idx, ni])
+            sink_edges.append([ni, sink_idx])
+
+        if not sink_edges:
+            return edge_index
+
+        sink_edge_index = torch.tensor(sink_edges, dtype=torch.long).t().contiguous()
+        if edge_index.numel() == 0:
+            return sink_edge_index
+        return torch.cat([edge_index, sink_edge_index], dim=1).contiguous()
     
     def _preprocess_all(self, df: pd.DataFrame) -> pd.DataFrame:
         # Vectorized column preprocessing.
