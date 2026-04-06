@@ -1309,7 +1309,7 @@ if __name__ == '__main__':
     USE_IP_ADDRESS_THIS_RUN = False
     # USE_PORT_THIS_RUN = True
     USE_PORT_THIS_RUN = False
-    ENABLE_FLOW_AGG_EVAL = True
+    # ENABLE_FLOW_AGG_EVAL = True
     FLOW_AGG_USE_PROB_MEAN = True
     ENABLE_DIRECTIONAL_FLOW_CONTEXT = True
     # Lightweight mode: disable dual packet/flow metrics during epoch to reduce overhead.
