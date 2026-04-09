@@ -1301,8 +1301,8 @@ if __name__ == '__main__':
     # DIAGNOSE = True
     stop_training = False
 
-    USE_FLOW_FEATURES_THIS_RUN = True
-    # USE_FLOW_FEATURES_THIS_RUN = False
+    # USE_FLOW_FEATURES_THIS_RUN = True
+    USE_FLOW_FEATURES_THIS_RUN = False
     # USE_MAC_ADDRESS_THIS_RUN = True
     USE_MAC_ADDRESS_THIS_RUN = False
     # USE_IP_ADDRESS_THIS_RUN = True
@@ -1353,8 +1353,8 @@ if __name__ == '__main__':
     MAX_PACKETS_PER_FLOW_EVAL = MAX_PACKETS_PER_FLOW_TRAIN
     PREFER_LONG_FLOWS = True
     LONG_FLOW_PRIORITY_RATIO = 0.5
-    # ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
-    ABLATION_LAYERS = ['ip', 'tcp', 'tls']
+    ABLATION_LAYERS = ['eth', 'ip', 'tcp', 'tls']
+    # ABLATION_LAYERS = ['ip', 'tcp', 'tls']
     BACKBONE_MODE = 'expert_local'  # 'expert_local' | 'global'
 
     FILTER_SHORT_ENTRIES = False

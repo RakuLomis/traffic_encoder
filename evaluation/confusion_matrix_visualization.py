@@ -625,7 +625,10 @@ def plot_confusion_matrix_global(
     vmax=100,
     cell_scale=0.15,  # 鏄捐憲鍑忓皬鍗曞厓鏍肩缉鏀?
     show_yticklabels=True,
-    global_xlabel_y=0.03
+    global_xlabel_y=0.03,
+    use_fixed_figsize=False,
+    fixed_figsize=(8.0, 4.2),
+    matrix_only=False,
 ):
     import matplotlib as mpl
     from matplotlib.colors import LinearSegmentedColormap, PowerNorm
@@ -642,12 +645,18 @@ def plot_confusion_matrix_global(
     n = len(cm_list)
     n_class = len(label_order)
 
-    # 璁＄畻灏哄锛氬叏灞€鍥句笉闇€瑕佸绾虫枃瀛楋紝鍙互闈炲父绱у噾
-    single_width = n_class * cell_scale
-    total_width = single_width * n + 0.8
-    total_height = n_class * cell_scale + 0.5
+    # Figure size: dynamic by default, optionally fixed for cross-dataset consistency.
+    if use_fixed_figsize:
+        total_width, total_height = fixed_figsize
+        fig = plt.figure(figsize=(total_width, total_height), constrained_layout=False)
+        # Keep margins stable across datasets when fixed size is requested.
+        fig.subplots_adjust(left=0.12, right=0.90, bottom=0.16, top=0.88, wspace=0.10)
+    else:
+        single_width = n_class * cell_scale
+        total_width = single_width * n + 0.8
+        total_height = n_class * cell_scale + 0.5
+        fig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
 
-    fig = plt.figure(figsize=(total_width, total_height), constrained_layout=True)
     gs = fig.add_gridspec(1, n)
     axes = [fig.add_subplot(gs[0, i]) for i in range(n)]
 
@@ -668,49 +677,55 @@ def plot_confusion_matrix_global(
             fmt=".1f",
             annot_kws={"size": annot_fontsize},
             cbar=False,
-            xticklabels=False, # 鏍稿績锛氬幓鎺塜杞村煙鍚?
-            yticklabels=label_order if (i == 0 and show_yticklabels) else False,
+            xticklabels=False if matrix_only else False, # keep hidden in global mode
+            yticklabels=False if matrix_only else (label_order if (i == 0 and show_yticklabels) else False),
             linewidths=0
         )
-
-        ax.set_title(titles[i], fontsize=title_fontsize)
-        ax.set_xlabel("")
-        
-        if i == 0 and show_yticklabels:
-            ax.set_ylabel("True", fontsize=tick_fontsize)
-            ax.tick_params(axis='y', labelsize=tick_fontsize - 2) # 鍩熷悕澶氭椂缂╁皬瀛楀彿
-        else:
+        if matrix_only:
+            ax.set_title("")
+            ax.set_xlabel("")
             ax.set_ylabel("")
+            ax.set_xticks([])
+            ax.set_yticks([])
+        else:
+            ax.set_title(titles[i], fontsize=title_fontsize)
+            ax.set_xlabel("")
+            if i == 0 and show_yticklabels:
+                ax.set_ylabel("True", fontsize=tick_fontsize)
+                ax.tick_params(axis='y', labelsize=tick_fontsize - 2) # 鍩熷悕澶氭椂缂╁皬瀛楀彿
+            else:
+                ax.set_ylabel("")
 
         # 鏄惧寲杈规
         for spine in ax.spines.values():
             spine.set_visible(True)
             spine.set_linewidth(0.8)
 
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    # Bind colorbar to all heatmap axes so its height follows the matrix panel.
-    cbar = fig.colorbar(
-        sm,
-        ax=axes,
-        location='right',
-        fraction=0.025,
-        pad=0.02
-    )
-    cbar.set_label("Percentage (%)", fontsize=tick_fontsize)
-    # Center global x-label with respect to heatmap panel group (exclude colorbar).
-    fig.canvas.draw()
-    x0 = min(ax.get_position().x0 for ax in axes)
-    x1 = max(ax.get_position().x1 for ax in axes)
-    x_center = (x0 + x1) / 2.0
-    fig.text(
-        x_center,
-        global_xlabel_y,
-        "Predicted",
-        ha="center",
-        va="bottom",
-        fontsize=tick_fontsize
-    )
+    if not matrix_only:
+        sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        # Bind colorbar to all heatmap axes so its height follows the matrix panel.
+        cbar = fig.colorbar(
+            sm,
+            ax=axes,
+            location='right',
+            fraction=0.025,
+            pad=0.02
+        )
+        cbar.set_label("Percentage (%)", fontsize=tick_fontsize)
+        # Center global x-label with respect to heatmap panel group (exclude colorbar).
+        fig.canvas.draw()
+        x0 = min(ax.get_position().x0 for ax in axes)
+        x1 = max(ax.get_position().x1 for ax in axes)
+        x_center = (x0 + x1) / 2.0
+        fig.text(
+            x_center,
+            global_xlabel_y,
+            "Predicted",
+            ha="center",
+            va="bottom",
+            fontsize=tick_fontsize
+        )
     
     return fig
 
@@ -729,6 +744,9 @@ def plot_confusion_matrix_global_representative(
     cell_scale=0.24,
     show_yticklabels=True,
     global_xlabel_y=0.03,
+    use_fixed_figsize=False,
+    fixed_figsize=(8.0, 4.2),
+    matrix_only=False,
 ):
     """
     Plot representative confusion matrices by selecting a label subset.
@@ -790,5 +808,8 @@ def plot_confusion_matrix_global_representative(
         cell_scale=cell_scale,
         show_yticklabels=show_yticklabels,
         global_xlabel_y=global_xlabel_y,
+        use_fixed_figsize=use_fixed_figsize,
+        fixed_figsize=fixed_figsize,
+        matrix_only=matrix_only,
     )
 
