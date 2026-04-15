@@ -1,0 +1,669 @@
+from __future__ import annotations
+
+from typing import Dict, Tuple, Set, List
+import os
+import gc
+import random
+import json
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from utils.data_loader_ptga_le import GNNTrafficDataset
+from models.ProtocolTreeGAttention_le import HierarchicalMoE
+from utils.metrics import calculate_metrics
+from utils.train_eval_flow import compute_dataset_expert_importance
+from utils.flow_batch_components import (
+    FlowCentricBatchSampler,
+    aggregate_logits_by_flow_tensor,
+)
+from utils.ssl_augment import (
+    apply_node_feature_mask,
+    apply_sink_edge_dropout,
+    build_sink_metadata,
+)
+
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def collect_flow_ids(csv_path: str, flow_col: str = "stream_id") -> Set[str]:
+    if not os.path.exists(csv_path):
+        return set()
+    header = pd.read_csv(csv_path, dtype=str, nrows=0)
+    if flow_col not in header.columns:
+        return set()
+    vals = pd.read_csv(csv_path, dtype=str, usecols=[flow_col])[flow_col].fillna("__NA__").astype(str)
+    return set(vals.tolist())
+
+
+def run_no_leakage_check(
+    train_csv: str,
+    val_csv: str,
+    test_csv: str,
+    out_json: str,
+    flow_col: str = "stream_id",
+) -> Dict:
+    train_ids = collect_flow_ids(train_csv, flow_col=flow_col)
+    val_ids = collect_flow_ids(val_csv, flow_col=flow_col)
+    test_ids = collect_flow_ids(test_csv, flow_col=flow_col)
+
+    inter_train_val = len(train_ids.intersection(val_ids))
+    inter_train_test = len(train_ids.intersection(test_ids))
+    inter_val_test = len(val_ids.intersection(test_ids))
+
+    result = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "flow_column": flow_col,
+        "counts": {
+            "train_flows": len(train_ids),
+            "val_flows": len(val_ids),
+            "test_flows": len(test_ids),
+        },
+        "intersections": {
+            "train_val": inter_train_val,
+            "train_test": inter_train_test,
+            "val_test": inter_val_test,
+        },
+        "no_leakage_passed": (inter_train_val == 0 and inter_train_test == 0 and inter_val_test == 0),
+    }
+
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+    return result
+
+
+def move_batch_to_device(batch_dict: Dict, device: torch.device) -> Dict:
+    for key, value in batch_dict.items():
+        if hasattr(value, "to"):
+            try:
+                batch_dict[key] = value.to(device, non_blocking=True)
+            except TypeError:
+                batch_dict[key] = value.to(device)
+    return batch_dict
+
+
+def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
+    """
+    Standard symmetric NT-Xent over two aligned views.
+    """
+    if z1.size(0) != z2.size(0):
+        n = min(z1.size(0), z2.size(0))
+        z1 = z1[:n]
+        z2 = z2[:n]
+    z1 = F.normalize(z1, dim=1)
+    z2 = F.normalize(z2, dim=1)
+    n = z1.size(0)
+    if n <= 1:
+        return torch.zeros((), device=z1.device, dtype=z1.dtype)
+
+    z = torch.cat([z1, z2], dim=0)  # [2N, D]
+    sim = torch.mm(z, z.t()) / max(float(temperature), 1e-6)  # [2N, 2N]
+    mask = torch.eye(2 * n, dtype=torch.bool, device=z.device)
+    sim = sim.masked_fill(mask, -1e9)
+
+    targets = torch.arange(n, device=z.device)
+    targets = torch.cat([targets + n, targets], dim=0)  # positives index
+    return F.cross_entropy(sim, targets)
+
+
+def layer_consistency_loss(
+    expert_dict_v1: Dict[str, torch.Tensor],
+    expert_dict_v2: Dict[str, torch.Tensor],
+    pair: Tuple[str, str] = ("tcp_core", "tls_record"),
+    temperature: float = 0.2,
+) -> torch.Tensor:
+    a, b = pair
+    if a not in expert_dict_v1 or b not in expert_dict_v1:
+        return torch.zeros((), device=next(iter(expert_dict_v1.values())).device)
+    if a not in expert_dict_v2 or b not in expert_dict_v2:
+        return torch.zeros((), device=next(iter(expert_dict_v2.values())).device)
+    # Cross-layer consistency on each view, then average.
+    l1 = nt_xent_loss(expert_dict_v1[a], expert_dict_v1[b], temperature=temperature)
+    l2 = nt_xent_loss(expert_dict_v2[a], expert_dict_v2[b], temperature=temperature)
+    return 0.5 * (l1 + l2)
+
+
+def aggregate_packet_repr_by_flow(
+    packet_repr: torch.Tensor,
+    inverse_flow_index: torch.Tensor,
+    num_flows: int,
+    pool_mode: str = "max",
+) -> torch.Tensor:
+    """
+    Aggregate packet representations into flow representations.
+    """
+    if num_flows <= 0:
+        return torch.empty((0, packet_repr.size(1)), device=packet_repr.device, dtype=packet_repr.dtype)
+
+    pool_mode = str(pool_mode).lower()
+    if pool_mode == "mean":
+        out = torch.zeros((num_flows, packet_repr.size(1)), dtype=packet_repr.dtype, device=packet_repr.device)
+        out.index_add_(0, inverse_flow_index, packet_repr)
+        cnt = torch.zeros((num_flows,), dtype=packet_repr.dtype, device=packet_repr.device)
+        cnt.index_add_(
+            0,
+            inverse_flow_index,
+            torch.ones((inverse_flow_index.size(0),), dtype=packet_repr.dtype, device=packet_repr.device),
+        )
+        return out / cnt.clamp_min(1.0).unsqueeze(-1)
+    if pool_mode == "max":
+        out = torch.full(
+            (num_flows, packet_repr.size(1)),
+            float("-inf"),
+            dtype=packet_repr.dtype,
+            device=packet_repr.device,
+        )
+        idx_expand = inverse_flow_index.unsqueeze(-1).expand(-1, packet_repr.size(1))
+        out.scatter_reduce_(0, idx_expand, packet_repr, reduce="amax", include_self=True)
+        zero_rows = torch.isinf(out).all(dim=1)
+        if zero_rows.any():
+            out[zero_rows] = 0.0
+        return out
+    raise ValueError(f"Unsupported pool_mode: {pool_mode}")
+
+
+@torch.no_grad()
+def evaluate_split_supervised_flow(
+    model: HierarchicalMoE,
+    dataloader: DataLoader,
+    device: torch.device,
+    num_classes: int,
+) -> Tuple[Dict[str, float], torch.Tensor]:
+    model.eval()
+    cm = torch.zeros(num_classes, num_classes, dtype=torch.long)
+    running_loss = 0.0
+    running_items = 0
+
+    for batch in tqdm(dataloader, desc="[SSL-EVAL] Evaluating(flow)", leave=False):
+        batch = move_batch_to_device(batch, device)
+        any_key = next(iter(batch.keys()))
+        labels = batch[any_key].y
+        flow_ids = batch.get("flow_ids", None)
+        if flow_ids is None:
+            raise RuntimeError("[SSL-EVAL] flow_ids missing in batch_dict for flow-level evaluation.")
+
+        logits, _ = model(batch)
+        flow_logits, flow_labels, _ = aggregate_logits_by_flow_tensor(
+            packet_logits=logits,
+            packet_labels=labels,
+            flow_ids=flow_ids,
+            num_classes=num_classes,
+            method="mean_logits",
+        )
+        if flow_logits.size(0) == 0:
+            continue
+        loss = F.cross_entropy(flow_logits, flow_labels)
+        running_loss += float(loss.item()) * int(flow_labels.size(0))
+        running_items += int(flow_labels.size(0))
+
+        pred = torch.argmax(flow_logits, dim=1).detach().cpu()
+        gt = flow_labels.detach().cpu()
+        for t, p in zip(gt.view(-1), pred.view(-1)):
+            if 0 <= int(t) < num_classes and 0 <= int(p) < num_classes:
+                cm[int(t), int(p)] += 1
+
+    metrics = calculate_metrics(cm)
+    metrics["loss"] = running_loss / max(1, running_items)
+    return metrics, cm
+
+
+def build_label_mapping(train_df: pd.DataFrame, val_df: pd.DataFrame, test_df: pd.DataFrame) -> Dict[str, int]:
+    all_labels = set()
+    for d in (train_df, val_df, test_df):
+        if "label" in d.columns:
+            all_labels.update(d["label"].astype(str).tolist())
+    labels_sorted = sorted(all_labels)
+    return {name: i for i, name in enumerate(labels_sorted)}
+
+
+def ensure_label_columns(df: pd.DataFrame, label_to_id: Dict[str, int]) -> pd.DataFrame:
+    out = df.copy()
+    if "label" not in out.columns:
+        out["label"] = "ssl"
+    out["label"] = out["label"].astype(str)
+    out["label_id"] = out["label"].map(label_to_id).fillna(0).astype(int)
+    return out
+
+
+if __name__ == "__main__":
+    # --------------------------
+    # Stage-A SSL defaults
+    # --------------------------
+    set_seed(42)
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    NUM_EPOCHS = 20
+    BATCH_SIZE = 1024
+    NUM_WORKERS = 2
+    PERSISTENT_WORKERS = True
+    PREFETCH = 2
+    LR = 1e-3
+    WEIGHT_DECAY = 1e-4
+    TEMPERATURE = 0.2
+
+    # SSL loss weights
+    LAMBDA_INST = 1.0
+    LAMBDA_LAYER = 0.2
+    ENABLE_LAYER_CONSISTENCY = True
+
+    # Augmentation controls
+    MASK_RATIO = 0.15
+    SINK_DROP_PROB = 0.10
+    ENABLE_SINK_EDGE_DROP = True
+    STRICT_NO_LEAKAGE_CHECK = True
+    ENABLE_SUPERVISED_EVAL = True
+    SSL_EVAL_EVERY_N_EPOCHS = 1
+    ENABLE_FLOW_CENTRIC_BATCHING = True
+    FLOW_MICRO_PACKETS_PER_FLOW = 64
+    FLOW_MACRO_FLOWS_PER_BATCH = 32
+    FLOW_POOL_MODE = "max"  # 'max' | 'mean'
+    DROP_LAST_TRAIN_FLOW_BATCH = False
+
+    # --------------------------
+    # Paths (edit for your setup)
+    # --------------------------
+    dataset_name = "cstnet_tls_1.3"
+    root_path = os.path.join("..", "TrafficData", "datasets_csv_add2")
+    split_dir = os.path.join(root_path, "datasets_split", dataset_name)
+    train_csv_path = os.path.join(split_dir, "train_set.csv")
+    val_csv_path = os.path.join(split_dir, "validation_set.csv")
+    test_csv_path = os.path.join(split_dir, "test_set.csv")
+    config_path = os.path.join(".", "Data", "fields_embedding_configs_v1.yaml")
+    vocab_path = os.path.join(root_path, "categorical_vocabs", dataset_name + "_vocabs.yaml")
+    save_dir = os.path.join("..", "Res", "ssl_pretrain", dataset_name)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Save config snapshot
+    config_snapshot = {
+        "dataset_name": dataset_name,
+        "train_csv": train_csv_path,
+        "val_csv": val_csv_path,
+        "test_csv": test_csv_path,
+        "num_epochs": NUM_EPOCHS,
+        "batch_size": BATCH_SIZE,
+        "num_workers": NUM_WORKERS,
+        "lr": LR,
+        "weight_decay": WEIGHT_DECAY,
+        "temperature": TEMPERATURE,
+        "lambda_inst": LAMBDA_INST,
+        "lambda_layer": LAMBDA_LAYER,
+        "enable_layer_consistency": ENABLE_LAYER_CONSISTENCY,
+        "mask_ratio": MASK_RATIO,
+        "sink_drop_prob": SINK_DROP_PROB,
+        "enable_sink_edge_drop": ENABLE_SINK_EDGE_DROP,
+        "enable_flow_centric_batching": ENABLE_FLOW_CENTRIC_BATCHING,
+        "flow_micro_packets_per_flow": FLOW_MICRO_PACKETS_PER_FLOW,
+        "flow_macro_flows_per_batch": FLOW_MACRO_FLOWS_PER_BATCH,
+        "flow_pool_mode": FLOW_POOL_MODE,
+        "ssl_eval_every_n_epochs": SSL_EVAL_EVERY_N_EPOCHS,
+    }
+    with open(os.path.join(save_dir, "ssl_config_snapshot.json"), "w", encoding="utf-8") as f:
+        json.dump(config_snapshot, f, indent=2, ensure_ascii=False)
+
+    print(f"[SSL] device={DEVICE}")
+    print(f"[SSL] reading {train_csv_path}")
+    if STRICT_NO_LEAKAGE_CHECK:
+        check = run_no_leakage_check(
+            train_csv=train_csv_path,
+            val_csv=val_csv_path,
+            test_csv=test_csv_path,
+            out_json=os.path.join(save_dir, "leakage_check.json"),
+            flow_col="stream_id",
+        )
+        print(f"[SSL] leakage check: {check['intersections']}")
+        if not check["no_leakage_passed"]:
+            raise RuntimeError("[SSL] No-leakage check failed. Abort pretraining.")
+
+    train_df_raw = pd.read_csv(train_csv_path, dtype=str)
+    val_df_raw = pd.read_csv(val_csv_path, dtype=str) if os.path.exists(val_csv_path) else pd.DataFrame()
+    test_df_raw = pd.read_csv(test_csv_path, dtype=str) if os.path.exists(test_csv_path) else pd.DataFrame()
+    label_to_id = build_label_mapping(train_df_raw, val_df_raw, test_df_raw)
+    df = ensure_label_columns(train_df_raw, label_to_id)
+    val_df = ensure_label_columns(val_df_raw, label_to_id) if len(val_df_raw) else pd.DataFrame()
+    test_df = ensure_label_columns(test_df_raw, label_to_id) if len(test_df_raw) else pd.DataFrame()
+
+    ssl_dataset = GNNTrafficDataset(
+        df,
+        config_path=config_path,
+        vocab_path=vocab_path,
+        enabled_layers=["ip", "tcp", "tls"],
+        use_flow_features=False,
+        use_ip_address=True,
+        use_mac_address=True,
+        use_port=True,
+        backbone_mode="expert_local",
+        enable_virtual_sink=True,
+        virtual_sink_name="__VIRTUAL_SINK__",
+        obfuscation_config=None,
+    )
+    sink_meta = build_sink_metadata(ssl_dataset.expert_graphs, sink_name="__VIRTUAL_SINK__")
+
+    common_loader_kwargs = {
+        "num_workers": NUM_WORKERS,
+        "pin_memory": torch.cuda.is_available(),
+        "worker_init_fn": seed_worker,
+        "collate_fn": ssl_dataset.collate_from_index,
+        "persistent_workers": (PERSISTENT_WORKERS and NUM_WORKERS > 0),
+    }
+    if NUM_WORKERS > 0:
+        common_loader_kwargs["prefetch_factor"] = PREFETCH
+
+    if ENABLE_FLOW_CENTRIC_BATCHING:
+        train_batch_sampler = FlowCentricBatchSampler(
+            flow_ids=ssl_dataset.flow_ids,
+            packets_per_flow=FLOW_MICRO_PACKETS_PER_FLOW,
+            flows_per_batch=FLOW_MACRO_FLOWS_PER_BATCH,
+            shuffle_flows=True,
+            drop_last=DROP_LAST_TRAIN_FLOW_BATCH,
+        )
+        loader = DataLoader(
+            ssl_dataset,
+            batch_sampler=train_batch_sampler,
+            **common_loader_kwargs,
+        )
+    else:
+        loader = DataLoader(
+            ssl_dataset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            drop_last=True,
+            **common_loader_kwargs,
+        )
+
+    val_loader = None
+    if ENABLE_SUPERVISED_EVAL and len(val_df) > 0:
+        val_dataset = GNNTrafficDataset(
+            val_df,
+            config_path=config_path,
+            vocab_path=vocab_path,
+            enabled_layers=["ip", "tcp", "tls"],
+            use_flow_features=False,
+            use_ip_address=True,
+            use_mac_address=True,
+            use_port=True,
+            backbone_mode="expert_local",
+            enable_virtual_sink=True,
+            virtual_sink_name="__VIRTUAL_SINK__",
+            obfuscation_config=None,
+        )
+        val_kwargs = dict(common_loader_kwargs)
+        val_kwargs["collate_fn"] = val_dataset.collate_from_index
+        if ENABLE_FLOW_CENTRIC_BATCHING:
+            val_batch_sampler = FlowCentricBatchSampler(
+                flow_ids=val_dataset.flow_ids,
+                packets_per_flow=FLOW_MICRO_PACKETS_PER_FLOW,
+                flows_per_batch=FLOW_MACRO_FLOWS_PER_BATCH,
+                shuffle_flows=False,
+                drop_last=False,
+            )
+            val_loader = DataLoader(val_dataset, batch_sampler=val_batch_sampler, **val_kwargs)
+        else:
+            val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, **val_kwargs)
+
+    test_loader = None
+    if ENABLE_SUPERVISED_EVAL and len(test_df) > 0:
+        test_dataset = GNNTrafficDataset(
+            test_df,
+            config_path=config_path,
+            vocab_path=vocab_path,
+            enabled_layers=["ip", "tcp", "tls"],
+            use_flow_features=False,
+            use_ip_address=True,
+            use_mac_address=True,
+            use_port=True,
+            backbone_mode="expert_local",
+            enable_virtual_sink=True,
+            virtual_sink_name="__VIRTUAL_SINK__",
+            obfuscation_config=None,
+        )
+        test_kwargs = dict(common_loader_kwargs)
+        test_kwargs["collate_fn"] = test_dataset.collate_from_index
+        if ENABLE_FLOW_CENTRIC_BATCHING:
+            test_batch_sampler = FlowCentricBatchSampler(
+                flow_ids=test_dataset.flow_ids,
+                packets_per_flow=FLOW_MICRO_PACKETS_PER_FLOW,
+                flows_per_batch=FLOW_MACRO_FLOWS_PER_BATCH,
+                shuffle_flows=False,
+                drop_last=False,
+            )
+            test_loader = DataLoader(test_dataset, batch_sampler=test_batch_sampler, **test_kwargs)
+        else:
+            test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, **test_kwargs)
+
+    num_classes = int(max(2, len(label_to_id)))
+    model = HierarchicalMoE(
+        config_path=config_path,
+        vocab_path=vocab_path,
+        num_classes=num_classes,
+        expert_graph_info=ssl_dataset.expert_graphs,
+        use_flow_features=False,
+        num_flow_features=0,
+        hidden_dim=128,
+        dropout_rate=0.1,
+        expert_gate_noise_std=0.0,
+    ).to(DEVICE)
+
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    best_loss = float("inf")
+    best_val_f1 = -1.0
+    history = []
+
+    for epoch in range(NUM_EPOCHS):
+        model.train()
+        running_inst = 0.0
+        running_layer = 0.0
+        running_total = 0.0
+        steps = 0
+
+        for batch in tqdm(loader, desc=f"[SSL] Epoch {epoch+1}/{NUM_EPOCHS}"):
+            batch = move_batch_to_device(batch, DEVICE)
+            if "flow_ids" not in batch:
+                raise RuntimeError("[SSL] flow_ids missing in batch. Flow-centric SSL requires flow_ids.")
+            flow_ids = batch["flow_ids"]
+            unique_flow_ids, inverse_flow_index = torch.unique(
+                flow_ids, sorted=False, return_inverse=True
+            )
+            num_flows_in_batch = int(unique_flow_ids.numel())
+            if num_flows_in_batch <= 1:
+                continue
+
+            view1, _ = apply_node_feature_mask(batch, mask_ratio=MASK_RATIO, sink_name="__VIRTUAL_SINK__")
+            view2, _ = apply_node_feature_mask(batch, mask_ratio=MASK_RATIO, sink_name="__VIRTUAL_SINK__")
+            if ENABLE_SINK_EDGE_DROP:
+                view1 = apply_sink_edge_dropout(view1, sink_meta=sink_meta, p_drop=SINK_DROP_PROB)
+                view2 = apply_sink_edge_dropout(view2, sink_meta=sink_meta, p_drop=SINK_DROP_PROB)
+
+            out1 = model(view1, return_packet_repr=True, return_expert_embeddings=True)
+            out2 = model(view2, return_packet_repr=True, return_expert_embeddings=True)
+            _, _, z1_pkt, exp1 = out1
+            _, _, z2_pkt, exp2 = out2
+
+            z1_flow = aggregate_packet_repr_by_flow(
+                packet_repr=z1_pkt,
+                inverse_flow_index=inverse_flow_index,
+                num_flows=num_flows_in_batch,
+                pool_mode=FLOW_POOL_MODE,
+            )
+            z2_flow = aggregate_packet_repr_by_flow(
+                packet_repr=z2_pkt,
+                inverse_flow_index=inverse_flow_index,
+                num_flows=num_flows_in_batch,
+                pool_mode=FLOW_POOL_MODE,
+            )
+
+            loss_inst = nt_xent_loss(z1_flow, z2_flow, temperature=TEMPERATURE)
+            loss_layer = (
+                layer_consistency_loss(exp1, exp2, pair=("tcp_core", "tls_record"), temperature=TEMPERATURE)
+                if ENABLE_LAYER_CONSISTENCY
+                else torch.zeros_like(loss_inst)
+            )
+            loss = LAMBDA_INST * loss_inst + LAMBDA_LAYER * loss_layer
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            running_inst += float(loss_inst.item())
+            running_layer += float(loss_layer.item())
+            running_total += float(loss.item())
+            steps += 1
+
+            del view1, view2, out1, out2, z1_pkt, z2_pkt, z1_flow, z2_flow, exp1, exp2, loss_inst, loss_layer, loss
+
+        epoch_inst = running_inst / max(1, steps)
+        epoch_layer = running_layer / max(1, steps)
+        epoch_total = running_total / max(1, steps)
+        history.append(
+            {
+                "epoch": epoch + 1,
+                "ssl_loss": epoch_total,
+                "inst_loss": epoch_inst,
+                "layer_loss": epoch_layer,
+            }
+        )
+        msg = (
+            f"[SSL] epoch={epoch+1} total={epoch_total:.4f} "
+            f"inst={epoch_inst:.4f} layer={epoch_layer:.4f}"
+        )
+
+        should_run_val = (
+            val_loader is not None
+            and (
+                ((epoch + 1) % max(1, int(SSL_EVAL_EVERY_N_EPOCHS)) == 0)
+                or (epoch + 1 == NUM_EPOCHS)
+            )
+        )
+        if should_run_val:
+            val_metrics, _ = evaluate_split_supervised_flow(
+                model=model,
+                dataloader=val_loader,
+                device=DEVICE,
+                num_classes=num_classes,
+            )
+            history[-1].update(
+                {
+                    "val_loss": float(val_metrics["loss"]),
+                    "val_acc": float(val_metrics["accuracy"]),
+                    "val_f1_macro": float(val_metrics["f1_macro"]),
+                    "val_precision_macro": float(val_metrics["precision_macro"]),
+                    "val_recall_macro": float(val_metrics["recall_macro"]),
+                }
+            )
+            msg += (
+                f" | val_loss={val_metrics['loss']:.4f}"
+                f" val_acc={val_metrics['accuracy']:.4f}"
+                f" val_f1={val_metrics['f1_macro']:.4f}"
+            )
+        elif val_loader is not None:
+            msg += " | val_skipped"
+        print(msg)
+
+        if epoch_total < best_loss:
+            best_loss = epoch_total
+            torch.save(model.state_dict(), os.path.join(save_dir, "ssl_pretrain_best.pth"))
+        if should_run_val:
+            current_val_f1 = float(history[-1].get("val_f1_macro", -1.0))
+            if current_val_f1 > best_val_f1:
+                best_val_f1 = current_val_f1
+                torch.save(model.state_dict(), os.path.join(save_dir, "ssl_best_by_val_f1.pth"))
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    pd.DataFrame(history).to_csv(os.path.join(save_dir, "ssl_training_log.csv"), index=False)
+    best_ckpt_path = os.path.join(save_dir, "ssl_best_by_val_f1.pth")
+    if os.path.exists(best_ckpt_path):
+        model.load_state_dict(torch.load(best_ckpt_path, map_location=DEVICE))
+
+    if test_loader is not None:
+        test_metrics, test_cm = evaluate_split_supervised_flow(
+            model=model,
+            dataloader=test_loader,
+            device=DEVICE,
+            num_classes=num_classes,
+        )
+        print(
+            "[SSL] Final Test Performance: "
+            f"loss={test_metrics['loss']:.4f} "
+            f"acc={test_metrics['accuracy']:.4f} "
+            f"f1_macro={test_metrics['f1_macro']:.4f}"
+        )
+
+        id_to_label = {v: k for k, v in label_to_id.items()}
+        class_names: List[str] = [id_to_label.get(i, str(i)) for i in range(num_classes)]
+        cm_df = pd.DataFrame(test_cm.numpy(), index=class_names, columns=class_names)
+        cm_path = os.path.join(save_dir, f"{dataset_name}_ssl_final_test_confusion_matrix.csv")
+        cm_df.to_csv(cm_path)
+
+        test_summary = {
+            "test_loss": float(test_metrics["loss"]),
+            "test_acc": float(test_metrics["accuracy"]),
+            "test_f1_macro": float(test_metrics["f1_macro"]),
+            "test_precision_macro": float(test_metrics["precision_macro"]),
+            "test_recall_macro": float(test_metrics["recall_macro"]),
+            "num_classes": int(num_classes),
+            "num_test_samples": int(test_cm.sum().item()),
+        }
+        with open(os.path.join(save_dir, "ssl_final_test_metrics.json"), "w", encoding="utf-8") as f:
+            json.dump(test_summary, f, indent=2, ensure_ascii=False)
+
+        # NGI-like feature importance report
+        importance_reports_dict = model.get_feature_importance()
+        rows = []
+        for expert_name, expert_df in importance_reports_dict.items():
+            tmp = expert_df.copy()
+            tmp["expert_name"] = expert_name
+            rows.append(tmp[["expert_name", "feature_name", "importance_score"]])
+        if rows:
+            ngi_df = pd.concat(rows, axis=0, ignore_index=True)
+            ngi_df.to_csv(
+                os.path.join(save_dir, f"{dataset_name}_ssl_feature_importance_report.csv"),
+                index=False,
+            )
+
+        # GCS-like expert importance reports
+        try:
+            lastbatch_expert_df = model.get_expert_importance()
+            lastbatch_expert_df.to_csv(
+                os.path.join(save_dir, f"{dataset_name}_ssl_lastbatch_expert_layer_importance.csv"),
+                index=False,
+            )
+        except Exception as e:
+            print(f"[SSL] warning: cannot export last-batch expert importance: {e}")
+
+        try:
+            expected_expert_weights = compute_dataset_expert_importance(model, test_loader, DEVICE)
+            expert_names = list(model.gnn_expert_names)
+            if model.use_flow_features:
+                expert_names.append("Flow_Features_Block")
+            gcs_df = pd.DataFrame(
+                {"expert_name": expert_names, "importance_score": expected_expert_weights.numpy()}
+            ).sort_values("importance_score", ascending=False)
+            gcs_df.to_csv(
+                os.path.join(save_dir, f"{dataset_name}_ssl_expert_layer_importance.csv"),
+                index=False,
+            )
+        except Exception as e:
+            print(f"[SSL] warning: cannot export dataset-level expert importance: {e}")
+
+    print(f"[SSL] done. best_loss={best_loss:.6f}")

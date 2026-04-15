@@ -358,9 +358,15 @@ class HierarchicalMoE(nn.Module):
     # Forward
     # =========================================================
 
-    def forward(self, batch_dict: Dict[str, Any], return_packet_repr: bool = False):
+    def forward(
+        self,
+        batch_dict: Dict[str, Any],
+        return_packet_repr: bool = False,
+        return_expert_embeddings: bool = False,
+    ):
 
         expert_embeddings = []
+        expert_embedding_dict = {}
         all_gates = {}
 
         # 1️⃣ GNN experts
@@ -370,6 +376,7 @@ class HierarchicalMoE(nn.Module):
 
             embedding, gate = self.experts[name](batch_dict[name])
             expert_embeddings.append(embedding)
+            expert_embedding_dict[name] = embedding
             all_gates[name] = gate
 
         # 2️⃣ Flow expert
@@ -381,6 +388,7 @@ class HierarchicalMoE(nn.Module):
             flow_embedding = self.flow_stats_embedder(flow_input)
             flow_embedding = self.flow_output_norm(flow_embedding)
             expert_embeddings.append(flow_embedding)
+            expert_embedding_dict["Flow_Features_Block"] = flow_embedding
 
         if not expert_embeddings:
             raise ValueError("No expert produced embeddings.")
@@ -403,8 +411,12 @@ class HierarchicalMoE(nn.Module):
 
         logits = self.aggregator(weighted_sum)
 
+        if return_packet_repr and return_expert_embeddings:
+            return logits, all_gates, weighted_sum, expert_embedding_dict
         if return_packet_repr:
             return logits, all_gates, weighted_sum
+        if return_expert_embeddings:
+            return logits, all_gates, expert_embedding_dict
         return logits, all_gates
 
     # =========================================================
