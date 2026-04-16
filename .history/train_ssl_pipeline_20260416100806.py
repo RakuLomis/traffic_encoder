@@ -101,34 +101,6 @@ def move_batch_to_device(batch_dict: Dict, device: torch.device) -> Dict:
     return batch_dict
 
 
-def maybe_drop_fields_from_batch(
-    batch_dict: Dict,
-    drop_field_names: List[str],
-) -> Dict:
-    """
-    Optionally remove specific field attributes from all expert Data objects.
-    This is more flexible than a hardcoded SNI-only drop.
-    """
-    if not drop_field_names:
-        return batch_dict
-
-    names = [str(x) for x in drop_field_names if str(x).strip()]
-    if not names:
-        return batch_dict
-
-    for _, value in batch_dict.items():
-        # Only expert Data-like objects support attribute deletion.
-        if not hasattr(value, "__dict__"):
-            continue
-        for field_name in names:
-            if hasattr(value, field_name):
-                try:
-                    delattr(value, field_name)
-                except AttributeError:
-                    pass
-    return batch_dict
-
-
 def nt_xent_loss(z1: torch.Tensor, z2: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
     """
     Standard symmetric NT-Xent over two aligned views.
@@ -215,7 +187,6 @@ def evaluate_split_supervised_flow(
     dataloader: DataLoader,
     device: torch.device,
     num_classes: int,
-    drop_field_names: List[str] | None = None,
 ) -> Tuple[Dict[str, float], torch.Tensor]:
     model.eval()
     cm = torch.zeros(num_classes, num_classes, dtype=torch.long)
@@ -224,7 +195,6 @@ def evaluate_split_supervised_flow(
 
     for batch in tqdm(dataloader, desc="[SSL-EVAL] Evaluating(flow)", leave=False):
         batch = move_batch_to_device(batch, device)
-        batch = maybe_drop_fields_from_batch(batch_dict=batch, drop_field_names=drop_field_names or [])
         any_key = next(iter(batch.keys()))
         labels = batch[any_key].y
         flow_ids = batch.get("flow_ids", None)
@@ -280,7 +250,6 @@ def train_one_epoch_downstream_flow(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     num_classes: int,
-    drop_field_names: List[str] | None = None,
 ) -> Tuple[Dict[str, float], torch.Tensor]:
     model.train()
     cm = torch.zeros(num_classes, num_classes, dtype=torch.long)
@@ -289,7 +258,6 @@ def train_one_epoch_downstream_flow(
 
     for batch in tqdm(dataloader, desc="[Stage-B] Training", leave=False):
         batch = move_batch_to_device(batch, device)
-        batch = maybe_drop_fields_from_batch(batch_dict=batch, drop_field_names=drop_field_names or [])
         any_key = next(iter(batch.keys()))
         labels = batch[any_key].y
         flow_ids = batch.get("flow_ids", None)
@@ -351,7 +319,7 @@ if __name__ == "__main__":
     # --------------------------
     set_seed(42)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    NUM_EPOCHS = 50
+    NUM_EPOCHS = 20
     BATCH_SIZE = 1024
     NUM_WORKERS = 2
     PERSISTENT_WORKERS = True
@@ -379,13 +347,6 @@ if __name__ == "__main__":
     FLOW_MACRO_FLOWS_PER_BATCH = 32
     FLOW_POOL_MODE = "max"  # 'max' | 'mean'
     DROP_LAST_TRAIN_FLOW_BATCH = False
-    # Feature control (must stay consistent across train/val/test)
-    USE_IP_ADDRESS = False
-    USE_MAC_ADDRESS = False
-    USE_PORT = False
-    DROP_FIELD_NAMES = [
-        "tls.handshake.extensions_server_name",
-    ]
     STAGE_B_MODE = "fine_tune"  # 'linear_probe' | 'fine_tune'
     STAGE_B_EPOCHS = 30
     STAGE_B_LR = 5e-4
@@ -396,7 +357,6 @@ if __name__ == "__main__":
     # Paths (edit for your setup)
     # --------------------------
     dataset_name = "cstnet_tls_1.3"
-    # dataset_name = "CipherSpectrum"
     root_path = os.path.join("..", "TrafficData", "datasets_csv_add2")
     split_dir = os.path.join(root_path, "datasets_split", dataset_name)
     train_csv_path = os.path.join(split_dir, "train_set.csv")
@@ -430,10 +390,6 @@ if __name__ == "__main__":
         "flow_macro_flows_per_batch": FLOW_MACRO_FLOWS_PER_BATCH,
         "flow_pool_mode": FLOW_POOL_MODE,
         "ssl_eval_every_n_epochs": SSL_EVAL_EVERY_N_EPOCHS,
-        "use_ip_address": USE_IP_ADDRESS,
-        "use_mac_address": USE_MAC_ADDRESS,
-        "use_port": USE_PORT,
-        "drop_field_names": DROP_FIELD_NAMES,
         "run_stage_a_ssl": RUN_STAGE_A_SSL,
         "run_stage_b_downstream": RUN_STAGE_B_DOWNSTREAM,
         "stage_b_mode": STAGE_B_MODE,
@@ -473,9 +429,9 @@ if __name__ == "__main__":
         vocab_path=vocab_path,
         enabled_layers=["ip", "tcp", "tls"],
         use_flow_features=False,
-        use_ip_address=USE_IP_ADDRESS,
-        use_mac_address=USE_MAC_ADDRESS,
-        use_port=USE_PORT,
+        use_ip_address=False,
+        use_mac_address=False,
+        use_port=False,
         backbone_mode="expert_local",
         enable_virtual_sink=True,
         virtual_sink_name="__VIRTUAL_SINK__",
@@ -523,9 +479,9 @@ if __name__ == "__main__":
             vocab_path=vocab_path,
             enabled_layers=["ip", "tcp", "tls"],
             use_flow_features=False,
-            use_ip_address=USE_IP_ADDRESS,
-            use_mac_address=USE_MAC_ADDRESS,
-            use_port=USE_PORT,
+            use_ip_address=True,
+            use_mac_address=True,
+            use_port=True,
             backbone_mode="expert_local",
             enable_virtual_sink=True,
             virtual_sink_name="__VIRTUAL_SINK__",
@@ -553,9 +509,9 @@ if __name__ == "__main__":
             vocab_path=vocab_path,
             enabled_layers=["ip", "tcp", "tls"],
             use_flow_features=False,
-            use_ip_address=USE_IP_ADDRESS,
-            use_mac_address=USE_MAC_ADDRESS,
-            use_port=USE_PORT,
+            use_ip_address=True,
+            use_mac_address=True,
+            use_port=True,
             backbone_mode="expert_local",
             enable_virtual_sink=True,
             virtual_sink_name="__VIRTUAL_SINK__",
@@ -602,10 +558,6 @@ if __name__ == "__main__":
 
         for batch in tqdm(loader, desc=f"[SSL] Epoch {epoch+1}/{NUM_EPOCHS}"):
             batch = move_batch_to_device(batch, DEVICE)
-            batch = maybe_drop_fields_from_batch(
-                batch_dict=batch,
-                drop_field_names=DROP_FIELD_NAMES,
-            )
             if "flow_ids" not in batch:
                 raise RuntimeError("[SSL] flow_ids missing in batch. Flow-centric SSL requires flow_ids.")
             flow_ids = batch["flow_ids"]
@@ -689,7 +641,6 @@ if __name__ == "__main__":
                 dataloader=val_loader,
                 device=DEVICE,
                 num_classes=num_classes,
-                drop_field_names=DROP_FIELD_NAMES,
             )
             history[-1].update(
                 {
@@ -755,7 +706,6 @@ if __name__ == "__main__":
                 optimizer=optimizer_b,
                 device=DEVICE,
                 num_classes=num_classes,
-                drop_field_names=DROP_FIELD_NAMES,
             )
             row = {
                 "epoch": epoch_b + 1,
@@ -776,7 +726,6 @@ if __name__ == "__main__":
                     dataloader=val_loader,
                     device=DEVICE,
                     num_classes=num_classes,
-                    drop_field_names=DROP_FIELD_NAMES,
                 )
                 row.update(
                     {
@@ -825,7 +774,6 @@ if __name__ == "__main__":
             dataloader=test_loader,
             device=DEVICE,
             num_classes=num_classes,
-            drop_field_names=DROP_FIELD_NAMES,
         )
         print(
             "[SSL] Final Test Performance: "
