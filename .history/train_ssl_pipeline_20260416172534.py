@@ -366,7 +366,7 @@ if __name__ == "__main__":
     ENABLE_LAYER_CONSISTENCY = True
 
     # Augmentation controls
-    MASK_RATIO = 0.3 # initial: 0.15
+    MASK_RATIO = 0.3
     SINK_DROP_PROB = 0.10
     ENABLE_SINK_EDGE_DROP = True
     STRICT_NO_LEAKAGE_CHECK = True
