@@ -23,7 +23,6 @@ from utils.flow_batch_components import (
     FlowCentricBatchSampler,
     aggregate_logits_by_flow_tensor,
 )
-from utils.leakage_tools import compute_leakage_report, sanitize_splits_prefer_test
 from utils.ssl_augment import (
     apply_node_feature_mask,
     apply_sink_edge_dropout,
@@ -66,6 +65,52 @@ def get_current_lr(optimizer: torch.optim.Optimizer) -> float:
     if len(optimizer.param_groups) == 0:
         return float("nan")
     return float(optimizer.param_groups[0].get("lr", float("nan")))
+
+
+def collect_flow_ids(csv_path: str, flow_col: str = "stream_id") -> Set[str]:
+    if not os.path.exists(csv_path):
+        return set()
+    header = pd.read_csv(csv_path, dtype=str, nrows=0)
+    if flow_col not in header.columns:
+        return set()
+    vals = pd.read_csv(csv_path, dtype=str, usecols=[flow_col])[flow_col].fillna("__NA__").astype(str)
+    return set(vals.tolist())
+
+
+def run_no_leakage_check(
+    train_csv: str,
+    val_csv: str,
+    test_csv: str,
+    out_json: str,
+    flow_col: str = "stream_id",
+) -> Dict:
+    train_ids = collect_flow_ids(train_csv, flow_col=flow_col)
+    val_ids = collect_flow_ids(val_csv, flow_col=flow_col)
+    test_ids = collect_flow_ids(test_csv, flow_col=flow_col)
+
+    inter_train_val = len(train_ids.intersection(val_ids))
+    inter_train_test = len(train_ids.intersection(test_ids))
+    inter_val_test = len(val_ids.intersection(test_ids))
+
+    result = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "flow_column": flow_col,
+        "counts": {
+            "train_flows": len(train_ids),
+            "val_flows": len(val_ids),
+            "test_flows": len(test_ids),
+        },
+        "intersections": {
+            "train_val": inter_train_val,
+            "train_test": inter_train_test,
+            "val_test": inter_val_test,
+        },
+        "no_leakage_passed": (inter_train_val == 0 and inter_train_test == 0 and inter_val_test == 0),
+    }
+
+    with open(out_json, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+    return result
 
 
 def move_batch_to_device(batch_dict: Dict, device: torch.device) -> Dict:
@@ -354,9 +399,6 @@ if __name__ == "__main__":
     SINK_DROP_PROB = 0.10
     ENABLE_SINK_EDGE_DROP = True
     STRICT_NO_LEAKAGE_CHECK = True
-    ENABLE_LEAKAGE_AUTOFIX = True
-    LEAKAGE_AUTOFIX_SAVE_CSV = False # True
-    LEAKAGE_AUTOFIX_DIRNAME = "leakage_sanitized"
     ENABLE_SUPERVISED_EVAL = True
     SSL_EVAL_EVERY_N_EPOCHS = 5
     RUN_STAGE_A_SSL = True
@@ -433,10 +475,6 @@ if __name__ == "__main__":
         "use_mac_address": USE_MAC_ADDRESS,
         "use_port": USE_PORT,
         "drop_field_names": DROP_FIELD_NAMES,
-        "strict_no_leakage_check": STRICT_NO_LEAKAGE_CHECK,
-        "enable_leakage_autofix": ENABLE_LEAKAGE_AUTOFIX,
-        "leakage_autofix_save_csv": LEAKAGE_AUTOFIX_SAVE_CSV,
-        "leakage_autofix_dirname": LEAKAGE_AUTOFIX_DIRNAME,
         "run_stage_a_ssl": RUN_STAGE_A_SSL,
         "run_stage_b_downstream": RUN_STAGE_B_DOWNSTREAM,
         "stage_b_mode": STAGE_B_MODE,
@@ -457,42 +495,21 @@ if __name__ == "__main__":
 
     print(f"[SSL] device={DEVICE}")
     print(f"[SSL] reading {train_csv_path}")
+    if STRICT_NO_LEAKAGE_CHECK:
+        check = run_no_leakage_check(
+            train_csv=train_csv_path,
+            val_csv=val_csv_path,
+            test_csv=test_csv_path,
+            out_json=os.path.join(save_dir, "leakage_check.json"),
+            flow_col="stream_id",
+        )
+        print(f"[SSL] leakage check: {check['intersections']}")
+        if not check["no_leakage_passed"]:
+            raise RuntimeError("[SSL] No-leakage check failed. Abort pretraining.")
 
     train_df_raw = pd.read_csv(train_csv_path, dtype=str)
     val_df_raw = pd.read_csv(val_csv_path, dtype=str) if os.path.exists(val_csv_path) else pd.DataFrame()
     test_df_raw = pd.read_csv(test_csv_path, dtype=str) if os.path.exists(test_csv_path) else pd.DataFrame()
-
-    if STRICT_NO_LEAKAGE_CHECK:
-        report_before = compute_leakage_report(train_df_raw, val_df_raw, test_df_raw)
-        with open(os.path.join(save_dir, "leakage_check_before_fix.json"), "w", encoding="utf-8") as f:
-            json.dump(report_before, f, indent=2, ensure_ascii=False)
-
-        final_report = report_before
-        if ENABLE_LEAKAGE_AUTOFIX:
-            train_df_raw, val_df_raw, test_df_raw, fix_report = sanitize_splits_prefer_test(
-                train_df=train_df_raw,
-                val_df=val_df_raw,
-                test_df=test_df_raw,
-            )
-            with open(os.path.join(save_dir, "leakage_fix_report.json"), "w", encoding="utf-8") as f:
-                json.dump(fix_report, f, indent=2, ensure_ascii=False)
-            report_after = compute_leakage_report(train_df_raw, val_df_raw, test_df_raw)
-            with open(os.path.join(save_dir, "leakage_check_after_fix.json"), "w", encoding="utf-8") as f:
-                json.dump(report_after, f, indent=2, ensure_ascii=False)
-            final_report = report_after
-
-            if LEAKAGE_AUTOFIX_SAVE_CSV:
-                fixed_dir = os.path.join(save_dir, LEAKAGE_AUTOFIX_DIRNAME)
-                os.makedirs(fixed_dir, exist_ok=True)
-                train_df_raw.to_csv(os.path.join(fixed_dir, "train_set.csv"), index=False)
-                val_df_raw.to_csv(os.path.join(fixed_dir, "validation_set.csv"), index=False)
-                test_df_raw.to_csv(os.path.join(fixed_dir, "test_set.csv"), index=False)
-
-        with open(os.path.join(save_dir, "leakage_check.json"), "w", encoding="utf-8") as f:
-            json.dump(final_report, f, indent=2, ensure_ascii=False)
-        print(f"[SSL] leakage check: {final_report['intersections']}")
-        if not final_report["no_leakage_passed"]:
-            raise RuntimeError("[SSL] No-leakage check failed. Abort pretraining.")
     label_to_id = build_label_mapping(train_df_raw, val_df_raw, test_df_raw)
     df = ensure_label_columns(train_df_raw, label_to_id)
     val_df = ensure_label_columns(val_df_raw, label_to_id) if len(val_df_raw) else pd.DataFrame()
