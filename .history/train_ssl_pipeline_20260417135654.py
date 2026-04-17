@@ -419,7 +419,7 @@ if __name__ == "__main__":
     STAGE_B_EPOCHS = 100
     STAGE_B_LR = 5e-4
     STAGE_B_WEIGHT_DECAY = 1e-4
-    STAGE_B_PATIENCE = 15
+    STAGE_B_PATIENCE = 5
 
     # LR scheduler (for both Stage-A and Stage-B)
     ENABLE_LR_SCHEDULER = True
