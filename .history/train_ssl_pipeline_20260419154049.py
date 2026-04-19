@@ -74,7 +74,6 @@ def load_pretrained_weights(
     device: torch.device,
     strict: bool = True,
     skip_aggregator_head: bool = False,
-    skip_mismatch_shapes: bool = True,
 ) -> Dict:
     """
     Load checkpoint with optional classifier-head skipping.
@@ -85,83 +84,27 @@ def load_pretrained_weights(
     if not isinstance(state_dict, dict):
         raise RuntimeError(f"Unsupported checkpoint format: {type(state_dict)}")
 
-    model_state = model.state_dict()
-    filtered = state_dict
-    skipped_keys: List[str] = []
-    agg_skipped_keys: List[str] = []
-
-    def _numel_of(sd: Dict) -> int:
-        total = 0
-        for _, vv in sd.items():
-            try:
-                total += int(vv.numel())
-            except Exception:
-                pass
-        return total
-
-    total_tensors_ckpt = len(state_dict)
-    total_dims_ckpt = _numel_of(state_dict)
-
     if skip_aggregator_head:
-        agg_skipped_keys = [k for k in filtered.keys() if str(k).startswith("aggregator.")]
         filtered = {
-            k: v for k, v in filtered.items()
+            k: v for k, v in state_dict.items()
             if not str(k).startswith("aggregator.")
         }
-    candidate_tensors_after_agg = len(filtered)
-    candidate_dims_after_agg = _numel_of(filtered)
+        missing, unexpected = model.load_state_dict(filtered, strict=False)
+        return {
+            "ckpt_path": ckpt_path,
+            "strict": False,
+            "skip_aggregator_head": True,
+            "loaded_keys": len(filtered),
+            "missing_keys": list(missing),
+            "unexpected_keys": list(unexpected),
+        }
 
-    if skip_mismatch_shapes:
-        shape_ok = {}
-        for k, v in filtered.items():
-            if k not in model_state:
-                # keep unexpected keys behavior handled by load_state_dict
-                shape_ok[k] = v
-                continue
-            try:
-                if tuple(model_state[k].shape) == tuple(v.shape):
-                    shape_ok[k] = v
-                else:
-                    skipped_keys.append(k)
-            except Exception:
-                # conservative fallback: skip problematic entries
-                skipped_keys.append(k)
-        filtered = shape_ok
-
-    # Use strict=False here because we may intentionally skip keys.
-    missing, unexpected = model.load_state_dict(filtered, strict=False if (skip_aggregator_head or skip_mismatch_shapes) else strict)
-    skipped_mismatch_dims = 0
-    for k in skipped_keys:
-        if k in state_dict:
-            try:
-                skipped_mismatch_dims += int(state_dict[k].numel())
-            except Exception:
-                pass
-    skipped_agg_dims = 0
-    for k in agg_skipped_keys:
-        if k in state_dict:
-            try:
-                skipped_agg_dims += int(state_dict[k].numel())
-            except Exception:
-                pass
-    loaded_dims = _numel_of(filtered)
+    missing, unexpected = model.load_state_dict(state_dict, strict=strict)
     return {
         "ckpt_path": ckpt_path,
         "strict": bool(strict),
-        "skip_aggregator_head": bool(skip_aggregator_head),
-        "skip_mismatch_shapes": bool(skip_mismatch_shapes),
-        "loaded_keys": len(filtered),
-        "loaded_dims": int(loaded_dims),
-        "total_ckpt_tensors": int(total_tensors_ckpt),
-        "total_ckpt_dims": int(total_dims_ckpt),
-        "candidate_tensors_after_agg_skip": int(candidate_tensors_after_agg),
-        "candidate_dims_after_agg_skip": int(candidate_dims_after_agg),
-        "skipped_aggregator_keys_count": int(len(agg_skipped_keys)),
-        "skipped_aggregator_dims": int(skipped_agg_dims),
-        "skipped_mismatch_keys_count": len(skipped_keys),
-        "skipped_mismatch_dims": int(skipped_mismatch_dims),
-        "skipped_mismatch_keys_preview": skipped_keys[:20],
-        "skipped_aggregator_keys_preview": agg_skipped_keys[:20],
+        "skip_aggregator_head": False,
+        "loaded_keys": len(state_dict),
         "missing_keys": list(missing) if hasattr(missing, "__iter__") else [],
         "unexpected_keys": list(unexpected) if hasattr(unexpected, "__iter__") else [],
     }
@@ -468,9 +411,6 @@ if __name__ == "__main__":
     # PRETRAIN_LOAD_STRICT = True
     PRETRAIN_LOAD_STRICT = False
     PRETRAIN_SKIP_AGGREGATOR_HEAD = True
-    PRETRAIN_SKIP_MISMATCH_SHAPES = True
-    SAVE_PRETRAIN_LOAD_REPORT = True
-    PRETRAIN_LOAD_REPORT_FILENAME = "pretrain_load_report.json"
     ENABLE_FLOW_CENTRIC_BATCHING = True
     FLOW_MICRO_PACKETS_PER_FLOW = 32
     FLOW_MACRO_FLOWS_PER_BATCH = 32
@@ -552,9 +492,6 @@ if __name__ == "__main__":
         "pretrain_ckpt_path": PRETRAIN_CKPT_PATH,
         "pretrain_load_strict": PRETRAIN_LOAD_STRICT,
         "pretrain_skip_aggregator_head": PRETRAIN_SKIP_AGGREGATOR_HEAD,
-        "pretrain_skip_mismatch_shapes": PRETRAIN_SKIP_MISMATCH_SHAPES,
-        "save_pretrain_load_report": SAVE_PRETRAIN_LOAD_REPORT,
-        "pretrain_load_report_filename": PRETRAIN_LOAD_REPORT_FILENAME,
         "stage_b_mode": STAGE_B_MODE,
         "stage_b_epochs": STAGE_B_EPOCHS,
         "stage_b_lr": STAGE_B_LR,
@@ -908,7 +845,6 @@ if __name__ == "__main__":
     # priority 2) save_dir/ssl_best_by_val_f1.pth
     # priority 3) save_dir/ssl_pretrain_best.pth
     loaded_ckpt = None
-    load_info = None
     if PRETRAIN_CKPT_PATH and os.path.exists(PRETRAIN_CKPT_PATH):
         load_info = load_pretrained_weights(
             model=model,
@@ -916,20 +852,14 @@ if __name__ == "__main__":
             device=DEVICE,
             strict=PRETRAIN_LOAD_STRICT,
             skip_aggregator_head=PRETRAIN_SKIP_AGGREGATOR_HEAD,
-            skip_mismatch_shapes=PRETRAIN_SKIP_MISMATCH_SHAPES,
         )
         loaded_ckpt = PRETRAIN_CKPT_PATH
         if load_info.get("skip_aggregator_head", False):
             print("[Stage-B] loaded pretrained backbone with aggregator head skipped.")
-        if load_info.get("skipped_mismatch_keys_count", 0) > 0:
-            print(
-                f"[Stage-B] skipped {load_info['skipped_mismatch_keys_count']} mismatched keys "
-                f"(preview: {load_info.get('skipped_mismatch_keys_preview', [])[:5]})."
-            )
     else:
         best_ckpt_path = os.path.join(save_dir, "ssl_best_by_val_f1.pth")
         if os.path.exists(best_ckpt_path):
-            load_info = load_pretrained_weights(
+            load_pretrained_weights(
                 model=model,
                 ckpt_path=best_ckpt_path,
                 device=DEVICE,
@@ -939,7 +869,7 @@ if __name__ == "__main__":
             loaded_ckpt = best_ckpt_path
         elif os.path.exists(os.path.join(save_dir, "ssl_pretrain_best.pth")):
             fallback_ckpt = os.path.join(save_dir, "ssl_pretrain_best.pth")
-            load_info = load_pretrained_weights(
+            load_pretrained_weights(
                 model=model,
                 ckpt_path=fallback_ckpt,
                 device=DEVICE,
@@ -947,19 +877,6 @@ if __name__ == "__main__":
                 skip_aggregator_head=False,
             )
             loaded_ckpt = fallback_ckpt
-
-    if load_info is not None:
-        print(
-            "[Stage-B] pretrain load stats: "
-            f"loaded_dims={load_info.get('loaded_dims', 'NA')} / "
-            f"total_ckpt_dims={load_info.get('total_ckpt_dims', 'NA')} | "
-            f"skipped_agg_dims={load_info.get('skipped_aggregator_dims', 0)} | "
-            f"skipped_mismatch_dims={load_info.get('skipped_mismatch_dims', 0)}"
-        )
-        if SAVE_PRETRAIN_LOAD_REPORT:
-            report_path = os.path.join(save_dir, PRETRAIN_LOAD_REPORT_FILENAME)
-            with open(report_path, "w", encoding="utf-8") as f:
-                json.dump(load_info, f, indent=2, ensure_ascii=False)
 
     if RUN_STAGE_B_DOWNSTREAM:
         if loaded_ckpt is not None:
