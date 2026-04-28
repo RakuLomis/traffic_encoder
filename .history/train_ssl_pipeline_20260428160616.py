@@ -458,14 +458,13 @@ if __name__ == "__main__":
     LEAKAGE_AUTOFIX_DIRNAME = "leakage_sanitized"
     ENABLE_SUPERVISED_EVAL = True
     SSL_EVAL_EVERY_N_EPOCHS = 5
-    RUN_STAGE_A_SSL = True
-    # RUN_STAGE_A_SSL = False
+    # RUN_STAGE_A_SSL = True
+    RUN_STAGE_A_SSL = False
     RUN_STAGE_B_DOWNSTREAM = True
     # Optional: dedicated pretrained checkpoint for Stage-B initialization.
     # If provided and file exists, it will be loaded before Stage-B training.
     SSL_PARA_EXP_PATH = os.path.join('CipherSpectrum', '0417', 'ssl_pretrain_best.pth')
-    # PRETRAIN_CKPT_PATH =  os.path.join("..", "Res", "ssl_pretrain", SSL_PARA_EXP_PATH)
-    PRETRAIN_CKPT_PATH = None
+    PRETRAIN_CKPT_PATH =  os.path.join("..", "Res", "ssl_pretrain", SSL_PARA_EXP_PATH)
     # PRETRAIN_LOAD_STRICT = True
     PRETRAIN_LOAD_STRICT = False
     PRETRAIN_SKIP_AGGREGATOR_HEAD = True

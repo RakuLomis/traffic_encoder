@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import pandas as pd
 import yaml
+import os
 from tqdm import tqdm
 import numpy as np
 from torch_geometric.data import Data 
@@ -29,7 +30,8 @@ class GNNTrafficDataset(Dataset):
                 backbone_mode: str = 'expert_local',
                 enable_virtual_sink: bool = False,
                 virtual_sink_name: str = "__VIRTUAL_SINK__",
-                obfuscation_config: Optional[Dict[str, Any]] = None):
+                obfuscation_config: Optional[Dict[str, Any]] = None,
+                distilled_graph_spec_path: Optional[str] = None):
         super().__init__()
         print(f"\nInitializing Hierarchical GNNTrafficDataset (Flow Features: {use_flow_features})...")
         self.use_flow_features = use_flow_features
@@ -40,6 +42,7 @@ class GNNTrafficDataset(Dataset):
         self.enable_virtual_sink = bool(enable_virtual_sink)
         self.virtual_sink_name = str(virtual_sink_name)
         self.obfuscation_config = obfuscation_config
+        self.distilled_graph_spec_path = distilled_graph_spec_path
 
 
         with open(config_path, 'r') as f:
@@ -190,50 +193,53 @@ class GNNTrafficDataset(Dataset):
         # DataFrame?
         self.all_feature_cols_to_process = set() 
         
-        for name, expert_fields in self.expert_definitions.items():
-            # chemataFrame?
-            real_nodes_for_expert = sorted(list(expert_fields.intersection(self.physical_fields)))
-            if not real_nodes_for_expert:
-                print(f" -> Warning: expert '{name}' has no matched fields in dataframe. Skipping.")
-                continue
+        if self.distilled_graph_spec_path is not None:
+            self._load_distilled_expert_graphs(self.distilled_graph_spec_path)
+        else:
+            for name, expert_fields in self.expert_definitions.items():
+                # chemataFrame?
+                real_nodes_for_expert = sorted(list(expert_fields.intersection(self.physical_fields)))
+                if not real_nodes_for_expert:
+                    print(f" -> Warning: expert '{name}' has no matched fields in dataframe. Skipping.")
+                    continue
 
-            # ?
-            if self.backbone_mode == 'expert_local':
-                # Expert-local backbone: root -> protocol_of_this_expert -> its fields.
-                ptree = protocol_tree(real_nodes_for_expert, list_layers=None, logical_tree=True)
-            else:
-                # Compatibility mode with legacy global protocol layers.
-                ptree = protocol_tree(real_nodes_for_expert, list_layers=['eth', 'ip', 'tcp', 'tls'], logical_tree=True)
-            add_root_layer(ptree, mode='protocol_only')
-            
-            # ?
-            ptree_nodes = set(ptree.keys())
-            for children in ptree.values(): 
-                ptree_nodes.update(children)
-            # 'statistics' is an auxiliary bucket in protocol_tree, not a PTG node.
-            ptree_nodes.discard('statistics')
-            if self.enable_virtual_sink:
-                ptree_nodes.add(self.virtual_sink_name)
-            
-            all_nodes_for_expert = sorted(list(ptree_nodes))
-            field_to_node_idx = {n: i for i, n in enumerate(all_nodes_for_expert)}
-            edge_index = self._create_edge_index_from_tree(ptree, field_to_node_idx)
-            if self.enable_virtual_sink:
-                edge_index = self._augment_edge_index_with_virtual_sink(
-                    edge_index=edge_index,
-                    field_to_node_idx=field_to_node_idx,
-                    all_nodes=all_nodes_for_expert,
-                )
-            
-            # ?
-            self.expert_graphs[name] = {
-                'real_nodes': real_nodes_for_expert, # ?
-                'all_nodes': all_nodes_for_expert,  # ??
-                'field_to_node_idx': field_to_node_idx,
-                'edge_index': edge_index
-            }
-            # ?
-            self.all_feature_cols_to_process.update(real_nodes_for_expert)
+                # ?
+                if self.backbone_mode == 'expert_local':
+                    # Expert-local backbone: root -> protocol_of_this_expert -> its fields.
+                    ptree = protocol_tree(real_nodes_for_expert, list_layers=None, logical_tree=True)
+                else:
+                    # Compatibility mode with legacy global protocol layers.
+                    ptree = protocol_tree(real_nodes_for_expert, list_layers=['eth', 'ip', 'tcp', 'tls'], logical_tree=True)
+                add_root_layer(ptree, mode='protocol_only')
+                
+                # ?
+                ptree_nodes = set(ptree.keys())
+                for children in ptree.values(): 
+                    ptree_nodes.update(children)
+                # 'statistics' is an auxiliary bucket in protocol_tree, not a PTG node.
+                ptree_nodes.discard('statistics')
+                if self.enable_virtual_sink:
+                    ptree_nodes.add(self.virtual_sink_name)
+                
+                all_nodes_for_expert = sorted(list(ptree_nodes))
+                field_to_node_idx = {n: i for i, n in enumerate(all_nodes_for_expert)}
+                edge_index = self._create_edge_index_from_tree(ptree, field_to_node_idx)
+                if self.enable_virtual_sink:
+                    edge_index = self._augment_edge_index_with_virtual_sink(
+                        edge_index=edge_index,
+                        field_to_node_idx=field_to_node_idx,
+                        all_nodes=all_nodes_for_expert,
+                    )
+                
+                # ?
+                self.expert_graphs[name] = {
+                    'real_nodes': real_nodes_for_expert, # ?
+                    'all_nodes': all_nodes_for_expert,  # ??
+                    'field_to_node_idx': field_to_node_idx,
+                    'edge_index': edge_index
+                }
+                # ?
+                self.all_feature_cols_to_process.update(real_nodes_for_expert)
 
         if self.use_flow_features: 
             print("Flow features enabled. Adding to processing list.")
@@ -264,6 +270,51 @@ class GNNTrafficDataset(Dataset):
         # # ====================================================================
 
         
+    def _load_distilled_expert_graphs(self, spec_path: str) -> None:
+        import json
+        if not os.path.exists(spec_path):
+            raise FileNotFoundError(f"Distilled graph spec not found: {spec_path}")
+        print(f" -> Loading distilled graph spec: {spec_path}")
+        with open(spec_path, "r", encoding="utf-8") as f:
+            spec = json.load(f)
+        graphs = spec.get("expert_graphs", {})
+        if not isinstance(graphs, dict) or len(graphs) == 0:
+            raise RuntimeError("Invalid distilled graph spec: missing expert_graphs")
+
+        for name, g in graphs.items():
+            all_nodes = [str(x) for x in g.get("all_nodes_distilled", g.get("all_nodes", []))]
+            if len(all_nodes) == 0:
+                continue
+            real_nodes = [str(x) for x in g.get("real_nodes_distilled", g.get("real_nodes", []))]
+            if len(real_nodes) == 0:
+                real_nodes = sorted([n for n in all_nodes if n in self.physical_fields])
+
+            field_to_node_idx = {n: i for i, n in enumerate(all_nodes)}
+
+            edge_list = g.get("edge_index_distilled", g.get("edge_index", []))
+            edge_index = torch.tensor(edge_list, dtype=torch.long)
+            if edge_index.ndim != 2:
+                raise RuntimeError(f"Invalid edge_index shape in distilled spec for expert {name}")
+            if edge_index.shape[0] != 2 and edge_index.shape[1] == 2:
+                edge_index = edge_index.t().contiguous()
+            if edge_index.shape[0] != 2:
+                raise RuntimeError(
+                    f"Invalid edge_index shape in distilled spec for expert {name}: {tuple(edge_index.shape)}"
+                )
+
+            real_nodes_filtered = sorted(list(set(real_nodes).intersection(self.physical_fields)))
+            if len(real_nodes_filtered) == 0:
+                print(f" -> Warning: distilled expert '{name}' has no matched physical nodes. Skipping.")
+                continue
+
+            self.expert_graphs[name] = {
+                "real_nodes": real_nodes_filtered,
+                "all_nodes": all_nodes,
+                "field_to_node_idx": field_to_node_idx,
+                "edge_index": edge_index.contiguous(),
+            }
+            self.all_feature_cols_to_process.update(real_nodes_filtered)
+
     def _create_edge_index_from_tree(self, ptree: Dict[str, List[str]], field_to_node_idx: Dict[str, int]) -> torch.Tensor:
         """treedx?"""
         edge_list = []
