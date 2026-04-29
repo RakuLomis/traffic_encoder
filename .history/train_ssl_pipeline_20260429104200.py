@@ -513,8 +513,8 @@ if __name__ == "__main__":
     # --------------------------
     # Paths (edit for your setup)
     # --------------------------
-    # dataset_name = "cstnet_tls_1.3"
-    dataset_name = "CipherSpectrum"
+    dataset_name = "cstnet_tls_1.3"
+    # dataset_name = "CipherSpectrum"
     root_path = os.path.join("..", "TrafficData", "datasets_csv_add2")
     split_dir = os.path.join(root_path, "datasets_split", dataset_name)
     train_csv_path = os.path.join(split_dir, "train_set.csv")

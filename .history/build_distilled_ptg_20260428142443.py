@@ -15,13 +15,12 @@ from utils.dataframe_tools import protocol_tree, add_root_layer
 # ============================================================
 # Config
 # ============================================================
-# DATASET_NAME = "cstnet_tls_1.3"
-DATASET_NAME = "CipherSpectrum"
+DATASET_NAME = "cstnet_tls_1.3"
 ROOT_PATH = os.path.join("..", "TrafficData", "datasets_csv_add2")
 SPLIT_DIR = os.path.join(ROOT_PATH, "datasets_split", DATASET_NAME)
 CSV_PATH = os.path.join(SPLIT_DIR, "train_set.csv")
 YAML_CONFIG_PATH = os.path.join(".", "Data", "fields_embedding_configs_v1.yaml")
-NGI_CSV_PATH = os.path.join("..", "Res", "ssl_pretrain",  DATASET_NAME, 'parameters_for_distillation', f"{DATASET_NAME}_ssl_feature_importance_report.csv")
+NGI_CSV_PATH = os.path.join("..", "Res", "ssl_pretrain", DATASET_NAME, f"{DATASET_NAME}_ssl_feature_importance_report.csv")
 OUTPUT_DIR = os.path.join("..", "Res", "distilled_ptg", DATASET_NAME)
 OUTPUT_TAG = "topk5_plusk_noroot_sink"
 
